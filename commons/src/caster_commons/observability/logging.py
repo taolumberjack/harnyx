@@ -19,18 +19,59 @@ def _level(env_var: str, default: str) -> str:
     return os.getenv(env_var, default).upper()
 
 
+def _is_cloud_run() -> bool:
+    return bool(os.getenv("K_SERVICE"))
+
+
+def _structured_payload(record: logging.LogRecord) -> dict[str, Any]:
+    record_dict = record.__dict__
+    record_data = record_dict.get("data")
+    record_json_fields = record_dict.get("json_fields")
+
+    payload: dict[str, Any] = {
+        "message": record.getMessage(),
+        "severity": record.levelname,
+        "logger": record.name,
+        "timestamp": (
+            f"{time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(record.created))}"
+            f".{int(record.msecs):03d}Z"
+        ),
+    }
+    if record_data:
+        payload["data"] = _sanitize_for_json(record_data)
+
+    if record_json_fields:
+        json_fields = _sanitize_for_json(record_json_fields)
+        if isinstance(json_fields, Mapping):
+            for key, value in json_fields.items():
+                if key in payload:
+                    payload.setdefault("json_fields", {})[key] = value
+                else:
+                    payload[key] = value
+        else:
+            payload["json_fields"] = json_fields
+
+    return payload
+
+
 class ExtrasFormatter(logging.Formatter):
     """Append structured `data` payloads when present."""
 
     def format(self, record: logging.LogRecord) -> str:
+        record_dict = record.__dict__
+        record_data = record_dict.get("data")
+        record_json_fields = record_dict.get("json_fields")
+
+        if _is_cloud_run() and record_json_fields:
+            return json.dumps(_structured_payload(record), sort_keys=True, separators=(",", ":"))
+
         formatted = super().format(record)
-        record_data = record.__dict__.get("data")
         if record_data:
             try:
-                payload = json.dumps(record_data, sort_keys=True, separators=(",", ":"))
+                encoded = json.dumps(record_data, sort_keys=True, separators=(",", ":"))
             except TypeError:
-                payload = str(record_data)
-            return f"{formatted} | data={payload}"
+                encoded = str(record_data)
+            return f"{formatted} | data={encoded}"
         return formatted
 
 
@@ -39,10 +80,17 @@ class CloudJsonSanitizer(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - thin wrapper
         record_dict = record.__dict__
-        if "json_fields" in record_dict:
-            record.json_fields = _sanitize_for_json(record_dict["json_fields"])
+        sanitized_data: Any | None = None
         if "data" in record_dict:
-            record.data = _sanitize_for_json(record_dict["data"])
+            sanitized_data = _sanitize_for_json(record_dict["data"])
+            record_dict["data"] = sanitized_data
+        if "json_fields" in record_dict:
+            json_fields = _sanitize_for_json(record_dict["json_fields"])
+            if not isinstance(json_fields, Mapping):
+                json_fields = {"json_fields": json_fields}
+            if sanitized_data is not None and "data" not in json_fields:
+                json_fields["data"] = sanitized_data
+            record_dict["json_fields"] = json_fields
         return True
 
 
