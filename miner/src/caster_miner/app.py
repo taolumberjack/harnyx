@@ -13,9 +13,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from caster_commons.json_types import JsonValue
-from caster_commons.sandbox.harness import SandboxHarness
-from caster_commons.tools.proxy import ToolProxy
+from caster_miner.json_types import JsonValue
+from caster_miner.sandbox.harness import SandboxHarness
+from caster_miner.tools.proxy import ToolProxy
 
 logger = logging.getLogger("caster_miner")
 

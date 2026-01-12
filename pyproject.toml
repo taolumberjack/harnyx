@@ -14,13 +14,6 @@ dependencies = [
   "pytest-cov>=6.2.1",
 ]
 
-[build-system]
-requires = ["hatchling>=1.25.0"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/caster_subnet_public_workspace"]
-
 [tool.uv.workspace]
 members = ["commons", "validator", "miner", "miner-sdk"]
 
@@ -29,4 +22,3 @@ caster-commons = { workspace = true }
 caster-validator = { workspace = true }
 caster-miner = { workspace = true }
 caster-miner-sdk = { workspace = true }
-

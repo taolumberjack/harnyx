@@ -196,7 +196,10 @@ class DockerSandboxManager(SandboxManager):
 
     def _add_ports_and_network(self, args: list[str], options: SandboxOptions) -> None:
         if options.host_port is not None:
-            args.extend(["-p", f"{options.host_port}:{options.container_port}"])
+            if options.host_port == 0:
+                args.extend(["-p", str(options.container_port)])
+            else:
+                args.extend(["-p", f"{options.host_port}:{options.container_port}"])
         if options.network:
             args.extend(["--network", options.network])
 
@@ -301,7 +304,10 @@ class DockerSandboxManager(SandboxManager):
     def _build_client(self, options: SandboxOptions) -> tuple[str, SandboxClient]:
         if options.host_port is not None:
             base_host = self._host
-            published_port = options.host_port
+            if options.host_port == 0:
+                published_port = self._resolve_published_port(options)
+            else:
+                published_port = options.host_port
         else:
             base_host = options.container_name
             published_port = options.container_port
@@ -309,6 +315,38 @@ class DockerSandboxManager(SandboxManager):
         base_url = f"http://{base_host}:{published_port}"
         client = self._client_factory(base_url, options.token_header)
         return base_url, client
+
+    def _resolve_published_port(self, options: SandboxOptions) -> int:
+        args = [
+            self._docker,
+            "port",
+            options.container_name,
+            str(options.container_port),
+        ]
+        try:
+            result = self._run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as exc:  # pragma: no cover - integration only
+            stderr = (exc.stderr or "").strip()
+            raise RuntimeError(f"docker port failed: stderr={stderr}") from exc
+
+        output = (result.stdout or "").strip()
+        if not output:
+            raise RuntimeError("docker port returned an empty mapping")
+
+        for line in output.splitlines():
+            mapping = line
+            if "->" in line:
+                _, _, mapping = line.partition("->")
+                mapping = mapping.strip()
+
+            port_bits = mapping.rsplit(":", 1)
+            if len(port_bits) != 2:
+                continue
+            published_port = port_bits[1].strip()
+            if published_port.isdigit():
+                return int(published_port)
+
+        raise RuntimeError(f"docker port returned an unexpected mapping: {output}")
 
     def _maybe_wait_for_health(self, base_url: str, options: SandboxOptions) -> None:
         if not options.wait_for_healthz:

@@ -7,7 +7,6 @@ import runpy
 from collections.abc import Sequence
 from pathlib import Path
 
-from caster_commons.tools.local_dev_host import create_local_tool_host
 from caster_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from caster_miner_sdk.criterion_evaluation import CriterionEvaluationRequest
 from caster_miner_sdk.decorators import clear_entrypoints, entrypoint_exists, get_entrypoint
@@ -59,6 +58,10 @@ async def _amain(argv: Sequence[str] | None) -> None:
 
     _load_agent(agent_path)
     request_payload = _build_request(request_path=request_path, claim_text=args.claim_text)
+    try:
+        from caster_commons.tools.local_dev_host import create_local_tool_host
+    except ImportError as exc:  # pragma: no cover - only hit outside the mono-workspace
+        raise RuntimeError("caster-miner-dev requires caster-commons (install the full workspace)") from exc
     invoker = create_local_tool_host()
     entrypoint = get_entrypoint("evaluate_criterion")
 

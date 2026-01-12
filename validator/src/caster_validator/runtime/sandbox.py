@@ -53,7 +53,7 @@ def create_sandbox_manager() -> DockerSandboxManager:
     sandbox_log = logging.getLogger("caster_validator.sandbox")
     return DockerSandboxManager(
         docker_binary="/usr/bin/docker",
-        host="127.0.0.1",
+        host="host.docker.internal",
         log_consumer=lambda line: sandbox_log.info("%s", line),
     )
 
@@ -85,7 +85,7 @@ def build_sandbox_options(
         image=image,
         container_name=container_name,
         pull_policy=pull_policy,
-        host_port=None,
+        host_port=0,
         container_port=container_port,
         env={
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104
@@ -97,6 +97,7 @@ def build_sandbox_options(
         command=None,
         network=network,
         token_header=token_header,
+        extra_hosts=(("host.docker.internal", "host-gateway"),),
         startup_delay_seconds=2.0,
         wait_for_healthz=True,
         stop_timeout_seconds=5,
