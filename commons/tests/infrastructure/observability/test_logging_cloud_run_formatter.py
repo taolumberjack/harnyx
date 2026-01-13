@@ -2,7 +2,14 @@ import json
 import logging
 import sys
 
-from caster_commons.observability.logging import CloudJsonSanitizer, ExtrasFormatter
+from opentelemetry import baggage, context, trace
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState
+
+from caster_commons.observability.logging import (
+    CloudJsonSanitizer,
+    ExtrasFormatter,
+    OtelContextLogFilter,
+)
 
 
 def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) -> None:
@@ -161,3 +168,47 @@ def test_cloud_json_sanitizer_injects_data_into_json_fields() -> None:
     assert record.json_fields["request"]["ok"] is True
     assert record.json_fields["data"]["provider"] == "openai"
     assert record.json_fields["data"]["payload"] == "<bytes len=5>"
+
+
+def test_otel_context_log_filter_injects_trace_and_baggage(monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+
+    ctx = baggage.set_baggage("caster.run_id", "run-123")
+    ctx = baggage.set_baggage("caster.feed_id", "feed-456", context=ctx)
+    ctx = baggage.set_baggage("caster.use_case", "feed_run", context=ctx)
+    token = context.attach(ctx)
+    try:
+        span_context = SpanContext(
+            trace_id=int("0123456789abcdef0123456789abcdef", 16),
+            span_id=int("0123456789abcdef", 16),
+            is_remote=False,
+            trace_flags=TraceFlags(TraceFlags.SAMPLED),
+            trace_state=TraceState(),
+        )
+        span = NonRecordingSpan(span_context)
+        with trace.use_span(span, end_on_exit=False):
+            record = logging.LogRecord(
+                name="caster_commons.llm.calls",
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=1,
+                msg="demo",
+                args=(),
+                exc_info=None,
+            )
+            record.json_fields = {"existing": {"ok": True}}
+
+            assert OtelContextLogFilter().filter(record) is True
+
+            rendered = ExtrasFormatter("%(levelname)s %(name)s: %(message)s").format(record)
+            payload = json.loads(rendered)
+
+            assert payload["existing"]["ok"] is True
+            assert payload["otel"]["trace_id"] == "0123456789abcdef0123456789abcdef"
+            assert payload["otel"]["span_id"] == "0123456789abcdef"
+            baggage_payload = payload["otel"]["baggage"]
+            assert baggage_payload["caster.run_id"] == "run-123"
+            assert baggage_payload["caster.feed_id"] == "feed-456"
+            assert baggage_payload["caster.use_case"] == "feed_run"
+    finally:
+        context.detach(token)

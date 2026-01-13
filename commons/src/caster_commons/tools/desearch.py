@@ -9,6 +9,9 @@ from collections.abc import Mapping
 from typing import Any
 
 import httpx
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
+from opentelemetry.util.types import AttributeValue
 
 from caster_commons.config.external_client import ExternalClientRetrySettings
 from caster_commons.llm.retry_utils import RetryPolicy, backoff_ms
@@ -172,91 +175,135 @@ class DeSearchClient:
     ) -> dict[str, Any] | None:
         reasons: list[str] = []
         total_latency_ms = 0.0
-        for attempt in range(self._retry_policy.attempts):
-            attempt_start = time.perf_counter()
+        attempts_made = 0
+        tracer = trace.get_tracer("caster_commons.tools.desearch")
+        with tracer.start_as_current_span(
+            "desearch.request",
+            kind=SpanKind.CLIENT,
+            attributes={
+                "http.method": method.upper(),
+                "http.target": path,
+            },
+        ) as span:
             try:
-                resp = await self._send(method, path, json_payload=json_payload, params=params)
-                raw_response, data = await self._parse_response(resp)
-                total_latency_ms += (time.perf_counter() - attempt_start) * 1000
-                if expect_data:
-                    if self._missing_data(data):
-                        if self._should_retry(attempt):
-                            reasons.append("missing_data")
-                            await self._sleep(attempt)
-                            continue
-                        raise RuntimeError("desearch returned missing data")
-                    if self._empty_payload(data):
-                        if self._should_retry(attempt):
-                            reasons.append("empty_data")
-                            await self._sleep(attempt)
-                            continue
-                data["attempts"] = attempt + 1
-                data["retry_reasons"] = tuple(reasons)
-                _LOGGER.info(
-                    "desearch.request.complete",
-                    extra={
-                        "data": {
-                            "method": method.upper(),
-                            "path": path,
-                            "status_code": resp.status_code,
-                            "attempts": attempt + 1,
-                            "latency_ms_total": round(total_latency_ms, 2),
-                            "retry_reasons": tuple(reasons),
-                            "result_count": len(data["data"]) if isinstance(data.get("data"), list) else None,
-                            "wait_ms": round(wait_ms, 2),
-                        },
-                        "json_fields": {
-                            "request": {
-                                "method": method.upper(),
-                                "path": path,
-                                "params": params,
-                                "json": json_payload,
-                            },
-                            "response_raw": raw_response,
-                        },
-                    },
-                )
-                return data
-            except httpx.HTTPStatusError as exc:  # pragma: no cover - network errors
-                status = exc.response.status_code if exc.response else None
-                if allow_not_found and status == 404:
-                    total_latency_ms += (time.perf_counter() - attempt_start) * 1000
-                    _LOGGER.info(
-                        "desearch.request.not_found",
-                        extra={
-                            "data": {
-                                "method": method.upper(),
-                                "path": path,
-                                "status_code": status,
-                                "attempts": attempt + 1,
-                                "latency_ms_total": round(total_latency_ms, 2),
-                                "retry_reasons": tuple(reasons),
-                                "wait_ms": round(wait_ms, 2),
-                            },
-                            "json_fields": {
-                                "request": {
+                for attempt in range(self._retry_policy.attempts):
+                    attempts_made = attempt + 1
+                    attempt_start = time.perf_counter()
+                    try:
+                        resp = await self._send(method, path, json_payload=json_payload, params=params)
+                        raw_response, data = await self._parse_response(resp)
+                        total_latency_ms += (time.perf_counter() - attempt_start) * 1000
+                        if expect_data:
+                            if self._missing_data(data):
+                                if self._should_retry(attempt):
+                                    reasons.append("missing_data")
+                                    await self._sleep(attempt)
+                                    continue
+                                span.set_attributes({"desearch.error": "missing_data"})
+                                raise RuntimeError("desearch returned missing data")
+                            if self._empty_payload(data):
+                                if self._should_retry(attempt):
+                                    reasons.append("empty_data")
+                                    await self._sleep(attempt)
+                                    continue
+
+                        data["attempts"] = attempt + 1
+                        data["retry_reasons"] = tuple(reasons)
+                        span.set_attributes(
+                            {
+                                "http.status_code": resp.status_code,
+                                "desearch.result_count": (
+                                    len(data["data"]) if isinstance(data.get("data"), list) else 0
+                                ),
+                            }
+                        )
+
+                        _LOGGER.info(
+                            "desearch.request.complete",
+                            extra={
+                                "data": {
                                     "method": method.upper(),
                                     "path": path,
-                                    "params": params,
-                                    "json": json_payload,
+                                    "status_code": resp.status_code,
+                                    "attempts": attempt + 1,
+                                    "latency_ms_total": round(total_latency_ms, 2),
+                                    "retry_reasons": tuple(reasons),
+                                    "result_count": len(data["data"]) if isinstance(data.get("data"), list) else None,
+                                    "wait_ms": round(wait_ms, 2),
+                                },
+                                "json_fields": {
+                                    "request": {
+                                        "method": method.upper(),
+                                        "path": path,
+                                        "params": params,
+                                        "json": json_payload,
+                                    },
+                                    "response_raw": raw_response,
                                 },
                             },
-                        },
-                    )
-                    return None
-                retryable = status == 429 or (status is not None and status >= 500)
-                reasons.append(f"http_{status}")
-                if not (retryable and self._should_retry(attempt)):
-                    raise RuntimeError(f"desearch request failed with status {status}") from exc
-                await self._sleep(attempt)
-            except httpx.HTTPError as exc:  # pragma: no cover
-                reasons.append(exc.__class__.__name__)
-                if not self._should_retry(attempt):
-                    raise RuntimeError(f"desearch request error: {exc}") from exc
-                await self._sleep(attempt)
-        raise RuntimeError(
-            f"desearch request failed after {self._retry_policy.attempts} attempts: {reasons}"
-        )
+                        )
+                        return data
+                    except httpx.HTTPStatusError as exc:  # pragma: no cover - network errors
+                        status = exc.response.status_code if exc.response else None
+                        if allow_not_found and status == 404:
+                            total_latency_ms += (time.perf_counter() - attempt_start) * 1000
+                            span.set_attributes(
+                                {
+                                    "http.status_code": 404,
+                                    "desearch.not_found": True,
+                                }
+                            )
+                            _LOGGER.info(
+                                "desearch.request.not_found",
+                                extra={
+                                    "data": {
+                                        "method": method.upper(),
+                                        "path": path,
+                                        "status_code": status,
+                                        "attempts": attempt + 1,
+                                        "latency_ms_total": round(total_latency_ms, 2),
+                                        "retry_reasons": tuple(reasons),
+                                        "wait_ms": round(wait_ms, 2),
+                                    },
+                                    "json_fields": {
+                                        "request": {
+                                            "method": method.upper(),
+                                            "path": path,
+                                            "params": params,
+                                            "json": json_payload,
+                                        },
+                                    },
+                                },
+                            )
+                            return None
+                        retryable = status == 429 or (status is not None and status >= 500)
+                        reasons.append(f"http_{status}")
+                        if not (retryable and self._should_retry(attempt)):
+                            span.set_attributes(
+                                {
+                                    "http.status_code": status or 0,
+                                    "desearch.error": f"http_{status}",
+                                }
+                            )
+                            raise RuntimeError(f"desearch request failed with status {status}") from exc
+                        await self._sleep(attempt)
+                    except httpx.HTTPError as exc:  # pragma: no cover
+                        reasons.append(exc.__class__.__name__)
+                        if not self._should_retry(attempt):
+                            span.set_attributes({"desearch.error": exc.__class__.__name__})
+                            raise RuntimeError(f"desearch request error: {exc}") from exc
+                        await self._sleep(attempt)
+            finally:
+                final_attributes: dict[str, AttributeValue] = {
+                    "desearch.attempts": attempts_made,
+                    "desearch.latency_ms_total": round(total_latency_ms, 2),
+                    "desearch.wait_ms": round(wait_ms, 2),
+                }
+                if reasons:
+                    final_attributes["desearch.retry_reasons"] = tuple(reasons)
+                span.set_attributes(final_attributes)
+
+        raise RuntimeError(f"desearch request failed after {self._retry_policy.attempts} attempts: {reasons}")
 
     async def _send(
         self,

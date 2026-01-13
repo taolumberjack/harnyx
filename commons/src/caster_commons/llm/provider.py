@@ -14,6 +14,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Protocol, cast
 
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
+from opentelemetry.util.types import AttributeValue
+
 from caster_commons.config.external_client import ExternalClientRetrySettings
 from caster_commons.llm.provider_types import LlmProviderName
 from caster_commons.llm.retry_utils import RetryPolicy, backoff_ms
@@ -103,42 +107,83 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             "timeout_seconds": request.timeout_seconds,
         }
         data |= request.extra or {}
-        self._llm_logger.debug("llm.invoke.start", extra={"data": data})
-        start = time.perf_counter()
-        wait_ms = 0.0
-        try:
-            if self._semaphore is None:
-                response = await self._invoke(request)
-            else:
-                wait_start = time.perf_counter()
-                async with self._semaphore:
-                    wait_ms = (time.perf_counter() - wait_start) * 1000
-                    self._llm_logger.debug("llm.invoke.semaphore.wait", extra={"data": data | {"wait_ms": wait_ms}})
-                    response = await self._invoke(request)
-        except Exception:
-            elapsed = round((time.perf_counter() - start) * 1000, 2)
-            self._llm_logger.exception(
-                "llm.invoke.error",
-                extra={"data": data | {"elapsed_ms": elapsed}},
-            )
-            raise
-        elapsed = round((time.perf_counter() - start) * 1000, 2)
-        usage = response.usage or LlmUsage()
-        web_search_calls = int(usage.web_search_calls or 0)
-        data |= {
-            "request": _request_snapshot(request),
-            "response": response.payload,
-            "response_metadata": response.metadata or {},
-            "elapsed_ms": elapsed,
-            "usage_prompt": usage.prompt_tokens or 0,
-            "usage_completion": usage.completion_tokens or 0,
-            "usage_total": usage.total_tokens or 0,
-            "reasoning_tokens": usage.reasoning_tokens or 0,
-            "finish_reason": response.finish_reason,
-            "web_search_calls": web_search_calls,
-            "wait_ms": round(wait_ms, 2),
+
+        span_attributes: dict[str, AttributeValue] = {
+            "llm.provider": self._provider_label,
+            "llm.model": request.model,
+            "llm.grounded": bool(request.grounded),
         }
-        return response
+        if request.max_output_tokens is not None:
+            span_attributes["llm.max_output_tokens"] = int(request.max_output_tokens)
+        if request.reasoning_effort is not None:
+            span_attributes["llm.reasoning_effort"] = str(request.reasoning_effort)
+
+        tracer = trace.get_tracer("caster_commons.llm")
+        with tracer.start_as_current_span(
+            "llm.invoke",
+            kind=SpanKind.CLIENT,
+            attributes=span_attributes,
+        ) as span:
+            self._llm_logger.debug("llm.invoke.start", extra={"data": data})
+            start = time.perf_counter()
+            wait_ms = 0.0
+            try:
+                if self._semaphore is None:
+                    response = await self._invoke(request)
+                else:
+                    wait_start = time.perf_counter()
+                    async with self._semaphore:
+                        wait_ms = (time.perf_counter() - wait_start) * 1000
+                        self._llm_logger.debug(
+                            "llm.invoke.semaphore.wait",
+                            extra={"data": data | {"wait_ms": wait_ms}},
+                        )
+                        response = await self._invoke(request)
+            except Exception:
+                elapsed = round((time.perf_counter() - start) * 1000, 2)
+                self._llm_logger.exception(
+                    "llm.invoke.error",
+                    extra={"data": data | {"elapsed_ms": elapsed}},
+                )
+                span.set_attributes(
+                    {
+                        "llm.elapsed_ms": elapsed,
+                        "llm.wait_ms": round(wait_ms, 2),
+                    }
+                )
+                raise
+
+            elapsed = round((time.perf_counter() - start) * 1000, 2)
+            usage = response.usage or LlmUsage()
+            web_search_calls = int(usage.web_search_calls or 0)
+            response_metadata = response.metadata or {}
+
+            span.set_attributes(
+                {
+                    "llm.elapsed_ms": elapsed,
+                    "llm.wait_ms": round(wait_ms, 2),
+                    "llm.usage.total_tokens": int(usage.total_tokens or 0),
+                    "llm.usage.prompt_tokens": int(usage.prompt_tokens or 0),
+                    "llm.usage.completion_tokens": int(usage.completion_tokens or 0),
+                    "llm.usage.reasoning_tokens": int(usage.reasoning_tokens or 0),
+                    "llm.usage.web_search_calls": web_search_calls,
+                }
+            )
+
+            data |= {
+                "request": _request_snapshot(request),
+                "response": response.payload,
+                "response_metadata": response_metadata,
+                "elapsed_ms": elapsed,
+                "usage_prompt": usage.prompt_tokens or 0,
+                "usage_completion": usage.completion_tokens or 0,
+                "usage_total": usage.total_tokens or 0,
+                "reasoning_tokens": usage.reasoning_tokens or 0,
+                "finish_reason": response.finish_reason,
+                "web_search_calls": web_search_calls,
+                "wait_ms": round(wait_ms, 2),
+            }
+            return response
 
     async def aclose(self) -> None:
         """Providers may override to close network clients."""

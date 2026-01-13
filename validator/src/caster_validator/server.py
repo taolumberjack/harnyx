@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from caster_commons.observability.logging import shutdown_logging
+from caster_commons.observability.tracing import configure_tracing
 from caster_validator.infrastructure.http.middleware import request_logging_middleware
 from caster_validator.infrastructure.http.routes import add_control_routes, add_tool_routes
 from caster_validator.infrastructure.observability.logging import (
@@ -20,6 +21,7 @@ from caster_validator.runtime.settings import Settings
 from caster_validator.runtime.weight_worker import create_weight_worker
 
 init_logging()
+configure_tracing(service_name="caster-validator")
 _settings = Settings.load()
 if _settings.observability.enable_cloud_logging:
     gcp_project = _settings.vertex.gcp_project_id

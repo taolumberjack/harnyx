@@ -14,6 +14,7 @@ from logging.config import dictConfig
 from typing import Any
 
 from google.cloud import logging as gcp_logging
+from opentelemetry import baggage, trace
 
 
 def _level(env_var: str, default: str) -> str:
@@ -110,6 +111,44 @@ class CloudJsonSanitizer(logging.Filter):
             if sanitized_data is not None and "data" not in json_fields:
                 json_fields["data"] = sanitized_data
             record_dict["json_fields"] = json_fields
+        return True
+
+
+class OtelContextLogFilter(logging.Filter):
+    """Inject OpenTelemetry trace context + baggage into json_fields."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - thin wrapper
+        record_dict = record.__dict__
+        json_fields = record_dict.get("json_fields")
+
+        if json_fields is None:
+            json_fields_map: dict[str, Any] = {}
+        elif isinstance(json_fields, Mapping):
+            json_fields_map = dict(json_fields)
+        else:
+            json_fields_map = {"json_fields": json_fields}
+
+        otel_value = json_fields_map.get("otel")
+        otel: dict[str, Any]
+        if isinstance(otel_value, Mapping):
+            otel = dict(otel_value)
+        else:
+            otel = {}
+
+        span_context = trace.get_current_span().get_span_context()
+        if span_context.is_valid:
+            otel["trace_id"] = f"{span_context.trace_id:032x}"
+            otel["span_id"] = f"{span_context.span_id:016x}"
+
+        baggage_values = baggage.get_all()
+        if baggage_values:
+            otel["baggage"] = {key: str(value) for key, value in baggage_values.items()}
+
+        if not otel:
+            return True
+
+        json_fields_map["otel"] = otel
+        record_dict["json_fields"] = json_fields_map
         return True
 
 
@@ -231,11 +270,12 @@ def _handlers(cloud_handler_name: str | None, cloud_handler: dict[str, Any] | No
             "class": "logging.StreamHandler",
             "formatter": "console",
             "stream": "ext://sys.stdout",
+            "filters": ["otel_context"],
         }
     }
     if cloud_handler_name and cloud_handler:
         cloud_handler = dict(cloud_handler)
-        cloud_handler["filters"] = ["cloud_json_sanitizer"]
+        cloud_handler["filters"] = ["otel_context", "cloud_json_sanitizer"]
         handlers[cloud_handler_name] = cloud_handler
     return handlers
 
@@ -310,6 +350,9 @@ def _cloud_logging_handler(
 
 def _filters() -> dict[str, Any]:
     return {
+        "otel_context": {
+            "()": OtelContextLogFilter,
+        },
         "cloud_json_sanitizer": {
             "()": CloudJsonSanitizer,
         }
