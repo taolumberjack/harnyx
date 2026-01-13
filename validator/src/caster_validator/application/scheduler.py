@@ -12,7 +12,7 @@ from caster_commons.application.session_manager import SessionManager
 from caster_commons.sandbox.client import SandboxClient
 from caster_commons.sandbox.manager import SandboxManager
 from caster_commons.sandbox.options import SandboxOptions
-from caster_validator.application.dto.evaluation import EvaluationBatchResult
+from caster_validator.application.dto.evaluation import MinerTaskBatchResult, ScriptArtifactSpec
 from caster_validator.application.evaluate_criterion import EvaluationOrchestrator
 from caster_validator.application.ports.claims import ClaimsProviderPort
 from caster_validator.application.ports.evaluation_record import EvaluationRecordPort
@@ -20,7 +20,7 @@ from caster_validator.application.ports.progress import ProgressRecorder
 from caster_validator.application.ports.subtensor import SubtensorClientPort
 from caster_validator.application.services.evaluation_runner import EvaluationRunner
 
-SandboxOptionsFactory = Callable[[int], SandboxOptions]
+SandboxOptionsFactory = Callable[[ScriptArtifactSpec], SandboxOptions]
 EvaluationOrchestratorFactory = Callable[[SandboxClient], EvaluationOrchestrator]
 Clock = Callable[[], datetime]
 
@@ -76,47 +76,78 @@ class EvaluationScheduler:
     async def run(
         self,
         *,
-        run_id: UUID,
-        requested_uids: Sequence[int] | None = None,
-    ) -> EvaluationBatchResult:
-        """Run evaluations for the supplied run identifier."""
-        claims = tuple(self._claims.fetch(run_id=run_id))
+        batch_id: UUID,
+        requested_candidates: Sequence[ScriptArtifactSpec],
+    ) -> MinerTaskBatchResult:
+        """Run evaluations for the supplied miner-task batch identifier."""
+        claims = tuple(self._claims.fetch(batch_id=batch_id))
         if not claims:
             raise ValueError("claims provider returned no entries")
 
-        uids = self._resolve_uids(requested_uids)
+        candidates = tuple(requested_candidates)
+        if not candidates:
+            raise ValueError("no candidates supplied for evaluation batch")
         evaluations = []
 
-        for uid in uids:
-            logger.debug("starting evaluation for miner", extra={"uid": uid})
-            deployment = self._sandboxes.start(self._sandbox_options(uid))
+        for candidate in candidates:
+            logger.debug(
+                "starting evaluation for candidate",
+                extra={"uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},
+            )
+            try:
+                options = self._sandbox_options(candidate)
+            except Exception as exc:
+                logger.error(
+                    "Failed to prepare sandbox options",
+                    extra={"batch_id": str(batch_id), "uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},
+                    exc_info=exc,
+                )
+                await self._runner.record_failure_for_candidate(
+                    batch_id=batch_id,
+                    candidate=candidate,
+                    claims=claims,
+                    error_code="agent_unavailable",
+                    error_message=str(exc),
+                )
+                continue
+            try:
+                deployment = self._sandboxes.start(options)
+            except Exception as exc:
+                logger.error(
+                    "Failed to start sandbox",
+                    extra={"batch_id": str(batch_id), "uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},
+                    exc_info=exc,
+                )
+                await self._runner.record_failure_for_candidate(
+                    batch_id=batch_id,
+                    candidate=candidate,
+                    claims=claims,
+                    error_code="sandbox_start_failed",
+                    error_message=str(exc),
+                )
+                continue
             try:
                 orchestrator = self._make_orchestrator(deployment.client)
                 evaluations.extend(
-                    await self._runner.evaluate_miner(
-                        run_id=run_id,
-                        uid=uid,
+                    await self._runner.evaluate_candidate(
+                        batch_id=batch_id,
+                        candidate=candidate,
                         claims=claims,
                         orchestrator=orchestrator,
                     ),
                 )
             finally:
                 self._sandboxes.stop(deployment)
-            logger.debug("finished evaluation for miner", extra={"uid": uid})
+            logger.debug(
+                "finished evaluation for candidate",
+                extra={"uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},
+            )
 
-        return EvaluationBatchResult(
-            run_id=run_id,
+        return MinerTaskBatchResult(
+            batch_id=batch_id,
             claims=claims,
             evaluations=tuple(evaluations),
-            uids=uids,
+            candidate_uids=tuple(candidate.uid for candidate in candidates),
         )
-
-    def _resolve_uids(self, requested: Sequence[int] | None) -> tuple[int, ...]:
-        if requested:
-            return tuple(dict.fromkeys(requested))
-        snapshot = self._subtensor.fetch_metagraph()
-        if not snapshot.uids:
-            raise ValueError("metagraph did not return any miner UIDs")
-        return tuple(int(uid) for uid in snapshot.uids)
 
 __all__ = ["EvaluationScheduler", "SchedulerConfig"]

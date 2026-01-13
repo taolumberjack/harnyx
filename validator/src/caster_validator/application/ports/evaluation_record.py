@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from caster_validator.application.dto.evaluation import EvaluationCloseout
+from caster_validator.application.dto.evaluation import MinerTaskResult
 
 
 class EvaluationRecordPort(Protocol):
-    """Persists evaluation closeouts to an external store."""
+    """Persists miner-task results to an external store."""
 
-    def record(self, closeout: EvaluationCloseout) -> None:
-        """Persist the supplied evaluation closeout payload."""
+    def record(self, result: MinerTaskResult) -> None:
+        """Persist the supplied miner-task result payload."""
 
 
 __all__ = ["EvaluationRecordPort"]

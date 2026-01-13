@@ -32,7 +32,7 @@ from caster_validator.application.dto.evaluation import (
 )
 from caster_validator.application.invoke_entrypoint import EntrypointInvoker
 from caster_validator.application.services.evaluation_scoring import EvaluationScore, EvaluationScoringService
-from caster_validator.domain.evaluation import MinerAnswer, MinerCitation, MinerEvaluation
+from caster_validator.domain.evaluation import MinerAnswer, MinerCitation, MinerCriterionEvaluation
 
 logger = logging.getLogger("caster_validator.evaluation")
 
@@ -58,7 +58,7 @@ class _SandboxEvaluationPayload(BaseModel):
 
 
 class UsageSummarizer:
-    """Summarizes tool and LLM usage for an evaluation closeout."""
+    """Summarizes tool and LLM usage for a miner task result."""
 
     def summarize(
         self,
@@ -117,6 +117,7 @@ class UsageSummarizer:
         for provider, models in budget.llm_usage_totals.items():
             provider_models: dict[str, JsonValue] = {}
             for model, totals in models.items():
+                # Session usage may include non-tool/unsupported models; only price tool models we recognize.
                 try:
                     tool_model = parse_tool_model(model)
                 except ValueError:
@@ -204,7 +205,7 @@ class EvaluationOrchestrator:
         usage, total_tool_usage = self._usage.summarize(session, invocation.tool_receipts)
         self._receipts.clear_session(request.session_id)
         return EvaluationOutcome(
-            evaluation=evaluation,
+            criterion_evaluation=evaluation,
             score=score,
             tool_receipts=invocation.tool_receipts,
             usage=usage,
@@ -225,7 +226,7 @@ class EvaluationOrchestrator:
 
     async def _score_evaluation_async(
         self,
-        evaluation: MinerEvaluation,
+        evaluation: MinerCriterionEvaluation,
         invocation: EntrypointInvocationResult,
         request: EvaluationRequest,
     ) -> EvaluationScore:
@@ -240,14 +241,14 @@ class EvaluationOrchestrator:
     def _require_session(self, session_id: UUID) -> Session:
         session = self._sessions.get(session_id)
         if session is None:
-            raise LookupError(f"session {session_id} not found during evaluation closeout")
+            raise LookupError(f"session {session_id} not found while summarizing miner task usage")
         return session
 
     def _build_evaluation(
         self,
         request: EvaluationRequest,
         sandbox_result: object,
-    ) -> MinerEvaluation:
+    ) -> MinerCriterionEvaluation:
         payload = _SandboxEvaluationPayload.model_validate(sandbox_result)
         request.claim.rubric.verdict_options.validate(payload.verdict)
 
@@ -267,10 +268,11 @@ class EvaluationOrchestrator:
             citations=citations,
         )
 
-        return MinerEvaluation(
-            evaluation_id=request.evaluation_id,
+        return MinerCriterionEvaluation(
+            criterion_evaluation_id=request.criterion_evaluation_id,
             session_id=request.session_id,
             uid=request.uid,
+            artifact_id=request.artifact_id,
             claim_id=request.claim.claim_id,
             rubric=request.claim.rubric,
             miner_answer=miner_answer,
@@ -279,13 +281,14 @@ class EvaluationOrchestrator:
 
     def _hydrate_citations(
         self,
-        evaluation: MinerEvaluation,
+        evaluation: MinerCriterionEvaluation,
         receipts: Sequence[ToolCall],
         session_id: UUID,
-    ) -> tuple[MinerEvaluation, tuple[str, ...]]:
+    ) -> tuple[MinerCriterionEvaluation, tuple[str, ...]]:
         if not evaluation.miner_answer.citations:
             return evaluation, ()
 
+        # Only trust tool receipts emitted for this session.
         receipt_index = {
             receipt.receipt_id: receipt
             for receipt in receipts
@@ -295,6 +298,7 @@ class EvaluationOrchestrator:
         canonical: list[MinerCitation] = []
         invalid: list[str] = []
 
+        # Canonicalize miner citations to referenceable search results; drop anything else.
         for citation in evaluation.miner_answer.citations:
             receipt = receipt_index.get(citation.receipt_id)
             if receipt is None:

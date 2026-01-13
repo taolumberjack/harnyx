@@ -6,14 +6,14 @@ from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
-from caster_commons.domain.claim import EvaluationClaim
+from caster_commons.domain.claim import MinerTaskClaim
 
 
 class ClaimsProviderPort(Protocol):
-    """Supplies the set of reference claims used for a validator run."""
+    """Supplies the set of reference claims used for a miner-task batch."""
 
-    def fetch(self, *, run_id: UUID | None = None) -> Sequence[EvaluationClaim]:
-        """Return the ordered collection of claims for the supplied run."""
+    def fetch(self, *, batch_id: UUID | None = None) -> Sequence[MinerTaskClaim]:
+        """Return the ordered collection of claims for the supplied batch."""
 
 
 __all__ = ["ClaimsProviderPort"]

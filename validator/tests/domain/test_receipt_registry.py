@@ -14,7 +14,7 @@ from caster_commons.domain.tool_call import (
     ToolResultPolicy,
 )
 from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
-from caster_validator.domain.evaluation import MinerAnswer, MinerCitation, MinerEvaluation
+from caster_validator.domain.evaluation import MinerAnswer, MinerCitation, MinerCriterionEvaluation
 from caster_validator.domain.exceptions import InvalidCitationError
 from caster_validator.domain.services.receipt_registry import ReceiptRegistry
 
@@ -105,10 +105,11 @@ def test_miner_evaluation_requires_receipt_on_citation() -> None:
     registry = ReceiptRegistry()
     registry.record(make_receipt("valid"))
 
-    evaluation = MinerEvaluation(
-        evaluation_id=uuid4(),
+    evaluation = MinerCriterionEvaluation(
+        criterion_evaluation_id=uuid4(),
         session_id=uuid4(),
         uid=1,
+        artifact_id=uuid4(),
         claim_id=uuid4(),
         rubric=Rubric(
             title="Accuracy",

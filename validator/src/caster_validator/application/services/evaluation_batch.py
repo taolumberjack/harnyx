@@ -1,4 +1,4 @@
-"""Service for processing evaluation batches."""
+"""Service for processing miner-task batches."""
 
 from __future__ import annotations
 
@@ -10,14 +10,15 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.claim import EvaluationClaim, Rubric
+from caster_commons.domain.claim import MinerTaskClaim, Rubric
 from caster_commons.sandbox.client import SandboxClient
 from caster_commons.sandbox.docker import DockerSandboxManager
 from caster_commons.sandbox.options import SandboxOptions
 from caster_validator.application.dto.evaluation import (
-    EvaluationBatchResult,
-    EvaluationBatchSpec,
+    MinerTaskBatchResult,
+    MinerTaskBatchSpec,
     ScoredEvaluation,
+    ScriptArtifactSpec,
 )
 from caster_validator.application.evaluate_criterion import EvaluationOrchestrator
 from caster_validator.application.ports.evaluation_record import EvaluationRecordPort
@@ -32,9 +33,9 @@ from caster_validator.application.services.evaluation_batch_prep import (
     RunContext,
 )
 from caster_validator.application.status import StatusProvider
-from caster_validator.domain.evaluation import MinerAnswer, MinerEvaluation
+from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvaluation
 
-logger = logging.getLogger("caster_validator.evaluation_batch")
+logger = logging.getLogger("caster_validator.miner_task_batch")
 
 _LOG_SNIPPET_LIMIT = 512
 
@@ -50,22 +51,22 @@ def _truncate(value: str | None, *, limit: int = _LOG_SNIPPET_LIMIT) -> str | No
 
 def _format_evaluation_log(
     *,
-    run_id: UUID,
-    evaluation: MinerEvaluation,
-    claim: EvaluationClaim | None,
+    batch_id: UUID,
+    evaluation: MinerCriterionEvaluation,
+    claim: MinerTaskClaim | None,
     rubric: Rubric,
     miner_answer: MinerAnswer,
     total_score: float,
 ) -> str:
     parts = [
-        f"run_id={run_id}",
+        f"batch_id={batch_id}",
         f"uid={evaluation.uid}",
         f"claim_id={evaluation.claim_id}",
         f"verdict={miner_answer.verdict}",
         f"score_total={total_score:.3f}",
         f"citations={len(miner_answer.citations)}",
     ]
-    lines = ["Miner evaluation result " + " ".join(parts)]
+    lines = ["Miner criterion evaluation result " + " ".join(parts)]
     claim_text = _truncate(claim.text if claim is not None else None)
     if claim_text:
         lines.append(f"  claim: {claim_text}")
@@ -77,8 +78,8 @@ def _format_evaluation_log(
 
 
 # Type aliases for factories
-class EvaluationBatchService:
-    """Processes evaluation batches by coordinating sandbox and scheduler."""
+class MinerTaskBatchService:
+    """Processes miner-task batches by coordinating sandbox and scheduler."""
 
     def __init__(
         self,
@@ -119,29 +120,29 @@ class EvaluationBatchService:
             config=self._config,
         )
 
-    async def process_async(self, batch: EvaluationBatchSpec) -> None:
-        """Process a single evaluation batch."""
+    async def process_async(self, batch: MinerTaskBatchSpec) -> None:
+        """Process a single miner-task batch."""
         self._require_platform()
         run_ctx = self._planner.build_run_context(batch)
-        self._mark_status_started(run_ctx.run_id)
+        self._mark_status_started(run_ctx.batch_id)
 
-        selected_uids, scheduler = self._planner.prepare_execution(run_ctx, batch)
-        batch_result, elapsed = await self._run_scheduler_async(run_ctx.run_id, scheduler, selected_uids)
+        selected_candidates, scheduler = self._planner.prepare_execution(run_ctx, batch)
+        batch_result, elapsed = await self._run_scheduler_async(run_ctx.batch_id, scheduler, selected_candidates)
 
         self._log_results(run_ctx, batch_result, elapsed)
         self._mark_status_completed()
 
-    def process(self, batch: EvaluationBatchSpec) -> None:
+    def process(self, batch: MinerTaskBatchSpec) -> None:
         asyncio.run(self.process_async(batch))
 
     def _require_platform(self) -> None:
         if self._platform is None:
             raise RuntimeError("platform client is not configured")
 
-    def _mark_status_started(self, run_id: UUID) -> None:
+    def _mark_status_started(self, batch_id: UUID) -> None:
         if self._status is None:
             return
-        self._status.state.last_run_id = run_id
+        self._status.state.last_batch_id = batch_id
         self._status.state.last_started_at = datetime.now(UTC)
         self._status.state.running = True
         self._status.state.last_error = None
@@ -154,13 +155,13 @@ class EvaluationBatchService:
 
     async def _run_scheduler_async(
         self,
-        run_id: UUID,
+        batch_id: UUID,
         scheduler: EvaluationScheduler,
-        selected_uids: tuple[int, ...],
-    ) -> tuple[EvaluationBatchResult, float]:
+        selected_candidates: tuple[ScriptArtifactSpec, ...],
+    ) -> tuple[MinerTaskBatchResult, float]:
         started = time.monotonic()
         try:
-            result = await scheduler.run(run_id=run_id, requested_uids=selected_uids)
+            result = await scheduler.run(batch_id=batch_id, requested_candidates=selected_candidates)
         except Exception as exc:
             if self._status is not None:
                 self._status.state.last_error = str(exc)
@@ -172,30 +173,25 @@ class EvaluationBatchService:
     def _log_results(
         self,
         run_ctx: RunContext,
-        batch_result: EvaluationBatchResult,
+        batch_result: MinerTaskBatchResult,
         elapsed_seconds: float,
     ) -> None:
-        self._ensure_evaluations_present(batch_result)
         self._log_batch_summary(run_ctx, batch_result)
         self._log_each_evaluation(run_ctx, batch_result)
-        self._log_completion(run_ctx.run_id, elapsed_seconds)
+        self._log_completion(run_ctx.batch_id, elapsed_seconds)
 
-    def _ensure_evaluations_present(self, batch_result: EvaluationBatchResult) -> None:
-        if not batch_result.evaluations:
-            raise RuntimeError("evaluation cycle produced no miner evaluations")
-
-    def _log_batch_summary(self, run_ctx: RunContext, batch_result: EvaluationBatchResult) -> None:
+    def _log_batch_summary(self, run_ctx: RunContext, batch_result: MinerTaskBatchResult) -> None:
         logger.info(
-            "Scheduler returned evaluations",
+            "Scheduler returned criterion evaluations",
             extra={
-                "run_id": str(run_ctx.run_id),
+                "batch_id": str(run_ctx.batch_id),
                 "claims": len(batch_result.claims),
                 "evaluations": len(batch_result.evaluations),
-                "uids": len(batch_result.uids),
+                "candidates": len(batch_result.candidate_uids),
             },
         )
 
-    def _log_each_evaluation(self, run_ctx: RunContext, batch_result: EvaluationBatchResult) -> None:
+    def _log_each_evaluation(self, run_ctx: RunContext, batch_result: MinerTaskBatchResult) -> None:
         claims_by_id = {claim.claim_id: claim for claim in batch_result.claims}
         for scored in batch_result.evaluations:
             self._log_single_evaluation(run_ctx, scored, claims_by_id)
@@ -204,14 +200,14 @@ class EvaluationBatchService:
         self,
         run_ctx: RunContext,
         scored: ScoredEvaluation,
-        claims_by_id: dict[UUID, EvaluationClaim],
+        claims_by_id: dict[UUID, MinerTaskClaim],
     ) -> None:
-        evaluation = scored.evaluation
+        evaluation = scored.criterion_evaluation
         claim = claims_by_id.get(evaluation.claim_id)
         rubric = claim.rubric if claim is not None else evaluation.rubric
         logger.info(
             _format_evaluation_log(
-                run_id=run_ctx.run_id,
+                batch_id=run_ctx.batch_id,
                 evaluation=evaluation,
                 claim=claim,
                 rubric=rubric,
@@ -220,11 +216,11 @@ class EvaluationBatchService:
             ),
         )
 
-    def _log_completion(self, run_id: UUID, elapsed_seconds: float) -> None:
+    def _log_completion(self, batch_id: UUID, elapsed_seconds: float) -> None:
         logger.info(
-            "Evaluation cycle completed",
+            "Miner-task batch completed",
             extra={
-                "run_id": str(run_id),
+                "batch_id": str(batch_id),
                 "elapsed_seconds": round(elapsed_seconds, 2),
             },
         )
@@ -232,5 +228,5 @@ class EvaluationBatchService:
 
 __all__ = [
     "EvaluationBatchConfig",
-    "EvaluationBatchService",
+    "MinerTaskBatchService",
 ]

@@ -3,23 +3,23 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from caster_commons.domain.claim import EvaluationClaim, ReferenceAnswer, Rubric
+from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
 from caster_validator.application.dto.evaluation import (
-    EvaluationCloseout,
     EvaluationOutcome,
+    MinerTaskResult,
     TokenUsageSummary,
 )
 from caster_validator.application.services.evaluation_scoring import EvaluationScore
-from caster_validator.domain.evaluation import MinerAnswer, MinerEvaluation
+from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvaluation
 from caster_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
 
 
-def test_in_memory_store_records_closeouts() -> None:
+def test_in_memory_store_records_miner_task_results() -> None:
     store = InMemoryEvaluationRecordStore()
 
-    claim = EvaluationClaim(
+    claim = MinerTaskClaim(
         claim_id=uuid4(),
         text="Claim text",
         rubric=Rubric(
@@ -30,17 +30,18 @@ def test_in_memory_store_records_closeouts() -> None:
         reference_answer=ReferenceAnswer(verdict=1, justification="ref", citations=()),
     )
 
-    evaluation = MinerEvaluation(
-        evaluation_id=uuid4(),
+    evaluation = MinerCriterionEvaluation(
+        criterion_evaluation_id=uuid4(),
         session_id=uuid4(),
         uid=7,
+        artifact_id=uuid4(),
         claim_id=claim.claim_id,
         rubric=claim.rubric,
         miner_answer=MinerAnswer(verdict=1, justification="ok", citations=()),
         completed_at=datetime.now(UTC),
     )
     outcome = EvaluationOutcome(
-        evaluation=evaluation,
+        criterion_evaluation=evaluation,
         score=EvaluationScore(
             verdict_score=1.0,
             support_score=1.0,
@@ -85,14 +86,14 @@ def test_in_memory_store_records_closeouts() -> None:
         ),
     )
 
-    closeout = EvaluationCloseout(
-        run_id=uuid4(),
+    result = MinerTaskResult(
+        batch_id=uuid4(),
         validator_uid=4,
         outcome=outcome,
         session=session,
     )
 
-    store.record(closeout)
+    store.record(result)
 
     records = store.records()
-    assert records == (closeout,)
+    assert records == (result,)

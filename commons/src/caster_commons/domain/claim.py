@@ -69,8 +69,8 @@ class ReferenceAnswer:
 
 
 @dataclass(frozen=True, slots=True)
-class EvaluationClaim:
-    """Canonical claim evaluated by the subnet."""
+class MinerTaskClaim:
+    """Canonical miner-task claim evaluated by the subnet."""
 
     claim_id: UUID
     text: str
@@ -106,6 +106,6 @@ __all__ = [
     "Citation",
     "ReferenceAnswer",
     "Span",
-    "EvaluationClaim",
+    "MinerTaskClaim",
     "GeneratedClaim",
 ]

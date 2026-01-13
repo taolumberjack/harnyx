@@ -11,7 +11,7 @@ from caster_validator.application.dto.evaluation import ScoredEvaluation, TokenU
 
 @dataclass(frozen=True)
 class WeightUpdateRequest:
-    """Payload describing a batch of miner evaluations."""
+    """Payload describing a batch of scored miner criterion evaluations."""
 
     run_id: UUID
     evaluations: Sequence[ScoredEvaluation]
@@ -19,7 +19,7 @@ class WeightUpdateRequest:
 
 @dataclass(frozen=True)
 class WeightUpdateResult:
-    """Normalized weight vector derived from miner evaluations."""
+    """Normalized weight vector derived from scored miner criterion evaluations."""
 
     run_id: UUID
     weights: Mapping[int, float]

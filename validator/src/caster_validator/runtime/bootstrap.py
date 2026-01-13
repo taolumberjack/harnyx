@@ -35,7 +35,7 @@ from caster_validator.application.services.evaluation_scoring import EvaluationS
 from caster_validator.application.status import StatusProvider
 from caster_validator.application.submit_weights import WeightSubmissionService
 from caster_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
-from caster_validator.infrastructure.http.routes import RpcControlDeps, RpcDependencies
+from caster_validator.infrastructure.http.routes import ToolRouteDeps, ValidatorControlDeps
 from caster_validator.infrastructure.platform.registration_client import (
     PlatformRegistrationClient,
     register_with_retry,
@@ -80,8 +80,8 @@ class RuntimeContext:
     platform_client: PlatformPort | None
     batch_inbox: InMemoryBatchInbox
     status_provider: StatusProvider
-    rpc_dependency_provider: Callable[[], RpcDependencies]
-    rpc_control_provider: Callable[[], RpcControlDeps]
+    tool_route_deps_provider: Callable[[], ToolRouteDeps]
+    control_deps_provider: Callable[[], ValidatorControlDeps]
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +128,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         state=state,
         scoring_service=scoring_service,
     )
-    rpc_dep_provider, rpc_control_provider, status_provider = _build_rpc_dependencies(
+    tool_route_provider, control_provider, status_provider = _build_http_dependencies(
         resolved=resolved,
         state=state,
         tool_executor=tool_executor,
@@ -159,8 +159,8 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         platform_client=platform_client,
         batch_inbox=state.batch_inbox,
         status_provider=status_provider,
-        rpc_dependency_provider=rpc_dep_provider,
-        rpc_control_provider=rpc_control_provider,
+        tool_route_deps_provider=tool_route_provider,
+        control_deps_provider=control_provider,
     )
 
 
@@ -266,23 +266,23 @@ def _build_factories(
     return entrypoint_factory, orchestrator_factory, options_factory
 
 
-def _build_rpc_dependencies(
+def _build_http_dependencies(
     *,
     resolved: Settings,
     state: InMemoryState,
     tool_executor: ToolExecutor,
-) -> tuple[Callable[[], RpcDependencies], Callable[[], RpcControlDeps], StatusProvider]:
+) -> tuple[Callable[[], ToolRouteDeps], Callable[[], ValidatorControlDeps], StatusProvider]:
     status_provider = StatusProvider()
     inbound_auth = _build_inbound_auth(resolved)
-    rpc_dep_provider = _make_dependency_provider(tool_executor, state.token_semaphore)
+    tool_route_provider = _make_dependency_provider(tool_executor, state.token_semaphore)
     accept_batch = AcceptEvaluationBatch(state.batch_inbox, status_provider, state.progress_tracker)
-    rpc_control_provider = _make_control_provider(
+    control_provider = _make_control_provider(
         accept_batch,
         status_provider,
         inbound_auth,
         state.progress_tracker,
     )
-    return rpc_dep_provider, rpc_control_provider, status_provider
+    return tool_route_provider, control_provider, status_provider
 
 
 def _create_platform_client(settings: Settings) -> tuple[PlatformPort, bt.Keypair]:
@@ -341,9 +341,9 @@ def _build_subtensor_client(resolved: Settings) -> SubtensorClientPort:
 def _make_dependency_provider(
     tool_executor: ToolExecutor,
     token_semaphore: TokenSemaphore,
-) -> Callable[[], RpcDependencies]:
-    def provider() -> RpcDependencies:
-        return RpcDependencies(
+) -> Callable[[], ToolRouteDeps]:
+    def provider() -> ToolRouteDeps:
+        return ToolRouteDeps(
             tool_executor=tool_executor,
             token_semaphore=token_semaphore,
         )
@@ -356,9 +356,9 @@ def _make_control_provider(
     status_provider: StatusProvider,
     inbound_auth: BittensorSr25519InboundVerifier | None,
     progress_tracker: InMemoryRunProgress,
-) -> Callable[[], RpcControlDeps]:
-    def provider() -> RpcControlDeps:
-        return RpcControlDeps(
+) -> Callable[[], ValidatorControlDeps]:
+    def provider() -> ValidatorControlDeps:
+        return ValidatorControlDeps(
             accept_batch=accept_batch,
             status_provider=status_provider,
             auth=lambda request, body: _verify_request(inbound_auth, request, body),

@@ -7,7 +7,7 @@ import pytest
 
 from caster_commons.application.dto.session import SessionTokenRequest
 from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.claim import EvaluationClaim, ReferenceAnswer, Rubric
+from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.session import LlmUsageTotals
 from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
@@ -163,7 +163,7 @@ async def test_application_use_cases_cooperate_for_single_evaluation() -> None:
         clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
     )
 
-    claim = EvaluationClaim(
+    claim = MinerTaskClaim(
         claim_id=session_request.claim_id,
         text="Caster Subnet demo",
         rubric=Rubric(
@@ -179,11 +179,12 @@ async def test_application_use_cases_cooperate_for_single_evaluation() -> None:
             session_id=session_request.session_id,
             token=TEST_SESSION_TOKEN,
             uid=7,
+            artifact_id=uuid4(),
             entrypoint="evaluate_criterion",
             payload={"query": "caster subnet"},
             context={"claim": claim.text},
             claim=claim,
-            evaluation_id=uuid4(),
+            criterion_evaluation_id=uuid4(),
         ),
     )
 

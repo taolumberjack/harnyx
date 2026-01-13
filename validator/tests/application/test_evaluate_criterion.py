@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from caster_commons.domain.claim import EvaluationClaim, ReferenceAnswer, Rubric
+from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from caster_commons.domain.tool_call import (
     ReceiptMetadata,
@@ -170,7 +170,7 @@ async def test_evaluation_orchestrator_builds_miner_evaluation() -> None:
     )
     invoker = StubEntrypointInvoker(entrypoint_result)
 
-    claim = EvaluationClaim(
+    claim = MinerTaskClaim(
         claim_id=uuid4(),
         text="Example claim",
         rubric=Rubric(
@@ -200,17 +200,18 @@ async def test_evaluation_orchestrator_builds_miner_evaluation() -> None:
         session_id=session_id,
         token=uuid4().hex,
         uid=7,
+        artifact_id=uuid4(),
         entrypoint="evaluate_criterion",
         payload={"query": "demo"},
         context={"claim": claim.text},
         claim=claim,
-        evaluation_id=uuid4(),
+        criterion_evaluation_id=uuid4(),
     )
 
     outcome = await orchestrator.evaluate(request)
 
-    assert outcome.evaluation.miner_answer.verdict == 1
-    citation = outcome.evaluation.miner_answer.citations[0]
+    assert outcome.criterion_evaluation.miner_answer.verdict == 1
+    citation = outcome.criterion_evaluation.miner_answer.citations[0]
     assert citation.receipt_id == "receipt-1"
     assert citation.result_id == receipt.metadata.results[0].result_id
     assert citation.url == "https://example.com"
@@ -254,7 +255,7 @@ async def test_evaluation_orchestrator_overwrites_with_canonical_null_fields() -
     )
     invoker = StubEntrypointInvoker(entrypoint_result)
 
-    claim = EvaluationClaim(
+    claim = MinerTaskClaim(
         claim_id=uuid4(),
         text="Example claim",
         rubric=Rubric(
@@ -284,15 +285,16 @@ async def test_evaluation_orchestrator_overwrites_with_canonical_null_fields() -
         session_id=session_id,
         token=uuid4().hex,
         uid=7,
+        artifact_id=uuid4(),
         entrypoint="evaluate_criterion",
         payload={"query": "demo"},
         context={"claim": claim.text},
         claim=claim,
-        evaluation_id=uuid4(),
+        criterion_evaluation_id=uuid4(),
     )
 
     outcome = await orchestrator.evaluate(request)
-    citation = outcome.evaluation.miner_answer.citations[0]
+    citation = outcome.criterion_evaluation.miner_answer.citations[0]
 
     assert citation.url == "https://example.com"
     assert citation.note is None
@@ -330,7 +332,7 @@ async def test_evaluation_orchestrator_drops_invalid_citations_and_fails_support
         session_registry=session_registry,
         clock=lambda: datetime(2025, 10, 17, 12, tzinfo=UTC),
     )
-    claim = EvaluationClaim(
+    claim = MinerTaskClaim(
         claim_id=uuid4(),
         text="Example claim",
         rubric=Rubric(
@@ -351,11 +353,12 @@ async def test_evaluation_orchestrator_drops_invalid_citations_and_fails_support
         session_id=session_id,
         token=uuid4().hex,
         uid=7,
+        artifact_id=uuid4(),
         entrypoint="evaluate_criterion",
         payload={},
         context={},
         claim=claim,
-        evaluation_id=uuid4(),
+        criterion_evaluation_id=uuid4(),
     )
 
     outcome = await orchestrator.evaluate(request)
@@ -364,7 +367,7 @@ async def test_evaluation_orchestrator_drops_invalid_citations_and_fails_support
     assert outcome.score.justification_pass is False
     assert outcome.score.failed_citation_ids == ()
     # citation was dropped because it could not be resolved
-    assert outcome.evaluation.miner_answer.citations == ()
+    assert outcome.criterion_evaluation.miner_answer.citations == ()
 
 
 async def test_evaluation_orchestrator_drops_other_session_citations_and_fails_support() -> None:
@@ -404,7 +407,7 @@ async def test_evaluation_orchestrator_drops_other_session_citations_and_fails_s
         clock=lambda: datetime(2025, 10, 17, 12, tzinfo=UTC),
     )
 
-    claim = EvaluationClaim(
+    claim = MinerTaskClaim(
         claim_id=uuid4(),
         text="Example claim",
         rubric=Rubric(
@@ -426,11 +429,12 @@ async def test_evaluation_orchestrator_drops_other_session_citations_and_fails_s
         session_id=session_id,
         token=uuid4().hex,
         uid=7,
+        artifact_id=uuid4(),
         entrypoint="evaluate_criterion",
         payload={},
         context={},
         claim=claim,
-        evaluation_id=uuid4(),
+        criterion_evaluation_id=uuid4(),
     )
 
     outcome = await orchestrator.evaluate(request)
@@ -438,7 +442,7 @@ async def test_evaluation_orchestrator_drops_other_session_citations_and_fails_s
     assert outcome.score.support_score == 0.0
     assert outcome.score.justification_pass is False
     assert outcome.score.failed_citation_ids == ()
-    assert outcome.evaluation.miner_answer.citations == ()
+    assert outcome.criterion_evaluation.miner_answer.citations == ()
 
 
 async def test_evaluation_orchestrator_drops_unknown_result_id_and_fails_support() -> None:
@@ -478,7 +482,7 @@ async def test_evaluation_orchestrator_drops_unknown_result_id_and_fails_support
         clock=lambda: datetime(2025, 10, 17, 12, tzinfo=UTC),
     )
 
-    claim = EvaluationClaim(
+    claim = MinerTaskClaim(
         claim_id=uuid4(),
         text="Example claim",
         rubric=Rubric(
@@ -500,11 +504,12 @@ async def test_evaluation_orchestrator_drops_unknown_result_id_and_fails_support
         session_id=session_id,
         token=uuid4().hex,
         uid=7,
+        artifact_id=uuid4(),
         entrypoint="evaluate_criterion",
         payload={},
         context={},
         claim=claim,
-        evaluation_id=uuid4(),
+        criterion_evaluation_id=uuid4(),
     )
 
     outcome = await orchestrator.evaluate(request)
@@ -513,7 +518,9 @@ async def test_evaluation_orchestrator_drops_unknown_result_id_and_fails_support
     assert outcome.score.support_score == 0.0
     assert outcome.score.justification_pass is False
     assert outcome.score.failed_citation_ids == ()
-    assert outcome.evaluation.miner_answer.citations == ()
+    assert outcome.criterion_evaluation.miner_answer.citations == ()
+
+
 def register_session(
     registry: FakeSessionRegistry,
     *,

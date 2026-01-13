@@ -1,4 +1,4 @@
-"""Background worker for processing evaluation batches."""
+"""Background worker for processing miner-task batches."""
 
 from __future__ import annotations
 
@@ -7,10 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from caster_commons.runtime.base_worker import BaseWorker
-from caster_validator.application.services.evaluation_batch import (
-    EvaluationBatchConfig,
-    EvaluationBatchService,
-)
+from caster_validator.application.services.evaluation_batch import EvaluationBatchConfig, MinerTaskBatchService
 from caster_validator.application.status import StatusProvider
 from caster_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from caster_validator.runtime.agent_artifact import create_platform_agent_resolver
@@ -58,7 +55,7 @@ class EvaluationWorker(BaseWorker):
     def __init__(
         self,
         *,
-        batch_service: EvaluationBatchService,
+        batch_service: MinerTaskBatchService,
         batch_inbox: InMemoryBatchInbox,
         status_provider: StatusProvider | None = None,
     ) -> None:
@@ -81,7 +78,7 @@ class EvaluationWorker(BaseWorker):
         except Exception as exc:
             self._logger.exception(
                 "batch processing failed",
-                extra={"run_id": str(batch.run_id)},
+                extra={"batch_id": str(batch.batch_id)},
             )
             if self._status is not None:
                 self._status.state.last_error = str(exc)
@@ -94,7 +91,7 @@ class EvaluationWorker(BaseWorker):
 
 def create_evaluation_worker(
     *,
-    batch_service: EvaluationBatchService,
+    batch_service: MinerTaskBatchService,
     batch_inbox: InMemoryBatchInbox,
     status_provider: StatusProvider | None = None,
 ) -> EvaluationWorker:
@@ -116,7 +113,7 @@ def create_evaluation_worker_from_context(context: RuntimeContext) -> Evaluation
         raise RuntimeError("platform client is not configured")
 
     agent_resolver = create_platform_agent_resolver(context.platform_client)
-    batch_service = EvaluationBatchService(
+    batch_service = MinerTaskBatchService(
         platform_client=context.platform_client,
         subtensor_client=context.subtensor_client,
         sandbox_manager=context.sandbox_manager,

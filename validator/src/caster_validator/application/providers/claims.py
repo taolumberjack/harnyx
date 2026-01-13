@@ -9,21 +9,21 @@ from uuid import UUID
 
 from pydantic import TypeAdapter, ValidationError
 
-from caster_commons.domain.claim import EvaluationClaim
+from caster_commons.domain.claim import MinerTaskClaim
 from caster_validator.application.ports.claims import ClaimsProviderPort
 
-_EVALUATION_CLAIM_ADAPTER = TypeAdapter(EvaluationClaim)
+_MINER_TASK_CLAIM_ADAPTER = TypeAdapter(MinerTaskClaim)
 
 
 class StaticClaimsProvider(ClaimsProviderPort):
     """Returns a pre-supplied sequence of claims."""
 
-    def __init__(self, claims: Sequence[EvaluationClaim]) -> None:
+    def __init__(self, claims: Sequence[MinerTaskClaim]) -> None:
         if not claims:
             raise ValueError("claims sequence must not be empty")
         self._claims = tuple(claims)
 
-    def fetch(self, *, run_id: UUID | None = None) -> tuple[EvaluationClaim, ...]:
+    def fetch(self, *, batch_id: UUID | None = None) -> tuple[MinerTaskClaim, ...]:
         return self._claims
 
 
@@ -33,13 +33,13 @@ class FileClaimsProvider(ClaimsProviderPort):
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path)
 
-    def fetch(self, *, run_id: UUID | None = None) -> tuple[EvaluationClaim, ...]:
+    def fetch(self, *, batch_id: UUID | None = None) -> tuple[MinerTaskClaim, ...]:
         if not self._path.exists():
             raise FileNotFoundError(f"claims file {self._path} does not exist")
         if self._path.suffix.lower() not in (".jsonl", ""):
             raise ValueError("claims file must be a .jsonl document")
 
-        claims: list[EvaluationClaim] = []
+        claims: list[MinerTaskClaim] = []
         with self._path.open("r", encoding="utf-8") as handle:
             for idx, line in enumerate(handle, start=1):
                 data = line.strip()
@@ -47,7 +47,7 @@ class FileClaimsProvider(ClaimsProviderPort):
                     continue
                 payload: object = json.loads(data)
                 try:
-                    claims.append(_EVALUATION_CLAIM_ADAPTER.validate_python(payload))
+                    claims.append(_MINER_TASK_CLAIM_ADAPTER.validate_python(payload))
                 except ValidationError as exc:
                     raise ValueError(f"invalid claim at line {idx}") from exc
 

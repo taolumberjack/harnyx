@@ -1,4 +1,4 @@
-"""Port definitions for interacting with the external evaluation platform."""
+"""Port definitions for interacting with the platform."""
 
 from __future__ import annotations
 
@@ -6,17 +6,17 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from caster_validator.application.dto.evaluation import EvaluationBatchSpec
+from caster_validator.application.dto.evaluation import MinerTaskBatchSpec
 
 
 class PlatformPort(Protocol):
     """Abstract platform client capable of champion lookup and logging."""
 
-    def get_evaluation_batch(self, run_id: UUID) -> EvaluationBatchSpec:
-        """Retrieve a platform-composed evaluation batch."""
+    def get_miner_task_batch(self, batch_id: UUID) -> MinerTaskBatchSpec:
+        """Retrieve a platform-composed miner-task batch."""
 
-    def fetch_artifact(self, run_id: UUID, uid: int) -> bytes:
-        """Download the python agent artifact for a given uid in the batch."""
+    def fetch_artifact(self, batch_id: UUID, artifact_id: UUID) -> bytes:
+        """Download the python agent artifact for a given candidate in the batch."""
 
     def get_champion_weights(self) -> ChampionWeights:
         """Return platform-computed champion weights and top3."""

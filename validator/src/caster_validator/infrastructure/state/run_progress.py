@@ -1,38 +1,47 @@
-"""In-memory tracker for per-run evaluation progress."""
+"""In-memory tracker for per-batch evaluation progress."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TypedDict
 from uuid import UUID
 
-from caster_validator.application.dto.evaluation import EvaluationCloseout
+from caster_validator.application.dto.evaluation import MinerTaskResult
+
+
+class RunProgressSnapshot(TypedDict):
+    batch_id: UUID
+    total: int
+    completed: int
+    remaining: int
+    miner_task_results: tuple[MinerTaskResult, ...]
 
 
 @dataclass(slots=True)
 class InMemoryRunProgress:
-    expected: dict[UUID, int] = field(default_factory=dict)
-    closeouts_by_run: dict[UUID, list[EvaluationCloseout]] = field(default_factory=dict)
+    expected_by_batch: dict[UUID, int] = field(default_factory=dict)
+    results_by_batch: dict[UUID, list[MinerTaskResult]] = field(default_factory=dict)
 
-    def register(self, run_id: UUID, *, uids: tuple[int, ...], claims_count: int) -> None:
-        total = len(uids) * claims_count
-        self.expected[run_id] = total
+    def register(self, batch_id: UUID, *, candidate_count: int, claims_count: int) -> None:
+        total = candidate_count * claims_count
+        self.expected_by_batch[batch_id] = total
 
-    def record(self, closeout: EvaluationCloseout) -> None:
-        bucket = self.closeouts_by_run.setdefault(closeout.run_id, [])
-        bucket.append(closeout)
+    def record(self, result: MinerTaskResult) -> None:
+        bucket = self.results_by_batch.setdefault(result.batch_id, [])
+        bucket.append(result)
 
-    def snapshot(self, run_id: UUID) -> dict[str, object]:
-        closeouts = tuple(self.closeouts_by_run.get(run_id, ()))
-        total = int(self.expected.get(run_id, 0))
-        completed = len(closeouts)
+    def snapshot(self, batch_id: UUID) -> RunProgressSnapshot:
+        results = tuple(self.results_by_batch.get(batch_id, ()))
+        total = int(self.expected_by_batch.get(batch_id, 0))
+        completed = len(results)
         remaining = max(0, total - completed)
         return {
-            "run_id": run_id,
+            "batch_id": batch_id,
             "total": total,
             "completed": completed,
             "remaining": remaining,
-            "closeouts": closeouts,
+            "miner_task_results": results if total > 0 and completed >= total else (),
         }
 
 
-__all__ = ["InMemoryRunProgress"]
+__all__ = ["InMemoryRunProgress", "RunProgressSnapshot"]

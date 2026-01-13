@@ -1,4 +1,4 @@
-"""Helpers for preparing evaluation batch execution."""
+"""Helpers for preparing miner-task batch execution."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from caster_commons.application.session_manager import SessionManager
 from caster_commons.sandbox.client import SandboxClient
 from caster_commons.sandbox.docker import DockerSandboxManager
 from caster_commons.sandbox.options import SandboxOptions
-from caster_validator.application.dto.evaluation import EvaluationBatchSpec
+from caster_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
 from caster_validator.application.evaluate_criterion import EvaluationOrchestrator
 from caster_validator.application.ports.evaluation_record import EvaluationRecordPort
 from caster_validator.application.ports.progress import ProgressRecorder
@@ -39,13 +39,13 @@ class AgentArtifact(Protocol):
     def container_path(self) -> str: ...
 
 
-AgentResolver = Callable[[UUID, EvaluationBatchSpec, Path, str], Mapping[int, AgentArtifact]]
+AgentResolver = Callable[[UUID, MinerTaskBatchSpec, Path, str], Mapping[UUID, AgentArtifact]]
 BudgetFactory = Callable[[], float]
 
 
 @dataclass(frozen=True, slots=True)
 class RunContext:
-    run_id: UUID
+    batch_id: UUID
     entrypoint: str
     config: EvaluationBatchConfig
     claims_provider: StaticClaimsProvider
@@ -83,12 +83,12 @@ class BatchExecutionPlanner:
         self._progress = progress
         self._config = config
 
-    def build_run_context(self, batch: EvaluationBatchSpec) -> RunContext:
+    def build_run_context(self, batch: MinerTaskBatchSpec) -> RunContext:
         base_options = self._sandbox_options_factory()
         state_dir = Path(self._config.state_dir)
         state_dir.mkdir(parents=True, exist_ok=True)
         return RunContext(
-            run_id=batch.run_id,
+            batch_id=batch.batch_id,
             entrypoint=batch.entrypoint,
             config=self._config,
             claims_provider=StaticClaimsProvider(batch.claims),
@@ -101,34 +101,36 @@ class BatchExecutionPlanner:
     def prepare_execution(
         self,
         run_ctx: RunContext,
-        batch: EvaluationBatchSpec,
-    ) -> tuple[tuple[int, ...], EvaluationScheduler]:
-        agent_artifacts, volumes, selected_uids = self._resolve_agents(run_ctx, batch)
+        batch: MinerTaskBatchSpec,
+    ) -> tuple[tuple[ScriptArtifactSpec, ...], EvaluationScheduler]:
+        agent_artifacts, volumes, selected_candidates = self._resolve_agents(run_ctx, batch)
         scheduler = self._build_scheduler(run_ctx, agent_artifacts, volumes)
-        return selected_uids, scheduler
+        return selected_candidates, scheduler
 
     def _resolve_agents(
         self,
         run_ctx: RunContext,
-        batch: EvaluationBatchSpec,
-    ) -> tuple[Mapping[int, AgentArtifact], tuple[tuple[str, str, str | None], ...], tuple[int, ...]]:
+        batch: MinerTaskBatchSpec,
+    ) -> tuple[
+        Mapping[UUID, AgentArtifact],
+        tuple[tuple[str, str, str | None], ...],
+        tuple[ScriptArtifactSpec, ...],
+    ]:
         agent_artifacts = self._agent_resolver(
-            run_ctx.run_id,
+            run_ctx.batch_id,
             batch,
             run_ctx.state_dir,
             run_ctx.config.state_dir,
         )
-        if not agent_artifacts:
-            raise RuntimeError("no miners had downloadable platform agents")
         state_volume_name = os.getenv("CASTER_STATE_VOLUME_NAME", "caster-validator-state")
         volumes = run_ctx.base_volumes + ((state_volume_name, run_ctx.config.state_dir, "ro"),)
-        selected_uids = tuple(agent_artifacts)
-        return agent_artifacts, volumes, selected_uids
+        selected_candidates = batch.candidates
+        return agent_artifacts, volumes, selected_candidates
 
     def _build_scheduler(
         self,
         run_ctx: RunContext,
-        agent_artifacts: Mapping[int, AgentArtifact],
+        agent_artifacts: Mapping[UUID, AgentArtifact],
         volumes: tuple[tuple[str, str, str | None], ...],
     ) -> EvaluationScheduler:
         options_factory = self._build_sandbox_options_factory(run_ctx, agent_artifacts, volumes)
@@ -153,19 +155,21 @@ class BatchExecutionPlanner:
     def _build_sandbox_options_factory(
         self,
         run_ctx: RunContext,
-        agent_artifacts: Mapping[int, AgentArtifact],
+        agent_artifacts: Mapping[UUID, AgentArtifact],
         volumes: tuple[tuple[str, str, str | None], ...],
-    ) -> Callable[[int], SandboxOptions]:
-        def sandbox_options_factory(uid: int) -> SandboxOptions:
-            container_name = f"caster-sandbox-{uid}-{run_ctx.run_id.hex[:8]}"
+    ) -> Callable[[ScriptArtifactSpec], SandboxOptions]:
+        def sandbox_options_factory(candidate: ScriptArtifactSpec) -> SandboxOptions:
+            container_name = (
+                f"caster-sandbox-{candidate.uid}-{candidate.artifact_id.hex[:8]}-{run_ctx.batch_id.hex[:8]}"
+            )
             env = dict(run_ctx.base_env)
-            env["CASTER_MINER_UID"] = str(uid)
-            env["CASTER_EVALUATION_RUN_ID"] = str(run_ctx.run_id)
-            artifact = agent_artifacts.get(uid)
+            env["CASTER_MINER_UID"] = str(candidate.uid)
+            env["CASTER_EVALUATION_RUN_ID"] = str(run_ctx.batch_id)
+            artifact = agent_artifacts.get(candidate.artifact_id)
             if artifact is not None:
                 env["CASTER_AGENT_PATH"] = artifact.container_path
             elif "CASTER_AGENT_PATH" not in env:
-                raise RuntimeError(f"agent path missing for uid {uid}")
+                raise RuntimeError(f"agent path missing for candidate {candidate.uid}/{candidate.artifact_id}")
             return replace(
                 run_ctx.base_options,
                 container_name=container_name,

@@ -1,4 +1,4 @@
-"""Miner evaluation payloads."""
+"""Miner criterion evaluation payloads."""
 
 from __future__ import annotations
 
@@ -43,20 +43,21 @@ class MinerAnswer:
 
 
 @dataclass(frozen=True, slots=True)
-class MinerEvaluation:
-    """Recorded miner evaluation for a single claim run."""
+class MinerCriterionEvaluation:
+    """Recorded miner criterion evaluation for a single claim run."""
 
-    evaluation_id: UUID
+    criterion_evaluation_id: UUID
     session_id: UUID
     uid: int
+    artifact_id: UUID
     claim_id: UUID
     rubric: Rubric
     miner_answer: MinerAnswer
     completed_at: datetime
 
     def __post_init__(self) -> None:
-        if self.uid <= 0:
-            raise ValueError("uid must be positive")
+        if self.uid < 0:
+            raise ValueError("uid must be non-negative")
 
 
-__all__ = ["MinerAnswer", "MinerCitation", "MinerEvaluation"]
+__all__ = ["MinerAnswer", "MinerCitation", "MinerCriterionEvaluation"]

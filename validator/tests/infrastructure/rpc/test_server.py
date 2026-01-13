@@ -11,7 +11,7 @@ from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegi
 from caster_commons.tools.executor import ToolExecutor
 from caster_commons.tools.token_semaphore import TokenSemaphore
 from caster_commons.tools.usage_tracker import UsageTracker
-from caster_validator.infrastructure.http.routes import RpcDependencies, add_tool_routes
+from caster_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_routes
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 DEMO_SESSION_TOKEN = uuid4().hex
@@ -95,12 +95,12 @@ class DemoDependencyProvider:
         self.invoker = tool_invoker
         self.token_semaphore = RecordingTokenSemaphore(max_parallel_calls=1)
 
-        self.dependencies = RpcDependencies(
+        self.dependencies = ToolRouteDeps(
             tool_executor=self.tool_executor,
             token_semaphore=self.token_semaphore,
         )
 
-    def __call__(self) -> RpcDependencies:
+    def __call__(self) -> ToolRouteDeps:
         return self.dependencies
 
 
@@ -138,7 +138,7 @@ def test_execute_tool_endpoint_records_receipt() -> None:
 
 def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     provider = DemoDependencyProvider()
-    provider.dependencies = RpcDependencies(
+    provider.dependencies = ToolRouteDeps(
         tool_executor=_FailingToolExecutor(),
         token_semaphore=provider.token_semaphore,
     )

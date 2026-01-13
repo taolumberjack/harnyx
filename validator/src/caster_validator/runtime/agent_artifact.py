@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import UUID
 
-from caster_validator.application.dto.evaluation import EvaluationBatchSpec, ScriptArtifactSpec
+from caster_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
 from caster_validator.application.ports.platform import PlatformPort
 
 logger = logging.getLogger("caster_validator.agent_artifact")
@@ -23,50 +23,76 @@ _LOG_SNIPPET_LIMIT = 512
 class AgentArtifact:
     """Represents a resolved agent script artifact."""
 
-    digest: str
+    content_hash: str
     host_path: Path
     container_path: str
 
 
 def resolve_platform_agent_specs(
     *,
-    run_id: UUID,
-    uids: tuple[int, ...],
-    artifacts: tuple[ScriptArtifactSpec, ...],
+    batch_id: UUID,
+    candidates: tuple[ScriptArtifactSpec, ...],
     platform_client: PlatformPort,
     state_dir: Path,
     container_root: str,
-) -> dict[int, AgentArtifact]:
+) -> dict[UUID, AgentArtifact]:
     """Resolve agent artifacts from platform-provided specs."""
 
     cache_root = state_dir / "platform_agents"
     cache_root.mkdir(parents=True, exist_ok=True)
-    artifacts_by_uid = {artifact.uid: artifact for artifact in artifacts}
-    specs: dict[int, AgentArtifact] = {}
+    specs: dict[UUID, AgentArtifact] = {}
+    artifact_ids = [candidate.artifact_id for candidate in candidates]
+    if len(set(artifact_ids)) != len(artifact_ids):
+        raise ValueError("batch candidates must be unique by artifact_id")
 
-    for uid in uids:
-        spec = artifacts_by_uid.get(uid)
-        if spec is None:
+    for spec in candidates:
+        try:
+            data = platform_client.fetch_artifact(batch_id, spec.artifact_id)
+        except Exception as exc:
+            logger.error(
+                "Failed to fetch platform agent",
+                extra={"batch_id": str(batch_id), "uid": spec.uid, "artifact_id": str(spec.artifact_id)},
+                exc_info=exc,
+            )
             continue
-        data = platform_client.fetch_artifact(run_id, uid)
         if len(data) > MAX_AGENT_BYTES:
-            raise ValueError("platform agent exceeds size limit")
-        digest = hashlib.sha256(data).hexdigest()
-        if digest != spec.digest:
-            raise ValueError("platform agent sha256 mismatch")
+            logger.error(
+                "Platform agent exceeds size limit",
+                extra={
+                    "batch_id": str(batch_id),
+                    "uid": spec.uid,
+                    "artifact_id": str(spec.artifact_id),
+                    "size_bytes": len(data),
+                },
+            )
+            continue
+        content_hash = hashlib.sha256(data).hexdigest()
+        if content_hash != spec.content_hash:
+            logger.error(
+                "Platform agent sha256 mismatch",
+                extra={
+                    "batch_id": str(batch_id),
+                    "uid": spec.uid,
+                    "artifact_id": str(spec.artifact_id),
+                    "expected_sha256": spec.content_hash,
+                    "actual_sha256": content_hash,
+                },
+            )
+            continue
         artifact = _stage_platform_agent(
             cache_root=cache_root,
-            digest=digest,
+            content_hash=content_hash,
             data=data,
             state_dir=state_dir,
             container_root=container_root,
         )
-        specs[uid] = artifact
+        specs[spec.artifact_id] = artifact
         logger.info(
             "Staged platform agent",
             extra={
-                "uid": uid,
-                "digest": digest,
+                "uid": spec.uid,
+                "artifact_id": str(spec.artifact_id),
+                "content_hash": content_hash,
                 "host_path": str(artifact.host_path),
                 "container_path": artifact.container_path,
             },
@@ -77,12 +103,12 @@ def resolve_platform_agent_specs(
 def _stage_platform_agent(
     *,
     cache_root: Path,
-    digest: str,
+    content_hash: str,
     data: bytes,
     state_dir: Path,
     container_root: str,
 ) -> AgentArtifact:
-    agent_dir = cache_root / digest
+    agent_dir = cache_root / content_hash
     agent_path = agent_dir / "agent.py"
     if agent_path.exists():
         container_path = _container_path_for(
@@ -90,7 +116,7 @@ def _stage_platform_agent(
             state_dir=state_dir,
             container_root=container_root,
         )
-        return AgentArtifact(digest=digest, host_path=agent_path, container_path=container_path)
+        return AgentArtifact(content_hash=content_hash, host_path=agent_path, container_path=container_path)
 
     agent_dir.mkdir(parents=True, exist_ok=True)
     temp_path = agent_dir / "agent.py.tmp"
@@ -102,13 +128,13 @@ def _stage_platform_agent(
         with suppress(FileNotFoundError):
             temp_path.unlink()
         raise
-    (agent_dir / "agent.sha256").write_text(digest, encoding="utf-8")
+    (agent_dir / "agent.sha256").write_text(content_hash, encoding="utf-8")
     container_path = _container_path_for(
         staged_path=agent_path,
         state_dir=state_dir,
         container_root=container_root,
     )
-    return AgentArtifact(digest=digest, host_path=agent_path, container_path=container_path)
+    return AgentArtifact(content_hash=content_hash, host_path=agent_path, container_path=container_path)
 
 
 def _container_path_for(*, staged_path: Path, state_dir: Path, container_root: str) -> str:
@@ -132,19 +158,18 @@ def _validate_agent_source(path: Path) -> None:
 
 def create_platform_agent_resolver(
     platform_client: PlatformPort,
-) -> Callable[[UUID, EvaluationBatchSpec, Path, str], dict[int, AgentArtifact]]:
+) -> Callable[[UUID, MinerTaskBatchSpec, Path, str], dict[UUID, AgentArtifact]]:
     """Create a resolver function for platform agent artifacts."""
 
     def resolver(
-        run_id: UUID,
-        batch: EvaluationBatchSpec,
+        batch_id: UUID,
+        batch: MinerTaskBatchSpec,
         state_dir: Path,
         container_root: str,
-    ) -> dict[int, AgentArtifact]:
+    ) -> dict[UUID, AgentArtifact]:
         return resolve_platform_agent_specs(
-            run_id=run_id,
-            uids=batch.uids,
-            artifacts=batch.artifacts,
+            batch_id=batch_id,
+            candidates=batch.candidates,
             platform_client=platform_client,
             state_dir=state_dir,
             container_root=container_root,

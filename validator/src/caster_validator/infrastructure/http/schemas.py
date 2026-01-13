@@ -10,12 +10,12 @@ from caster_commons.tools.http_models import ToolExecuteResponseDTO, ToolResultD
 @dataclass(frozen=True, slots=True)
 class BatchAcceptResponse:
     status: str
-    run_id: str
+    batch_id: str
     caller: str
 
 
 @dataclass(frozen=True, slots=True)
-class CloseoutCitationModel:
+class MinerTaskResultCitationModel:
     url: str | None = None
     note: str | None = None
     receipt_id: str | None = None
@@ -23,22 +23,25 @@ class CloseoutCitationModel:
 
 
 @dataclass(frozen=True, slots=True)
-class CloseoutEvaluationModel:
-    evaluation_id: str
+class MinerTaskResultCriterionEvaluationModel:
+    criterion_evaluation_id: str
     uid: int
+    artifact_id: str
     claim_id: str
     verdict: int
     justification: str
-    citations: list[CloseoutCitationModel]
+    citations: list[MinerTaskResultCitationModel]
 
 
 @dataclass(frozen=True, slots=True)
-class CloseoutScoreModel:
+class MinerTaskResultScoreModel:
     verdict_score: float
     support_score: float
     justification_pass: bool
     failed_citation_ids: list[str]
     grader_rationale: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,33 +71,33 @@ class SessionModel:
 
 
 @dataclass(frozen=True, slots=True)
-class CloseoutValidatorModel:
+class ValidatorModel:
     uid: int
 
 
 @dataclass(frozen=True, slots=True)
-class CloseoutModel:
-    run_id: str
-    validator: CloseoutValidatorModel
-    evaluation: CloseoutEvaluationModel
-    score: CloseoutScoreModel
+class MinerTaskResultModel:
+    batch_id: str
+    validator: ValidatorModel
+    criterion_evaluation: MinerTaskResultCriterionEvaluationModel
+    score: MinerTaskResultScoreModel
     usage: UsageModel
     session: SessionModel
 
 
 @dataclass(frozen=True, slots=True)
 class ProgressResponse:
-    run_id: str
+    batch_id: str
     total: int
     completed: int
     remaining: int
-    closeouts: list[CloseoutModel]
+    miner_task_results: list[MinerTaskResultModel]
 
 
 @dataclass(frozen=True, slots=True)
 class ValidatorStatusResponse:
     status: str
-    last_run_id: str | None = None
+    last_batch_id: str | None = None
     last_started_at: str | None = None
     last_completed_at: str | None = None
     running: bool = False
@@ -108,14 +111,14 @@ __all__ = [
     "ToolResultDTO",
     "ToolExecuteResponseDTO",
     "BatchAcceptResponse",
-    "CloseoutCitationModel",
-    "CloseoutEvaluationModel",
-    "CloseoutScoreModel",
+    "MinerTaskResultCitationModel",
+    "MinerTaskResultCriterionEvaluationModel",
+    "MinerTaskResultScoreModel",
     "UsageModelEntry",
     "UsageModel",
     "SessionModel",
-    "CloseoutValidatorModel",
-    "CloseoutModel",
+    "ValidatorModel",
+    "MinerTaskResultModel",
     "ProgressResponse",
     "ValidatorStatusResponse",
 ]

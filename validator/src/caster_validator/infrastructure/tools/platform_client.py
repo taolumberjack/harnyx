@@ -9,7 +9,7 @@ import bittensor as bt
 import httpx
 
 from caster_commons.bittensor import build_canonical_request
-from caster_validator.application.dto.evaluation import EvaluationBatchSpec
+from caster_validator.application.dto.evaluation import MinerTaskBatchSpec
 from caster_validator.application.ports.platform import ChampionWeights, PlatformPort
 from caster_validator.infrastructure.parsers import parse_batch
 
@@ -54,8 +54,8 @@ class HttpPlatformClient(PlatformPort):
             headers["Content-Type"] = "application/json"
         return headers
 
-    def get_evaluation_batch(self, run_id: UUID) -> EvaluationBatchSpec:
-        path = f"/v1/evaluations/batch/{run_id}"
+    def get_miner_task_batch(self, batch_id: UUID) -> MinerTaskBatchSpec:
+        path = f"/v1/miner-task-batches/batch/{batch_id}"
         with self._client() as client:
             response = client.get(
                 path,
@@ -67,8 +67,8 @@ class HttpPlatformClient(PlatformPort):
             )
         return parse_batch(response.json())
 
-    def fetch_artifact(self, run_id: UUID, uid: int) -> bytes:
-        path = f"/v1/evaluations/{run_id}/miners/{uid}/artifact"
+    def fetch_artifact(self, batch_id: UUID, artifact_id: UUID) -> bytes:
+        path = f"/v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}"
         with self._client() as client:
             response = client.get(
                 path,

@@ -6,12 +6,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
-from caster_commons.domain.claim import EvaluationClaim
+from caster_commons.domain.claim import MinerTaskClaim
 from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from caster_commons.domain.tool_call import ToolCall
 from caster_commons.json_types import JsonObject, JsonValue
 from caster_validator.application.services.evaluation_scoring import EvaluationScore
-from caster_validator.domain.evaluation import MinerEvaluation
+from caster_validator.domain.evaluation import MinerCriterionEvaluation
 
 
 @dataclass(frozen=True)
@@ -116,22 +116,21 @@ class ScriptArtifactSpec:
     """Script artifact metadata supplied by the platform."""
 
     uid: int
-    digest: str
+    artifact_id: UUID
+    content_hash: str
     size_bytes: int
-    artifact_id: str | None = None
 
 
 @dataclass(frozen=True)
-class EvaluationBatchSpec:
-    """Evaluation batch supplied by the platform."""
+class MinerTaskBatchSpec:
+    """Miner-task batch supplied by the platform."""
 
-    run_id: UUID
+    batch_id: UUID
     entrypoint: str
     cutoff_at_iso: str
     created_at_iso: str
-    uids: tuple[int, ...]
-    claims: tuple[EvaluationClaim, ...]
-    artifacts: tuple[ScriptArtifactSpec, ...]
+    claims: tuple[MinerTaskClaim, ...]
+    candidates: tuple[ScriptArtifactSpec, ...]
 
 
 @dataclass(frozen=True)
@@ -156,9 +155,9 @@ class EntrypointInvocationResult:
 
 @dataclass(frozen=True)
 class EvaluationOutcome:
-    """Aggregate outcome of running a claim evaluation."""
+    """Aggregate outcome of running a miner criterion evaluation."""
 
-    evaluation: MinerEvaluation
+    criterion_evaluation: MinerCriterionEvaluation
     score: EvaluationScore
     tool_receipts: Sequence[ToolCall]
     usage: TokenUsageSummary
@@ -167,9 +166,9 @@ class EvaluationOutcome:
 
 @dataclass(frozen=True)
 class ScoredEvaluation:
-    """Miner evaluation paired with its computed score."""
+    """Miner criterion evaluation paired with its computed score."""
 
-    evaluation: MinerEvaluation
+    criterion_evaluation: MinerCriterionEvaluation
     score: EvaluationScore
     usage: TokenUsageSummary
     total_tool_usage: JsonObject | None = None
@@ -177,36 +176,39 @@ class ScoredEvaluation:
 
 @dataclass(frozen=True)
 class EvaluationRequest:
-    """Input payload for orchestrating a full claim evaluation."""
+    """Input payload for orchestrating a full miner criterion evaluation."""
 
     session_id: UUID
     token: str
     uid: int
+    artifact_id: UUID
     entrypoint: str
     payload: Mapping[str, JsonValue]
     context: Mapping[str, JsonValue]
-    claim: EvaluationClaim
-    evaluation_id: UUID
+    claim: MinerTaskClaim
+    criterion_evaluation_id: UUID
 
 
 @dataclass(frozen=True)
-class EvaluationBatchResult:
-    """Outcome of running a batch of claim evaluations."""
+class MinerTaskBatchResult:
+    """Outcome of running a batch of miner criterion evaluations for a miner-task batch."""
 
-    run_id: UUID
-    claims: Sequence[EvaluationClaim]
+    batch_id: UUID
+    claims: Sequence[MinerTaskClaim]
     evaluations: Sequence[ScoredEvaluation]
-    uids: Sequence[int]
+    candidate_uids: Sequence[int]
 
 
 @dataclass(frozen=True)
-class EvaluationCloseout:
-    """Payload persisted when an evaluation completes."""
+class MinerTaskResult:
+    """Payload persisted when a miner-task result is recorded."""
 
-    run_id: UUID
+    batch_id: UUID
     validator_uid: int
     outcome: EvaluationOutcome
     session: Session
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 __all__ = [
@@ -215,10 +217,10 @@ __all__ = [
     "EntrypointInvocationResult",
     "EvaluationOutcome",
     "EvaluationScore",
-    "EvaluationCloseout",
+    "MinerTaskResult",
     "EvaluationRequest",
-    "EvaluationBatchResult",
+    "MinerTaskBatchResult",
     "ScoredEvaluation",
     "ScriptArtifactSpec",
-    "EvaluationBatchSpec",
+    "MinerTaskBatchSpec",
 ]

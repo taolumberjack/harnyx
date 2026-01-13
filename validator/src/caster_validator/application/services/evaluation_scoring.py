@@ -1,4 +1,4 @@
-"""Scoring helpers for miner evaluations."""
+"""Scoring helpers for miner criterion evaluations."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from caster_commons.application.ports.receipt_log import ReceiptLogPort
 from caster_commons.domain.claim import ReferenceAnswer
 from caster_commons.domain.tool_call import ToolCall
 from caster_commons.llm.grading import JustificationGrader
-from caster_validator.domain.evaluation import MinerEvaluation
+from caster_validator.domain.evaluation import MinerCriterionEvaluation
 
 
 @dataclass(frozen=True)
 class EvaluationScore:
-    """Structured score emitted for a miner evaluation."""
+    """Structured score emitted for a miner criterion evaluation."""
 
     verdict_score: float
     support_score: float
@@ -30,7 +30,7 @@ class EvaluationScore:
 
 
 class EvaluationScoringService:
-    """Evaluates miner responses against the curated reference answer."""
+    """Scores miner criterion evaluations against the curated reference answer."""
 
     _VERDICT_WEIGHT = 0.5
     _SUPPORT_WEIGHT = 0.5
@@ -43,7 +43,7 @@ class EvaluationScoringService:
         self,
         *,
         claim_text: str,
-        evaluation: MinerEvaluation,
+        evaluation: MinerCriterionEvaluation,
         reference_answer: ReferenceAnswer,
         tool_receipts: Sequence[ToolCall],
         session_id: UUID,
@@ -61,6 +61,7 @@ class EvaluationScoringService:
                 grader_rationale="verdict diverges from reference answer",
             )
 
+        # Gate 2: verdict matches; grade whether the miner justification supports the reference answer.
         grade = await self._grader.grade(
             claim_text=claim_text,
             reference_verdict=reference_answer.verdict,

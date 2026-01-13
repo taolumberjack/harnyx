@@ -54,8 +54,8 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Caster Validator RPC", version="0.1.0", lifespan=lifespan)
     app.middleware("http")(request_logging_middleware)
 
-    add_tool_routes(app, _runtime.rpc_dependency_provider)
-    add_control_routes(app, _runtime.rpc_control_provider)
+    add_tool_routes(app, _runtime.tool_route_deps_provider)
+    add_control_routes(app, _runtime.control_deps_provider)
 
     return app
 

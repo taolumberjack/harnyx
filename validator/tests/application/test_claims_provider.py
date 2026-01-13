@@ -6,15 +6,15 @@ from uuid import uuid4
 import pytest
 from pydantic import TypeAdapter
 
-from caster_commons.domain.claim import EvaluationClaim, ReferenceAnswer, Rubric
+from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
 from caster_validator.application.providers.claims import FileClaimsProvider, StaticClaimsProvider
 
-_EVALUATION_CLAIM_ADAPTER = TypeAdapter(EvaluationClaim)
+_MINER_TASK_CLAIM_ADAPTER = TypeAdapter(MinerTaskClaim)
 
 
-def _sample_claim(text: str) -> EvaluationClaim:
-    return EvaluationClaim(
+def _sample_claim(text: str) -> MinerTaskClaim:
+    return MinerTaskClaim(
         claim_id=uuid4(),
         text=text,
         rubric=Rubric(
@@ -43,7 +43,7 @@ def test_static_provider_rejects_empty_sequence() -> None:
 def test_file_provider_loads_jsonl(tmp_path: Path) -> None:
     claim = _sample_claim("jsonl claim")
     path = tmp_path / "claims.jsonl"
-    path.write_text(_EVALUATION_CLAIM_ADAPTER.dump_json(claim).decode() + "\n", encoding="utf-8")
+    path.write_text(_MINER_TASK_CLAIM_ADAPTER.dump_json(claim).decode() + "\n", encoding="utf-8")
 
     provider = FileClaimsProvider(path)
     result = provider.fetch()
