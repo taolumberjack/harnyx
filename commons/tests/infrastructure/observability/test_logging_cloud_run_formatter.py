@@ -31,8 +31,37 @@ def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) 
     assert payload["response"]["ok"] is True
 
 
-def test_formatter_ignores_json_fields_outside_cloud_run(monkeypatch) -> None:
+def test_formatter_emits_json_payload_for_json_fields_in_kubernetes(monkeypatch) -> None:
     monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
+
+    record = logging.LogRecord(
+        name="caster_commons.tools.desearch.calls",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="desearch.request.complete",
+        args=(),
+        exc_info=None,
+    )
+    record.data = {"provider": "desearch"}
+    record.json_fields = {"request": {"payload": b"hello"}, "response": {"ok": True}}
+
+    rendered = formatter.format(record)
+    payload = json.loads(rendered)
+
+    assert payload["message"] == "desearch.request.complete"
+    assert payload["severity"] == "INFO"
+    assert payload["logger"] == "caster_commons.tools.desearch.calls"
+    assert payload["data"]["provider"] == "desearch"
+    assert payload["request"]["payload"] == "<bytes len=5>"
+    assert payload["response"]["ok"] is True
+
+
+def test_formatter_ignores_json_fields_outside_managed_runtimes(monkeypatch) -> None:
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     formatter = ExtrasFormatter("%(levelname)s %(name)s: %(message)s")
 
     record = logging.LogRecord(

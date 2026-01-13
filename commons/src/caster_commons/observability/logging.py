@@ -19,8 +19,10 @@ def _level(env_var: str, default: str) -> str:
     return os.getenv(env_var, default).upper()
 
 
-def _is_cloud_run() -> bool:
-    return bool(os.getenv("K_SERVICE"))
+def _should_emit_json_payload() -> bool:
+    # Cloud Run and Kubernetes log ingestion can parse JSON log lines into structured payloads.
+    # Outside managed runtimes we keep logs human-readable by default.
+    return bool(os.getenv("K_SERVICE") or os.getenv("KUBERNETES_SERVICE_HOST"))
 
 
 def _structured_payload(record: logging.LogRecord) -> dict[str, Any]:
@@ -62,7 +64,7 @@ class ExtrasFormatter(logging.Formatter):
         record_data = record_dict.get("data")
         record_json_fields = record_dict.get("json_fields")
 
-        if _is_cloud_run() and record_json_fields:
+        if _should_emit_json_payload() and record_json_fields:
             return json.dumps(_structured_payload(record), sort_keys=True, separators=(",", ":"))
 
         formatted = super().format(record)
