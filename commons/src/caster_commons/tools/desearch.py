@@ -128,9 +128,42 @@ class DeSearchClient:
         data = await self._get("twitter", params)
         if data is None:
             raise RuntimeError("desearch twitter search returned empty response")
-        if isinstance(data, list):
-            data = {"data": data}
-        return SearchXSearchResponse.model_validate(data)
+        response = SearchXSearchResponse.model_validate(data)
+        self._log_search_links_twitter_summary(response)
+        return response
+
+    @staticmethod
+    def _log_search_links_twitter_summary(
+        response: SearchXSearchResponse,
+    ) -> None:
+        created_at_by_id: dict[int, str | None] = {}
+        min_id: int | None = None
+        max_id: int | None = None
+        for post in response.data:
+            if post.id is None:
+                continue
+            tweet_id = int(post.id)
+            created_at_by_id[tweet_id] = post.created_at
+            if min_id is None or tweet_id < min_id:
+                min_id = tweet_id
+            if max_id is None or tweet_id > max_id:
+                max_id = tweet_id
+
+        sample_tweets = [tweet.model_dump(exclude_none=True) for tweet in response.data[:20]]
+
+        _LOGGER.info(
+            "desearch.search_links_twitter.summary",
+            extra={
+                "data": {
+                    "return_count": len(response.data),
+                    "min_id": min_id,
+                    "max_id": max_id,
+                    "min_created_at": created_at_by_id.get(min_id) if min_id is not None else None,
+                    "max_created_at": created_at_by_id.get(max_id) if max_id is not None else None,
+                },
+                "json_fields": {"sample_tweets": sample_tweets},
+            },
+        )
 
     async def fetch_twitter_post(self, *, post_id: str) -> SearchXResult | None:
         if not post_id:

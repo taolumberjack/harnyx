@@ -91,7 +91,7 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
         payload = json.loads(request.content)
         assert payload["prompt"] == "caster subnet"
         assert payload["tools"] == ["Twitter Search"]
-        assert payload["model"] == "ORBIT"
+        assert payload["model"] == "HORIZON"
         assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
         assert payload["system_message"] == ""
         assert payload["streaming"] is False
