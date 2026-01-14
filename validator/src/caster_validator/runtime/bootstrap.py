@@ -44,6 +44,7 @@ from caster_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from caster_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
 from caster_validator.infrastructure.state.run_progress import InMemoryRunProgress
 from caster_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
+from caster_validator.infrastructure.subtensor.hotkey import create_wallet
 from caster_validator.infrastructure.tools.platform_client import HttpPlatformClient
 from caster_validator.runtime.llm_factory import create_llm_provider_factory
 from caster_validator.runtime.sandbox import build_sandbox_options, create_sandbox_manager
@@ -290,10 +291,7 @@ def _create_platform_client(settings: Settings) -> tuple[PlatformPort, bt.Keypai
     if not base_url:
         raise RuntimeError("PLATFORM_BASE_URL must be configured")
     base_url_str = str(base_url)
-    wallet = bt.wallet(
-        name=settings.subtensor.wallet_name,
-        hotkey=settings.subtensor.hotkey_name,
-    )
+    wallet = create_wallet(settings.subtensor)
     hotkey = wallet.hotkey
     if hotkey is None:
         raise RuntimeError("wallet hotkey is unavailable for platform signing")

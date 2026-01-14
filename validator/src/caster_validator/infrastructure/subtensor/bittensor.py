@@ -17,6 +17,8 @@ from caster_validator.application.ports.subtensor import (
     ValidatorNodeInfo,
 )
 
+from .hotkey import create_wallet
+
 logger = logging.getLogger("caster_validator.subtensor")
 
 
@@ -51,10 +53,7 @@ class BittensorSubtensorClient(SubtensorClientPort):
         if self._subtensor is None:
             self._subtensor = self._create_subtensor()
         if self._wallet is None:
-            self._wallet = bt.wallet(
-                name=self.settings.wallet_name,
-                hotkey=self.settings.hotkey_name,
-            )
+            self._wallet = create_wallet(self.settings)
 
     def _create_subtensor(self) -> bt.Subtensor:
         endpoint = self.settings.endpoint.strip()
