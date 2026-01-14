@@ -12,6 +12,7 @@ from caster_commons.observability.tracing import configure_tracing
 from caster_validator.infrastructure.http.middleware import request_logging_middleware
 from caster_validator.infrastructure.http.routes import add_control_routes, add_tool_routes
 from caster_validator.infrastructure.observability.logging import (
+    configure_logging,
     enable_cloud_logging,
     init_logging,
 )
@@ -24,12 +25,18 @@ init_logging()
 configure_tracing(service_name="caster-validator")
 _settings = Settings.load()
 if _settings.observability.enable_cloud_logging:
-    gcp_project = _settings.vertex.gcp_project_id
+    gcp_project = _settings.observability.gcp_project_id
     if gcp_project is None:
         raise RuntimeError("Cloud logging enabled but no GCP project configured")
     enable_cloud_logging(
         gcp_project=gcp_project,
         cloud_log_labels={"service": "validator"},
+    )
+else:
+    configure_logging(
+        cloud_logging_enabled=False,
+        gcp_project=_settings.observability.gcp_project_id,
+        cloud_log_labels=None,
     )
 
 _runtime = build_runtime(_settings)

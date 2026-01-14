@@ -19,6 +19,7 @@ class ObservabilitySettings(BaseSettings):
     )
 
     enable_cloud_logging: bool = Field(default=False, alias="ENABLE_CLOUD_LOGGING")
+    gcp_project_id: str | None = Field(default=None, alias="GCP_PROJECT_ID")
 
 
 __all__ = ["ObservabilitySettings"]

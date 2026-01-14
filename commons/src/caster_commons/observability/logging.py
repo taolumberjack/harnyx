@@ -117,6 +117,10 @@ class CloudJsonSanitizer(logging.Filter):
 class OtelContextLogFilter(logging.Filter):
     """Inject OpenTelemetry trace context + baggage into json_fields."""
 
+    def __init__(self, *, gcp_project_id: str | None = None) -> None:
+        super().__init__()
+        self._gcp_project_id = gcp_project_id.strip() if gcp_project_id else None
+
     def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - thin wrapper
         record_dict = record.__dict__
         json_fields = record_dict.get("json_fields")
@@ -137,8 +141,21 @@ class OtelContextLogFilter(logging.Filter):
 
         span_context = trace.get_current_span().get_span_context()
         if span_context.is_valid:
-            otel["trace_id"] = f"{span_context.trace_id:032x}"
-            otel["span_id"] = f"{span_context.span_id:016x}"
+            trace_id = f"{span_context.trace_id:032x}"
+            span_id = f"{span_context.span_id:016x}"
+            otel["trace_id"] = trace_id
+            otel["span_id"] = span_id
+
+            if self._gcp_project_id:
+                json_fields_map.setdefault(
+                    "logging.googleapis.com/trace",
+                    f"projects/{self._gcp_project_id}/traces/{trace_id}",
+                )
+                json_fields_map.setdefault("logging.googleapis.com/spanId", span_id)
+                json_fields_map.setdefault(
+                    "logging.googleapis.com/trace_sampled",
+                    bool(span_context.trace_flags.sampled),
+                )
 
         baggage_values = baggage.get_all()
         if baggage_values:
@@ -196,7 +213,7 @@ def build_log_config(
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": _formatters(),
-        "filters": _filters(),
+        "filters": _filters(gcp_project_id=gcp_project),
         "handlers": handlers,
         "root": _root_logger(root_level_env, root_default, cloud_handler_name),
         "loggers": loggers,
@@ -348,10 +365,11 @@ def _cloud_logging_handler(
     }
 
 
-def _filters() -> dict[str, Any]:
+def _filters(*, gcp_project_id: str | None) -> dict[str, Any]:
     return {
         "otel_context": {
             "()": OtelContextLogFilter,
+            "gcp_project_id": gcp_project_id,
         },
         "cloud_json_sanitizer": {
             "()": CloudJsonSanitizer,

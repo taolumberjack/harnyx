@@ -198,12 +198,18 @@ def test_otel_context_log_filter_injects_trace_and_baggage(monkeypatch) -> None:
             )
             record.json_fields = {"existing": {"ok": True}}
 
-            assert OtelContextLogFilter().filter(record) is True
+            assert OtelContextLogFilter(gcp_project_id="demo-project").filter(record) is True
 
             rendered = ExtrasFormatter("%(levelname)s %(name)s: %(message)s").format(record)
             payload = json.loads(rendered)
 
             assert payload["existing"]["ok"] is True
+            assert (
+                payload["logging.googleapis.com/trace"]
+                == "projects/demo-project/traces/0123456789abcdef0123456789abcdef"
+            )
+            assert payload["logging.googleapis.com/spanId"] == "0123456789abcdef"
+            assert payload["logging.googleapis.com/trace_sampled"] is True
             assert payload["otel"]["trace_id"] == "0123456789abcdef0123456789abcdef"
             assert payload["otel"]["span_id"] == "0123456789abcdef"
             baggage_payload = payload["otel"]["baggage"]
