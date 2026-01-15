@@ -19,7 +19,6 @@ class PlatformApiSettings(BaseSettings):
     )
 
     platform_base_url: str | None = Field(default=None, alias="PLATFORM_BASE_URL")
-    platform_hotkey_ss58: str = Field(default="", alias="PLATFORM_HOTKEY_SS58")
     validator_public_base_url: str | None = Field(default=None, alias="VALIDATOR_PUBLIC_BASE_URL")
 
 

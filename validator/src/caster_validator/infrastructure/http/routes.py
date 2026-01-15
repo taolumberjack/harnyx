@@ -10,6 +10,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
+from caster_commons.bittensor import VerificationError
 from caster_commons.domain.session import Session
 from caster_commons.errors import ConcurrencyLimitError
 from caster_commons.tools.dto import ToolInvocationRequest
@@ -111,7 +112,11 @@ def add_control_routes(
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
     ) -> BatchAcceptResponse:
         body = await request.body()
-        caller = deps.auth(request, body)
+        try:
+            caller = deps.auth(request, body)
+        except VerificationError as exc:
+            status_code = 403 if exc.code == "caller_not_allowed" else 401
+            raise HTTPException(status_code=status_code, detail=exc.message) from exc
         try:
             deps.accept_batch.execute(payload)
         except RuntimeError as exc:

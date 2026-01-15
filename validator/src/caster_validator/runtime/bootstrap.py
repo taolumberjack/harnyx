@@ -352,7 +352,7 @@ def _make_dependency_provider(
 def _make_control_provider(
     accept_batch: AcceptEvaluationBatch,
     status_provider: StatusProvider,
-    inbound_auth: BittensorSr25519InboundVerifier | None,
+    inbound_auth: BittensorSr25519InboundVerifier,
     progress_tracker: InMemoryRunProgress,
 ) -> Callable[[], ValidatorControlDeps]:
     def provider() -> ValidatorControlDeps:
@@ -413,11 +413,33 @@ def _make_options_factory(resolved: Settings) -> Callable[[], SandboxOptions]:
     return factory
 
 
-def _build_inbound_auth(resolved: Settings) -> BittensorSr25519InboundVerifier | None:
-    allowed_hotkeys = tuple(addr for addr in (resolved.platform_api.platform_hotkey_ss58,) if addr)
-    if not allowed_hotkeys:
-        return None
-    return BittensorSr25519InboundVerifier.from_allowed(allowed_hotkeys)
+def _build_inbound_auth(resolved: Settings) -> BittensorSr25519InboundVerifier:
+    subtensor_settings = resolved.subtensor
+    endpoint = subtensor_settings.endpoint.strip()
+    network_or_endpoint = endpoint or subtensor_settings.network
+    subtensor = bt.Subtensor(network=network_or_endpoint)
+    try:
+        owner_hotkey = subtensor.get_subnet_owner_hotkey(netuid=subtensor_settings.netuid)
+    finally:
+        try:
+            subtensor.close()
+        except Exception as exc:  # pragma: no cover - best-effort cleanup
+            logger.debug("subtensor close failed during inbound auth setup", exc_info=exc)
+
+    if not owner_hotkey:
+        raise RuntimeError(f"unable to resolve subnet owner hotkey (netuid={subtensor_settings.netuid})")
+
+    owner_hotkey_ss58 = str(owner_hotkey)
+    logger.info(
+        "configured inbound platform request verifier",
+        extra={
+            "data": {
+                "netuid": subtensor_settings.netuid,
+                "allowed_platform_hotkey_ss58": owner_hotkey_ss58,
+            }
+        },
+    )
+    return BittensorSr25519InboundVerifier.from_allowed((owner_hotkey_ss58,))
 
 
 def _create_search_client(settings: Settings) -> DeSearchClient:
@@ -503,12 +525,10 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
 
 
 def _verify_request(
-    verifier: BittensorSr25519InboundVerifier | None,
+    verifier: BittensorSr25519InboundVerifier,
     request: Request,
     body: bytes,
 ) -> str:
-    if verifier is None:
-        return "anonymous"
     path = request.url.path or "/"
     query = request.url.query
     path_qs = f"{path}?{query}" if query else path
