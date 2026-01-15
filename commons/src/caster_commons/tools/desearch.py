@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -30,13 +29,24 @@ _LOGGER = logging.getLogger("caster_commons.tools.desearch.calls")
 
 
 class DeSearchAiTool(str, Enum):
-    TWITTER_SEARCH = "Twitter Search"
+    TWITTER = "twitter"
 
 
 class DeSearchAiModel(str, Enum):
     NOVA = "NOVA"
     ORBIT = "ORBIT"
     HORIZON = "HORIZON"
+
+
+class DeSearchAiDateFilter(str, Enum):
+    PAST_24_HOURS = "PAST_24_HOURS"
+    PAST_2_DAYS = "PAST_2_DAYS"
+    PAST_WEEK = "PAST_WEEK"
+    PAST_2_WEEKS = "PAST_2_WEEKS"
+    PAST_MONTH = "PAST_MONTH"
+    PAST_2_MONTHS = "PAST_2_MONTHS"
+    PAST_YEAR = "PAST_YEAR"
+    PAST_2_YEARS = "PAST_2_YEARS"
 
 
 class DeSearchAiResultType(str, Enum):
@@ -187,8 +197,7 @@ class DeSearchClient:
         tools: tuple[DeSearchAiTool, ...],
         model: DeSearchAiModel,
         count: int,
-        start_dt: datetime,
-        end_dt: datetime,
+        date_filter: DeSearchAiDateFilter | None,
         result_type: DeSearchAiResultType,
         system_message: str,
     ) -> object:
@@ -196,22 +205,20 @@ class DeSearchClient:
             raise ValueError("desearch ai_search requires non-empty prompt")
         if count <= 0:
             raise ValueError("desearch ai_search requires count > 0")
-        if start_dt.tzinfo is None or end_dt.tzinfo is None:
-            raise ValueError("desearch ai_search requires timezone-aware datetimes")
-        if start_dt > end_dt:
-            raise ValueError("desearch ai_search requires start_dt <= end_dt")
 
-        payload: dict[str, object] = {
+        payload_items: dict[str, object | None] = {
             "prompt": prompt,
             "tools": [tool.value for tool in tools],
-            "model": model.value,
+            # NOTE: upstream SDK does not send "model" for /desearch/ai/search (desearch_py/api.py).
+            # TODO: investigate API support before enabling.
+            # "model": model.value,
+            "date_filter": date_filter.value if date_filter is not None else None,
             "result_type": result_type.value,
             "system_message": system_message,
             "streaming": False,
             "count": min(200, count),
-            "start_date": start_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end_date": end_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        payload = {key: value for key, value in payload_items.items() if value is not None}
         data = await self._post("desearch/ai/search", payload, expect_data=False)
         if data is None:
             raise RuntimeError("desearch ai_search returned empty response")
@@ -222,16 +229,14 @@ class DeSearchClient:
         *,
         prompt: str,
         count: int,
-        start_dt: datetime,
-        end_dt: datetime,
+        date_filter: DeSearchAiDateFilter | None,
     ) -> list[SearchXResult]:
         data = await self.ai_search(
             prompt=prompt,
-            tools=(DeSearchAiTool.TWITTER_SEARCH,),
+            tools=(DeSearchAiTool.TWITTER,),
             model=DeSearchAiModel.HORIZON,
             count=count,
-            start_dt=start_dt,
-            end_dt=end_dt,
+            date_filter=date_filter,
             result_type=DeSearchAiResultType.LINKS_WITH_FINAL_SUMMARY,
             system_message="",
         )

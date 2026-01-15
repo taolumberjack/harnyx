@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pytest
 
-from caster_commons.tools.desearch import DeSearchClient
+from caster_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
 from caster_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -90,14 +89,15 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
 
         payload = json.loads(request.content)
         assert payload["prompt"] == "caster subnet"
-        assert payload["tools"] == ["Twitter Search"]
-        assert payload["model"] == "HORIZON"
+        assert payload["tools"] == ["twitter"]
         assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
         assert payload["system_message"] == ""
         assert payload["streaming"] is False
         assert payload["count"] == 200
-        assert payload["start_date"] == "2026-01-14T00:00:00Z"
-        assert payload["end_date"] == "2026-01-14T01:02:03Z"
+        assert payload["date_filter"] == "PAST_24_HOURS"
+        assert "start_date" not in payload
+        assert "end_date" not in payload
+        assert "model" not in payload
 
         return httpx.Response(200, json={"tweets": []})
 
@@ -110,8 +110,7 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
     tweets = await adapter.ai_search_twitter_posts(
         prompt="caster subnet",
         count=300,
-        start_dt=datetime(2026, 1, 14, 0, 0, 0, tzinfo=UTC),
-        end_dt=datetime(2026, 1, 14, 1, 2, 3, tzinfo=UTC),
+        date_filter=DeSearchAiDateFilter.PAST_24_HOURS,
     )
 
     assert tweets == []
