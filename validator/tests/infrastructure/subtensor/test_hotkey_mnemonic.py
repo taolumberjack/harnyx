@@ -44,3 +44,24 @@ def test_ensure_wallet_hotkey_from_mnemonic_raises_when_mismatched(tmp_path) -> 
     with pytest.raises(RuntimeError, match="SUBTENSOR_HOTKEY_MNEMONIC"):
         ensure_wallet_hotkey_from_mnemonic(wallet, other_mnemonic)
 
+
+def test_create_wallet_raises_when_missing_mnemonic_and_keyfile(tmp_path, monkeypatch) -> None:
+    from caster_commons.config.subtensor import SubtensorSettings
+    from caster_validator.infrastructure.subtensor.hotkey import create_wallet
+
+    original_wallet = bt.wallet
+
+    def wallet_factory(*, name: str, hotkey: str) -> bt.wallet.Wallet:
+        return original_wallet(name=name, hotkey=hotkey, path=str(tmp_path))
+
+    monkeypatch.setattr("caster_validator.infrastructure.subtensor.hotkey.bt.wallet", wallet_factory)
+
+    settings = SubtensorSettings.model_validate(
+        {
+            "SUBTENSOR_WALLET_NAME": "validator",
+            "SUBTENSOR_HOTKEY_NAME": "default",
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="SUBTENSOR_HOTKEY_MNEMONIC"):
+        create_wallet(settings)

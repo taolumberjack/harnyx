@@ -15,6 +15,11 @@ def create_wallet(settings: SubtensorSettings) -> bt.wallet.Wallet:
     mnemonic = settings.hotkey_mnemonic_value
     if mnemonic is not None:
         ensure_wallet_hotkey_from_mnemonic(wallet, mnemonic)
+    elif not wallet.hotkey_file.exists_on_device():
+        raise RuntimeError(
+            "validator hotkey is not configured: set SUBTENSOR_HOTKEY_MNEMONIC or mount an existing hotkey file at "
+            f"{wallet.hotkey_file.path}"
+        )
     return wallet
 
 
@@ -43,4 +48,3 @@ def ensure_wallet_hotkey_from_mnemonic(wallet: bt.wallet.Wallet, mnemonic: str) 
 
 
 __all__ = ["create_wallet", "ensure_wallet_hotkey_from_mnemonic"]
-
