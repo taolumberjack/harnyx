@@ -2,6 +2,19 @@
 
 This directory contains the validator runtime package plus an operator-ready Docker Compose stack (`validator` + `watchtower`).
 
+## Querying platform weights
+
+This validator queries platform-provided weights via `GET /v1/weights`.
+
+Operator note: the platform will deny this request (HTTP 403) unless the validator:
+- is a metagraph validator and signs the request, and
+- has a registered validator endpoint (`POST /v1/validators/register`), and
+- is considered functioning: if the validator has not successfully completed an evaluation batch for 120 hours (measured
+  from the last successful completion; if it has never completed one, measured from when it first registered its
+  validator endpoint), weights queries are blocked until it completes a later evaluation batch.
+
+Changing/re-registering your endpoint does not clear the evaluation-based block (it is tracked by hotkey).
+
 ## Configure
 
 1) Create your env file:
