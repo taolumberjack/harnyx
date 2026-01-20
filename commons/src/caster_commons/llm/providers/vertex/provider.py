@@ -26,7 +26,9 @@ from .anthropic import (
     build_anthropic_response,
     build_claude_web_search_tool,
     classify_anthropic_exception,
+    is_claude_model,
     is_claude_web_search_model,
+    normalize_claude_model,
     resolve_anthropic_thinking_budget,
 )
 from .codec import (
@@ -81,7 +83,7 @@ class VertexLlmProvider(BaseLlmProvider):
         self._logger = logging.getLogger("caster_commons.llm.calls")
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
-        if request.grounded and is_claude_web_search_model(request.model):
+        if is_claude_model(request.model):
             return await self._call_with_retry(
                 request,
                 call_coro=lambda: asyncio.to_thread(self._call_claude_anthropic, request),
@@ -197,15 +199,27 @@ class VertexLlmProvider(BaseLlmProvider):
 
     def _call_claude_anthropic(self, request: AbstractLlmRequest) -> LlmResponse:
         system_content, messages = _anthropic_messages_from_request(request)
-        tools = [build_claude_web_search_tool(request.extra)]
+        model = normalize_claude_model(request.model)
+
+        if request.output_mode != "text":
+            raise ValueError("Claude-on-Vertex requests must use text output")
+        if request.tools:
+            raise ValueError("Claude-on-Vertex requests do not support tool calls")
+
         max_tokens = request.max_output_tokens or 1024
+        tools: list[dict[str, Any]] | None = None
+        extra_headers: dict[str, str] | None = None
+
+        if request.grounded:
+            if not is_claude_web_search_model(model):
+                raise ValueError("grounded Claude requests require a Claude web_search model")
+            tools = [build_claude_web_search_tool(request.extra)]
+            extra_headers = {"anthropic-beta": CLAUDE_WEB_SEARCH_BETA}
 
         base_kwargs: dict[str, Any] = {
-            "model": request.model,
+            "model": model,
             "max_tokens": max_tokens,
             "messages": messages,
-            "tools": tools,
-            "extra_headers": {"anthropic-beta": CLAUDE_WEB_SEARCH_BETA},
         }
 
         thinking_budget = resolve_anthropic_thinking_budget(
@@ -215,6 +229,8 @@ class VertexLlmProvider(BaseLlmProvider):
         optional_kwargs: dict[str, Any] = {
             "system": system_content,
             "temperature": request.temperature,
+            "tools": tools,
+            "extra_headers": extra_headers,
             "thinking": {
                 "type": "enabled",
                 "budget_tokens": thinking_budget,

@@ -8,7 +8,17 @@ import pytest
 
 from caster_commons.clients import OPENAI
 from caster_commons.llm.providers.vertex.provider import VertexLlmProvider
-from caster_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmRequest, LlmTool
+from caster_commons.llm.schema import (
+    GroundedLlmRequest,
+    LlmChoice,
+    LlmChoiceMessage,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmResponse,
+    LlmTool,
+    LlmUsage,
+)
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -137,6 +147,69 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     assert response.usage.total_tokens == 17
     tool_calls = response.tool_calls
     assert tool_calls[0].name == "lookup"
+
+
+async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {"vertex_calls": 0, "anthropic_calls": 0}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.models = self._Models()
+
+        class _Models:
+            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
+                captured["vertex_calls"] += 1
+                return FakeResponse()
+
+    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=OPENAI.timeout_seconds,
+    )
+
+    def fake_call_claude(request: Any) -> LlmResponse:
+        captured["anthropic_calls"] += 1
+        captured["anthropic_model"] = request.model
+        return LlmResponse(
+            id="claude-response",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(LlmMessageContentPart(type="text", text="ok"),),
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                ),
+            ),
+            usage=LlmUsage(),
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(provider, "_call_claude_anthropic", fake_call_claude)
+
+    request = LlmRequest(
+        provider="vertex",
+        model="/anthropic/models/claude-sonnet-4-5@20250929",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+    )
+
+    response = await provider.invoke(request)
+    assert response.raw_text == "ok"
+
+    assert captured["anthropic_calls"] == 1
+    assert captured["vertex_calls"] == 0
 
 
 def test_vertex_provider_writes_base64_credentials(monkeypatch: pytest.MonkeyPatch) -> None:

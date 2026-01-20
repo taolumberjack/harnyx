@@ -32,8 +32,51 @@ _CLAUDE_WEB_SEARCH_PREFIXES: tuple[str, ...] = (
 )
 
 
+_ANTHROPIC_PUBLISHER_MODELS_PREFIX = "publishers/anthropic/models/"
+_ANTHROPIC_MODELS_PREFIX = "anthropic/models/"
+
+
+def _extract_claude_model_id(model: str) -> str | None:
+    trimmed = model.strip()
+    if not trimmed:
+        return None
+
+    normalized = trimmed.lower()
+    if normalized.startswith("claude-"):
+        return trimmed
+
+    for prefix in (_ANTHROPIC_PUBLISHER_MODELS_PREFIX, _ANTHROPIC_MODELS_PREFIX):
+        idx = normalized.find(prefix)
+        if idx == -1:
+            continue
+        extracted = trimmed[idx + len(prefix) :].strip()
+        return extracted or None
+
+    idx = normalized.find("claude-")
+    if idx != -1 and (idx == 0 or normalized[idx - 1] == "/"):
+        extracted = trimmed[idx:].strip()
+        return extracted or None
+
+    return None
+
+
+def is_claude_model(model: str) -> bool:
+    extracted = _extract_claude_model_id(model)
+    return bool(extracted and extracted.lower().startswith("claude-"))
+
+
+def normalize_claude_model(model: str) -> str:
+    extracted = _extract_claude_model_id(model)
+    if not extracted or not extracted.lower().startswith("claude-"):
+        raise ValueError("expected a Claude model id (e.g. claude-sonnet-4-5@YYYYMMDD)")
+    return extracted
+
+
 def is_claude_web_search_model(model: str) -> bool:
-    normalized = model.lower()
+    extracted = _extract_claude_model_id(model)
+    if not extracted:
+        return False
+    normalized = extracted.lower()
     return any(normalized.startswith(prefix) for prefix in _CLAUDE_WEB_SEARCH_PREFIXES)
 
 
@@ -163,6 +206,8 @@ def build_anthropic_response(response: Any) -> LlmResponse:
 
 __all__ = [
     "CLAUDE_WEB_SEARCH_BETA",
+    "is_claude_model",
+    "normalize_claude_model",
     "is_claude_web_search_model",
     "classify_anthropic_exception",
     "resolve_anthropic_thinking_budget",
