@@ -41,9 +41,12 @@ def subprocess_completed(args: list[str], stdout: str) -> CompletedProcess[str]:
 
 def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     runner = RecordingRunner()
+    created_clients: list[DummyClient] = []
 
     def client_factory(base_url: str, token_header: str) -> DummyClient:
-        return DummyClient(base_url, token_header)
+        client = DummyClient(base_url, token_header)
+        created_clients.append(client)
+        return client
 
     manager = DockerSandboxManager(
         docker_binary="docker",
@@ -74,13 +77,7 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
         "--pull",
         options.pull_policy,
     ]
-    assert run_args[4:9] == [
-        "-d",
-        "--name",
-        "sandbox-demo",
-        "-p",
-        "9000:8000",
-    ]
+    assert run_args[4:10] == ["-d", "--rm", "--name", "sandbox-demo", "-p", "9000:8000"]
     assert "--network" in run_args
     assert "-e" in run_args
     assert run_args[-1] == options.image
@@ -91,6 +88,7 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     stop_args, stop_kwargs = runner.commands[1]
     assert stop_args == ["docker", "stop", "-t", "5", "container123"]
     assert deployment.client.closed is True
+    assert created_clients[0].closed is True
 
 
 def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:
@@ -213,3 +211,44 @@ def test_docker_manager_sets_seccomp_profile() -> None:
     opt_index = run_args.index("--security-opt") + 1
     assert run_args[opt_index] == f"seccomp={seccomp_path}"
     manager.stop(deployment)
+
+
+def test_start_cleans_up_container_on_healthz_failure(monkeypatch) -> None:
+    runner = RecordingRunner()
+    created_clients: list[DummyClient] = []
+
+    def client_factory(base_url: str, token_header: str) -> DummyClient:
+        client = DummyClient(base_url, token_header)
+        created_clients.append(client)
+        return client
+
+    manager = DockerSandboxManager(
+        docker_binary="docker",
+        host="127.0.0.1",
+        command_runner=runner,
+        client_factory=client_factory,
+    )
+
+    def fail_healthz(*args, **kwargs) -> None:
+        raise RuntimeError("healthz timeout")
+
+    monkeypatch.setattr(manager, "_wait_for_healthz", fail_healthz)
+
+    options = SandboxOptions(
+        image="caster/sandbox:demo",
+        container_name="sandbox-demo",
+        host_port=9000,
+        container_port=8000,
+        wait_for_healthz=True,
+        network="caster-net",
+    )
+
+    with pytest.raises(RuntimeError, match="healthz timeout"):
+        manager.start(options)
+
+    run_args, _ = runner.commands[0]
+    assert run_args[4:8] == ["-d", "--rm", "--name", "sandbox-demo"]
+    stop_args, _ = runner.commands[1]
+    assert stop_args == ["docker", "stop", "-t", "5", "container123"]
+    assert created_clients[0].closed is True
+

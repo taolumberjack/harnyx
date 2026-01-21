@@ -154,8 +154,19 @@ class DockerSandboxManager(SandboxManager):
         self._validate_options(options)
 
         container_id = self._launch_container(options)
-        base_url, client = self._ready_client(options)
-        self._post_launch_steps(options, base_url, container_id)
+        base_url: str | None = None
+        client: SandboxClient | None = None
+        try:
+            base_url, client = self._ready_client(options)
+            self._post_launch_steps(options, base_url, container_id)
+        except Exception:
+            if client is not None:
+                client.close()
+            self._stop_log_stream(container_id)
+            self._best_effort_stop(container_id, stop_timeout_seconds=options.stop_timeout_seconds)
+            raise
+        assert base_url is not None
+        assert client is not None
 
         return SandboxDeployment(
             client=client,
@@ -187,6 +198,7 @@ class DockerSandboxManager(SandboxManager):
             "--pull",
             options.pull_policy,
             "-d",
+            "--rm",
             "--name",
             options.container_name,
         ]
@@ -243,7 +255,11 @@ class DockerSandboxManager(SandboxManager):
 
     def _ready_client(self, options: SandboxOptions) -> tuple[str, SandboxClient]:
         base_url, client = self._build_client(options)
-        self._maybe_wait_for_health(base_url, options)
+        try:
+            self._maybe_wait_for_health(base_url, options)
+        except Exception:
+            client.close()
+            raise
         return base_url, client
 
     def _post_launch_steps(self, options: SandboxOptions, base_url: str, container_id: str) -> None:
@@ -381,6 +397,21 @@ class DockerSandboxManager(SandboxManager):
             )
         deployment.client.close()
         self._stop_log_stream(identifier)
+
+    def _best_effort_stop(self, container_id: str, *, stop_timeout_seconds: int | None) -> None:
+        args = [self._docker, "stop"]
+        if stop_timeout_seconds is not None:
+            args.extend(["-t", str(stop_timeout_seconds)])
+        args.append(container_id)
+        try:
+            self._run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as exc:  # pragma: no cover - integration only
+            logger.warning(
+                "docker stop failed (ignored): returncode=%s stderr=%s",
+                exc.returncode,
+                exc.stderr,
+                extra={"container": container_id, "stderr": exc.stderr},
+            )
 
     def _wait_for_healthz(self, base_url: str, *, path: str, timeout_seconds: float) -> None:
         deadline = time.monotonic() + timeout_seconds
