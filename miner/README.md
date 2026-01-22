@@ -88,13 +88,13 @@ async def evaluate_criterion(request: object) -> CriterionEvaluationResponse:
 `caster-miner-dev` loads your file, finds `evaluate_criterion`, and runs it with a `CriterionEvaluationRequest`. It uses real tool calls, so you need the API keys configured above.
 
 ```bash
-caster-miner-dev --agent-path ./agent.py
+uv run --package caster-miner caster-miner-dev --agent-path ./agent.py
 ```
 
 To test with a specific request payload:
 
 ```bash
-caster-miner-dev --agent-path ./agent.py --request-json ./request.json
+uv run --package caster-miner caster-miner-dev --agent-path ./agent.py --request-json ./request.json
 ```
 
 ---
@@ -110,7 +110,7 @@ export PLATFORM_BASE_URL="https://api.castersubnet.example"
 Upload your agent with your registered hotkey:
 
 ```bash
-caster-miner-submit \
+uv run --package caster-miner caster-miner-submit \
   --agent-path ./agent.py \
   --wallet-name <wallet-name> \
   --hotkey-name <hotkey-name>

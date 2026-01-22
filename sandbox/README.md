@@ -33,10 +33,10 @@ This package contains the **sandbox runtime** — the FastAPI server that valida
 From the repo root:
 
 ```bash
-./scripts/build_sandbox_image.sh
+docker build -f sandbox/Dockerfile -t castersubnet/caster-subnet-sandbox:local .
 ```
 
-This builds the `caster-subnet-sandbox` Docker image using the Dockerfile in this directory.
+This builds the `castersubnet/caster-subnet-sandbox:local` Docker image using `sandbox/Dockerfile`.
 
 ## Running locally (development)
 
