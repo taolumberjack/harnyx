@@ -4,6 +4,7 @@ import pytest
 
 from caster_commons.config.llm import LlmSettings
 from caster_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
+from caster_commons.tools.desearch_ai_protocol import DeSearchAiDocsResponse
 
 pytestmark = [pytest.mark.anyio("asyncio"), pytest.mark.integration]
 
@@ -19,11 +20,11 @@ async def test_desearch_ai_search_live() -> None:
         max_concurrent=1,
     )
     try:
-        tweets = await desearch.ai_search_twitter_posts(
+        response = await desearch.ai_search_twitter_posts(
             prompt="Bittensor",
             count=10,
             date_filter=DeSearchAiDateFilter.PAST_WEEK,
         )
-        assert isinstance(tweets, list)
+        assert isinstance(response, DeSearchAiDocsResponse)
     finally:
         await desearch.aclose()

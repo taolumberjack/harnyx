@@ -125,11 +125,12 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    tweets = await adapter.ai_search_twitter_posts(
+    response = await adapter.ai_search_twitter_posts(
         prompt="caster subnet",
         count=300,
         date_filter=DeSearchAiDateFilter.PAST_24_HOURS,
     )
 
-    assert len(tweets) == 1
-    assert tweets[0].id == "123"
+    assert response.tweets and len(response.tweets) == 1
+    assert response.tweets[0].id == "123"
+    assert response.completion == "hello"

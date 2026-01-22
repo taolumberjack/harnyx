@@ -17,6 +17,7 @@ from opentelemetry.util.types import AttributeValue
 from caster_commons.config.external_client import ExternalClientRetrySettings
 from caster_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from caster_commons.tools.desearch_ai_protocol import (
+    DeSearchAiDocsResponse,
     parse_desearch_ai_response,
 )
 from caster_commons.tools.search_models import (
@@ -233,7 +234,8 @@ class DeSearchClient:
         prompt: str,
         count: int,
         date_filter: DeSearchAiDateFilter | None,
-    ) -> list[SearchXResult]:
+        system_message: str = "",
+    ) -> DeSearchAiDocsResponse:
         raw = await self.ai_search(
             prompt=prompt,
             tools=(DeSearchAiTool.TWITTER,),
@@ -241,13 +243,9 @@ class DeSearchClient:
             count=count,
             date_filter=date_filter,
             result_type=DeSearchAiResultType.LINKS_WITH_FINAL_SUMMARY,
-            system_message="",
+            system_message=system_message,
         )
-        response = parse_desearch_ai_response(raw)
-        tweets = response.tweets
-        if not tweets:
-            raise RuntimeError("desearch ai_search_twitter_posts expected tweets in response")
-        return tweets
+        return parse_desearch_ai_response(raw)
 
     async def aclose(self) -> None:
         if self._owns_client:
