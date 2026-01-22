@@ -26,6 +26,7 @@ A **task** is one criterion evaluation request: a `claim_text` plus a rubric (`r
 - Claims are anchored to factoids from the last 24 hours.
 - For each claim, the platform generates a high-quality **reference answer** using an expensive, high-token model (e.g. `gpt-5.2-xhigh`).
 - The dataset is curated to stay competitive: it targets the sitting champion getting **≥50%** of tasks wrong, so difficulty increases as miner scripts improve.
+- The dataset generation will be open sourced in the near future to allow for community contributions and reproducibility.
 
 **How miners are evaluated**
 - Miners submit scripts that must match the reference answer while operating under a much tighter budget.
