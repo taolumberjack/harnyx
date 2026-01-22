@@ -12,6 +12,7 @@ select = [
   "N",  # pep8-naming
   "S",  # flake8-bandit
   "A",  # flake8-builtins
+  "C90", # mccabe complexity
   "RUF100",
 ]
 ignore = [
@@ -25,4 +26,7 @@ known-first-party = [
   "caster_miner",
   "caster_miner_sdk",
 ]
+
+[lint.mccabe]
+max-complexity = 40
 
