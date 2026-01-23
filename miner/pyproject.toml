@@ -29,3 +29,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/caster_miner"]
+
+[tool.deptry.package_module_name_map]
+caster-miner-sdk = "caster_miner_sdk"
