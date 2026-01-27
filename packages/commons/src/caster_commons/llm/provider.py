@@ -74,9 +74,11 @@ class LlmProviderPort(Protocol):
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         """Execute the supplied request and return a normalized response."""
+        ...
 
     async def aclose(self) -> None:
         """Release provider resources."""
+        ...
 
 
 class BaseLlmProvider(ABC, LlmProviderPort):
