@@ -18,7 +18,7 @@ from caster_commons.infrastructure.state.session_registry import InMemorySession
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from caster_commons.llm.grading import JustificationGrader, JustificationGraderConfig
 from caster_commons.llm.provider import LlmProviderPort
-from caster_commons.sandbox.docker import DockerSandboxManager
+from caster_commons.sandbox.docker import DockerSandboxManager, resolve_sandbox_host_container_url
 from caster_commons.sandbox.options import SandboxOptions
 from caster_commons.tools.desearch import DeSearchClient
 from caster_commons.tools.executor import ToolExecutor
@@ -407,7 +407,11 @@ def _make_options_factory(resolved: Settings) -> Callable[[], SandboxOptions]:
             image=resolved.sandbox.sandbox_image,
             network=resolved.sandbox.sandbox_network,
             pull_policy=resolved.sandbox.sandbox_pull_policy,
-            host_container_url=f"http://{resolved.rpc_public_host}:{resolved.rpc_port}",
+            host_container_url=resolve_sandbox_host_container_url(
+                docker_binary="/usr/bin/docker",
+                sandbox_network=resolved.sandbox.sandbox_network,
+                rpc_port=resolved.rpc_port,
+            ),
         )
 
     return factory

@@ -51,7 +51,7 @@ class MpContext(Protocol):
 
 logger = logging.getLogger("caster_sandbox.sandbox")
 
-ENTRYPOINT_TIMEOUT_SECONDS = 30
+ENTRYPOINT_TIMEOUT_SECONDS = 120
 WORKER_KILL_GRACE_SECONDS = 1.0
 
 

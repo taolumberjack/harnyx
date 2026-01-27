@@ -25,23 +25,19 @@ def _token_header() -> str:
 
 
 def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str]) -> ToolProxy | None:
-    raw_base_url = (config or {}).get("base_url")
-    if raw_base_url is not None and not isinstance(raw_base_url, str):
-        raise ValueError("tool proxy config.base_url must be a string")
-    base_url = raw_base_url or os.getenv("CASTER_HOST_CONTAINER_URL")
+    if config:
+        raise ValueError("tool proxy config is not supported; use CASTER_HOST_CONTAINER_URL and request headers")
 
-    raw_token = (config or {}).get("token")
-    if raw_token is not None and not isinstance(raw_token, str):
-        raise ValueError("tool proxy config.token must be a string")
+    base_url = (os.getenv("CASTER_HOST_CONTAINER_URL") or "").strip()
     token_header = _token_header()
-    token = raw_token or headers.get(token_header)
+    token = (headers.get(token_header) or "").strip()
     session_id = headers.get("x-caster-session-id")
-    if not base_url or not token or not session_id:
-        logger.warning(
-            "tool proxy missing configuration",
-            extra={"base_url": base_url, "token_present": bool(token), "session_id": session_id},
-        )
-        return None
+    if not session_id:
+        raise RuntimeError("sandbox request missing x-caster-session-id")
+    if not base_url:
+        raise RuntimeError("CASTER_HOST_CONTAINER_URL must be set inside the sandbox to enable tools")
+    if not token:
+        raise RuntimeError(f"sandbox request missing {token_header} header required to enable tools")
     return ToolProxy(
         base_url=base_url,
         token=token,

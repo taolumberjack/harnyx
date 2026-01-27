@@ -31,9 +31,6 @@ class Settings(BaseSettings):
 
     # --- Server ---
     rpc_listen_host: str = Field(default="0.0.0.0", alias="CASTER_VALIDATOR_HOST")  # noqa: S104
-    rpc_public_host: str = Field(
-        default="host.docker.internal", alias="CASTER_VALIDATOR_PUBLIC_HOST"
-    )
     rpc_port: int = Field(default=8100, alias="CASTER_VALIDATOR_PORT")
 
     # --- Component settings ---

@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -507,8 +509,90 @@ class DockerSandboxManager(SandboxManager):
         return subprocess.Popen(*args, **kwargs)  # noqa: S603
 
 
+def resolve_network_gateway(*, docker_binary: str, network: str) -> str:
+    args = [docker_binary, "network", "inspect", network, "--format", "{{json .IPAM.Config}}"]
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, check=True)  # noqa: S603
+    except subprocess.CalledProcessError as exc:  # pragma: no cover - integration only
+        stderr = (exc.stderr or "").strip()
+        raise RuntimeError(
+            f"docker network inspect failed for network={network}: stderr={stderr}"
+        ) from exc
+
+    output = (result.stdout or "").strip()
+    if not output:
+        raise RuntimeError(f"docker network inspect returned empty output for network={network}")
+
+    config = json.loads(output)
+    if not isinstance(config, list) or not config:
+        raise TypeError("docker network inspect IPAM config must be a non-empty JSON list")
+
+    first = config[0]
+    if not isinstance(first, dict):
+        raise TypeError("docker network inspect IPAM config entry must be a JSON object")
+
+    gateway = first.get("Gateway")
+    if not isinstance(gateway, str) or not gateway:
+        raise RuntimeError(f"docker network inspect did not include a Gateway for network={network}")
+
+    return gateway
+
+
+def resolve_container_ip(*, docker_binary: str, container: str, network: str) -> str:
+    args = [docker_binary, "inspect", "--format", "{{json .NetworkSettings.Networks}}", container]
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, check=True)  # noqa: S603
+    except subprocess.CalledProcessError as exc:  # pragma: no cover - integration only
+        stderr = (exc.stderr or "").strip()
+        raise RuntimeError(
+            f"docker inspect failed for container={container}: stderr={stderr}"
+        ) from exc
+
+    output = (result.stdout or "").strip()
+    if not output:
+        raise RuntimeError(f"docker inspect returned empty network settings for container={container}")
+
+    networks = json.loads(output)
+    if not isinstance(networks, dict):
+        raise TypeError("docker inspect network settings must be a JSON object")
+
+    network_details = networks.get(network)
+    if not isinstance(network_details, dict):
+        raise RuntimeError(f"docker inspect did not include network={network} for container={container}")
+
+    ip_address = network_details.get("IPAddress")
+    if not isinstance(ip_address, str) or not ip_address:
+        raise RuntimeError(
+            f"docker inspect returned invalid IP address for container={container} network={network}"
+        )
+
+    return ip_address
+
+
+def resolve_sandbox_host_container_url(
+    *, docker_binary: str, sandbox_network: str | None, rpc_port: int
+) -> str:
+    if not sandbox_network:
+        raise RuntimeError("CASTER_SANDBOX_NETWORK must be configured to derive CASTER_HOST_CONTAINER_URL")
+
+    if os.getenv("KUBERNETES_SERVICE_HOST"):
+        host = resolve_network_gateway(docker_binary=docker_binary, network=sandbox_network)
+    elif Path("/.dockerenv").exists():
+        container = os.getenv("HOSTNAME")
+        if not container:
+            raise RuntimeError("HOSTNAME must be set to derive CASTER_HOST_CONTAINER_URL in containerized runs")
+        host = resolve_container_ip(docker_binary=docker_binary, container=container, network=sandbox_network)
+    else:
+        host = resolve_network_gateway(docker_binary=docker_binary, network=sandbox_network)
+
+    return f"http://{host}:{rpc_port}"
+
+
 __all__ = [
     "DockerSandboxManager",
     "SandboxOptions",
     "HttpSandboxClient",
+    "resolve_container_ip",
+    "resolve_network_gateway",
+    "resolve_sandbox_host_container_url",
 ]

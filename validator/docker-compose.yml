@@ -3,8 +3,6 @@ services:
     image: "${CASTER_VALIDATOR_IMAGE:-castersubnet/caster-subnet-validator:latest}"
     env_file:
       - .env
-    environment:
-      CASTER_VALIDATOR_PUBLIC_HOST: "validator"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ~/.bittensor/wallets:/root/.bittensor/wallets
