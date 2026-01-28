@@ -35,6 +35,7 @@ Body: [MinerTaskBatchSpec](#model-minertaskbatchspec)
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
 | `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+|  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `claim_id` |  | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |
@@ -122,6 +123,11 @@ Body: [ProgressResponse](#model-progressresponse)
 |  |  | `session_id` | req | `string` |
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
+|  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
+|  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  |  | `llm_cost` | opt | `number` (default: 0.0) |
+|  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 |  | `usage` |  | req | [UsageModel](#model-usagemodel) |
 |  |  | `by_provider` | req | `object` |
 |  |  | `call_count` | req | `integer` |
@@ -358,6 +364,145 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
+<a id="model-llmmodelusagecost"></a>
+### Model: LlmModelUsageCost
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `cost` |  |  | opt | `number` (default: 0.0) |
+| `usage` |  |  | opt | [LlmUsageTotals](#model-llmusagetotals) |
+|  | `call_count` |  | opt | `integer` (default: 0) |
+|  | `completion_tokens` |  | opt | `integer` (default: 0) |
+|  | `prompt_tokens` |  | opt | `integer` (default: 0) |
+|  | `total_tokens` |  | opt | `integer` (default: 0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "cost": {
+      "default": 0.0,
+      "title": "Cost",
+      "type": "number"
+    },
+    "usage": {
+      "$ref": "#/components/schemas/LlmUsageTotals"
+    }
+  },
+  "title": "LlmModelUsageCost",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-llmusagesummary"></a>
+### Model: LlmUsageSummary
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `call_count` |  |  | opt | `integer` (default: 0) |
+| `completion_tokens` |  |  | opt | `integer` (default: 0) |
+| `cost` |  |  | opt | `number` (default: 0.0) |
+| `prompt_tokens` |  |  | opt | `integer` (default: 0) |
+| `providers` |  |  | opt | `object` |
+| `total_tokens` |  |  | opt | `integer` (default: 0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "call_count": {
+      "default": 0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "default": 0,
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "cost": {
+      "default": 0.0,
+      "title": "Cost",
+      "type": "number"
+    },
+    "prompt_tokens": {
+      "default": 0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "providers": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/LlmModelUsageCost"
+        },
+        "type": "object"
+      },
+      "title": "Providers",
+      "type": "object"
+    },
+    "total_tokens": {
+      "default": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "title": "LlmUsageSummary",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-llmusagetotals"></a>
+### Model: LlmUsageTotals
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `call_count` |  |  | opt | `integer` (default: 0) |
+| `completion_tokens` |  |  | opt | `integer` (default: 0) |
+| `prompt_tokens` |  |  | opt | `integer` (default: 0) |
+| `total_tokens` |  |  | opt | `integer` (default: 0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "call_count": {
+      "default": 0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "default": 0,
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "prompt_tokens": {
+      "default": 0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "default": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "title": "LlmUsageTotals",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-minertaskbatchspec"></a>
 ### Model: MinerTaskBatchSpec
 
@@ -370,6 +515,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
 | `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+|  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `claim_id` |  | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |
@@ -443,6 +589,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `budget_usd` |  |  | opt | `number` (default: 0.05) |
 | `claim_id` |  |  | req | `string` (format: uuid) |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  | `citations` |  | opt | array[[Citation](#model-citation)] (default: []) |
@@ -467,6 +614,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "properties": {
+    "budget_usd": {
+      "default": 0.05,
+      "title": "Budget Usd",
+      "type": "number"
+    },
     "claim_id": {
       "format": "uuid",
       "title": "Claim Id",
@@ -667,6 +819,19 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `session_id` |  | req | `string` |
 |  | `status` |  | req | `string` |
 |  | `uid` |  | req | `integer` |
+| `total_tool_usage` |  |  | req | [ToolUsageSummary](#model-toolusagesummary) |
+|  | `llm` |  | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  |  | `call_count` | opt | `integer` (default: 0) |
+|  |  | `completion_tokens` | opt | `integer` (default: 0) |
+|  |  | `cost` | opt | `number` (default: 0.0) |
+|  |  | `prompt_tokens` | opt | `integer` (default: 0) |
+|  |  | `providers` | opt | `object` |
+|  |  | `total_tokens` | opt | `integer` (default: 0) |
+|  | `llm_cost` |  | opt | `number` (default: 0.0) |
+|  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `call_count` | opt | `integer` (default: 0) |
+|  |  | `cost` | opt | `number` (default: 0.0) |
+|  | `search_tool_cost` |  | opt | `number` (default: 0.0) |
 | `usage` |  |  | req | [UsageModel](#model-usagemodel) |
 |  | `by_provider` |  | req | `object` |
 |  | `call_count` |  | req | `integer` |
@@ -695,6 +860,9 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "session": {
       "$ref": "#/components/schemas/SessionModel"
     },
+    "total_tool_usage": {
+      "$ref": "#/components/schemas/ToolUsageSummary"
+    },
     "usage": {
       "$ref": "#/components/schemas/UsageModel"
     },
@@ -708,7 +876,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "criterion_evaluation",
     "score",
     "usage",
-    "session"
+    "session",
+    "total_tool_usage"
   ],
   "title": "MinerTaskResultModel",
   "type": "object"
@@ -833,6 +1002,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `session_id` | req | `string` |
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
+|  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
+|  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  |  | `llm_cost` | opt | `number` (default: 0.0) |
+|  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 |  | `usage` |  | req | [UsageModel](#model-usagemodel) |
 |  |  | `by_provider` | req | `object` |
 |  |  | `call_count` | req | `integer` |
@@ -1028,6 +1202,38 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "size_bytes"
   ],
   "title": "ScriptArtifactSpec",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-searchtoolusagesummary"></a>
+### Model: SearchToolUsageSummary
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `call_count` |  |  | opt | `integer` (default: 0) |
+| `cost` |  |  | opt | `number` (default: 0.0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "call_count": {
+      "default": 0,
+      "title": "Call Count",
+      "type": "integer"
+    },
+    "cost": {
+      "default": 0.0,
+      "title": "Cost",
+      "type": "number"
+    }
+  },
+  "title": "SearchToolUsageSummary",
   "type": "object"
 }
 ```
@@ -1458,6 +1664,54 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     }
   },
   "title": "ToolUsageDTO",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-toolusagesummary"></a>
+### Model: ToolUsageSummary
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `llm` |  |  | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  | `call_count` |  | opt | `integer` (default: 0) |
+|  | `completion_tokens` |  | opt | `integer` (default: 0) |
+|  | `cost` |  | opt | `number` (default: 0.0) |
+|  | `prompt_tokens` |  | opt | `integer` (default: 0) |
+|  | `providers` |  | opt | `object` |
+|  | `total_tokens` |  | opt | `integer` (default: 0) |
+| `llm_cost` |  |  | opt | `number` (default: 0.0) |
+| `search_tool` |  |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  | `call_count` |  | opt | `integer` (default: 0) |
+|  | `cost` |  | opt | `number` (default: 0.0) |
+| `search_tool_cost` |  |  | opt | `number` (default: 0.0) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "llm": {
+      "$ref": "#/components/schemas/LlmUsageSummary"
+    },
+    "llm_cost": {
+      "default": 0.0,
+      "title": "Llm Cost",
+      "type": "number"
+    },
+    "search_tool": {
+      "$ref": "#/components/schemas/SearchToolUsageSummary"
+    },
+    "search_tool_cost": {
+      "default": 0.0,
+      "title": "Search Tool Cost",
+      "type": "number"
+    }
+  },
+  "title": "ToolUsageSummary",
   "type": "object"
 }
 ```

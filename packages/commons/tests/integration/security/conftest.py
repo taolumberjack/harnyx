@@ -15,6 +15,7 @@ from caster_commons.sandbox.docker import (
     DockerSandboxManager,
     SandboxOptions,
 )
+from caster_commons.sandbox.options import DEFAULT_TOKEN_HEADER
 
 DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 DOCKER_BINARY = shutil.which(DOCKER_CLI) or DOCKER_CLI
@@ -84,6 +85,7 @@ def sandbox(attacker_agent_path: Path):
         env={
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container needs to bind all interfaces
             "SANDBOX_PORT": "8000",
+            "CASTER_TOKEN_HEADER": DEFAULT_TOKEN_HEADER,
             "CASTER_AGENT_PATH": "/sandbox/agent.py",
             "CASTER_HOST_CONTAINER_URL": DEFAULT_HOST_CONTAINER_URL,
         },

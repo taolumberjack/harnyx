@@ -36,6 +36,7 @@ Body: [CreateBatchRequest](#model-createbatchrequest)
 | `champion_uid` |  |  | opt | `integer` (nullable) |
 | `override_miner_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
 |  | `claims` |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+|  |  | `budget_usd` | opt | `number` (default: 0.05) |
 |  |  | `claim_id` | req | `string` (format: uuid) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `rubric` | req | [Rubric](#model-rubric) |
@@ -57,6 +58,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  | `uid` |  | req | `integer` |
 | `champion_uid` |  |  | req | `integer` (nullable) |
 | `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
+|  | `budget_usd` |  | req | `number` |
 |  | `claim_id` |  | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
 |  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
@@ -114,6 +116,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  | `uid` |  | req | `integer` |
 | `champion_uid` |  |  | req | `integer` (nullable) |
 | `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
+|  | `budget_usd` |  | req | `number` |
 |  | `claim_id` |  | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
 |  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
@@ -404,6 +407,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `champion_uid` |  |  | opt | `integer` (nullable) |
 | `override_miner_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
 |  | `claims` |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+|  |  | `budget_usd` | opt | `number` (default: 0.05) |
 |  |  | `claim_id` | req | `string` (format: uuid) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `rubric` | req | [Rubric](#model-rubric) |
@@ -501,6 +505,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `uid` |  | req | `integer` |
 | `champion_uid` |  |  | req | `integer` (nullable) |
 | `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
+|  | `budget_usd` |  | req | `number` |
 |  | `claim_id` |  | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
 |  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
@@ -605,6 +610,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `budget_usd` |  |  | opt | `number` (default: 0.05) |
 | `claim_id` |  |  | req | `string` (format: uuid) |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  | `citations` |  | opt | array[[Citation](#model-citation)] (default: []) |
@@ -629,6 +635,11 @@ Body: [WeightsResponse](#model-weightsresponse)
 ```json
 {
   "properties": {
+    "budget_usd": {
+      "default": 0.05,
+      "title": "Budget Usd",
+      "type": "number"
+    },
     "claim_id": {
       "format": "uuid",
       "title": "Claim Id",
@@ -663,6 +674,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `budget_usd` |  |  | req | `number` |
 | `claim_id` |  |  | req | `string` (format: uuid) |
 | `reference_answer` |  |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
 |  | `citations` |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
@@ -684,6 +696,10 @@ Body: [WeightsResponse](#model-weightsresponse)
 ```json
 {
   "properties": {
+    "budget_usd": {
+      "title": "Budget Usd",
+      "type": "number"
+    },
     "claim_id": {
       "format": "uuid",
       "title": "Claim Id",
@@ -704,7 +720,8 @@ Body: [WeightsResponse](#model-weightsresponse)
     "claim_id",
     "text",
     "rubric",
-    "reference_answer"
+    "reference_answer",
+    "budget_usd"
   ],
   "title": "MinerTaskClaimModel",
   "type": "object"
@@ -719,6 +736,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+|  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `claim_id` |  | req | `string` (format: uuid) |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |

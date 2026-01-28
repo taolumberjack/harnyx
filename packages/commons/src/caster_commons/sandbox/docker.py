@@ -63,6 +63,36 @@ class HttpSandboxClient(SandboxClient):
                 },
             )
             response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            logger.error(
+                "sandbox entrypoint request timed out: entrypoint=%s session_id=%s",
+                entrypoint,
+                session_id,
+                exc_info=exc,
+                extra={
+                    "entrypoint": entrypoint,
+                    "session_id": str(session_id),
+                },
+            )
+            raise RuntimeError(
+                f"sandbox entrypoint request timed out: entrypoint={entrypoint} session_id={session_id}",
+            ) from exc
+        except httpx.RequestError as exc:
+            logger.error(
+                "sandbox entrypoint request failed: entrypoint=%s session_id=%s error=%s",
+                entrypoint,
+                session_id,
+                exc,
+                exc_info=exc,
+                extra={
+                    "entrypoint": entrypoint,
+                    "session_id": str(session_id),
+                    "error": str(exc),
+                },
+            )
+            raise RuntimeError(
+                f"sandbox entrypoint request failed: entrypoint={entrypoint} session_id={session_id} error={exc}",
+            ) from exc
         except httpx.HTTPStatusError as exc:
             detail = _summarize_response(exc.response)
             status = exc.response.status_code

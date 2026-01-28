@@ -85,14 +85,14 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             env={
                 "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - inside container
                 "SANDBOX_PORT": "8000",
-                "CASTER_AGENT_MODULE": agent_module,
                 "CASTER_HOST_CONTAINER_URL": _DEFAULT_HOST_CONTAINER_URL,
+                "CASTER_AGENT_MODULE": agent_module,
                 "PYTHONPATH": "/workspace",
             },
             volumes=((str(_REPO_ROOT), "/workspace", "ro"),),
+            extra_hosts=(("host.docker.internal", "host-gateway"),),
             wait_for_healthz=True,
             healthz_timeout=30.0,
-            extra_hosts=(("host.docker.internal", "host-gateway"),),
         )
         deployment = manager.start(options)
         deployments.append(deployment)
