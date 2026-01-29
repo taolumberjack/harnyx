@@ -22,13 +22,16 @@ class SandboxSettings(BaseSettings):
         env_file_encoding="utf-8",
     )
 
-    sandbox_image: str = Field(
-        default="local/caster-sandbox:0.1.0-dev", alias="CASTER_SANDBOX_IMAGE"
-    )
+    sandbox_image: str = Field(..., alias="CASTER_SANDBOX_IMAGE")
     sandbox_network: str | None = Field(default="caster-sandbox-net", alias="CASTER_SANDBOX_NETWORK")
     sandbox_pull_policy: SandboxPullPolicy = Field(
         default="always", alias="CASTER_SANDBOX_PULL_POLICY"
     )
 
 
-__all__ = ["SandboxSettings", "SandboxPullPolicy"]
+def load_sandbox_settings() -> SandboxSettings:
+    # Pydantic settings load required values from env/.env at runtime.
+    return SandboxSettings()  # type: ignore[call-arg]
+
+
+__all__ = ["SandboxSettings", "SandboxPullPolicy", "load_sandbox_settings"]

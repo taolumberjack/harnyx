@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from caster_commons.config.llm import LlmSettings
 from caster_commons.config.observability import ObservabilitySettings
 from caster_commons.config.platform_api import PlatformApiSettings
-from caster_commons.config.sandbox import SandboxSettings
+from caster_commons.config.sandbox import SandboxSettings, load_sandbox_settings
 from caster_commons.config.subtensor import SubtensorSettings
 from caster_commons.config.vertex import VertexSettings
 
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # --- Component settings ---
     llm: LlmSettings = Field(default_factory=LlmSettings)
     vertex: VertexSettings = Field(default_factory=VertexSettings)
-    sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    sandbox: SandboxSettings = Field(default_factory=load_sandbox_settings)
     platform_api: PlatformApiSettings = Field(default_factory=PlatformApiSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     subtensor: SubtensorSettings = Field(default_factory=SubtensorSettings)
