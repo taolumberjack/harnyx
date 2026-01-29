@@ -53,18 +53,18 @@ async def test_fetch_twitter_post_live() -> None:
         timeout=DESEARCH.timeout_seconds,
     )
     try:
-        search = await client.search_links_twitter(SearchXSearchRequest(query="US", count=3))
+        search = await client.search_links_twitter(SearchXSearchRequest(query="US", count=10))
         post_ids = [post.id for post in search.data if post.id]
         assert post_ids, "desearch twitter search returned no ids for fetch_twitter_post test"
 
         last_error: Exception | None = None
-        for post_id in post_ids:
+        for post_id in post_ids[:5]:
             try:
                 post = await client.fetch_twitter_post(post_id=post_id)
-            except Exception as exc:  # pragma: no cover - network flakiness
+            except Exception as exc:  # pragma: no cover - depends on remote service
                 last_error = exc
                 continue
-            if post is None:  # pragma: no cover - depends on remote data
+            if post is None:
                 continue
             assert post.id == post_id
             return

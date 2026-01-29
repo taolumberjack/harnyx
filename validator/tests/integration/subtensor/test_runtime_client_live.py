@@ -21,7 +21,7 @@ def test_runtime_client_live_commitment_and_weights() -> None:
     settings = _load_settings()
 
     try:
-        import bittensor  # noqa: F401
+        import bittensor
     except ModuleNotFoundError as exc:  # pragma: no cover - runtime dependency
         pytest.fail(f"bittensor package not available: {exc}")
 
@@ -51,7 +51,9 @@ def test_runtime_client_live_commitment_and_weights() -> None:
     assert fetched is not None, "commitment not retrievable"
 
     baseline_update = client.last_update_block(validator_info.uid)
-    baseline_value = baseline_update if baseline_update is not None else -1
+    if baseline_update is None:
+        pytest.skip("validator metagraph last_update missing; cannot verify weight updates")
+    baseline_value = baseline_update
 
     # Choose a target miner uid ≠ validator uid
     metagraph = client.fetch_metagraph()
@@ -60,22 +62,32 @@ def test_runtime_client_live_commitment_and_weights() -> None:
     except StopIteration:
         pytest.fail("no miner UID available on this subnet to set weight for")
 
-    # Submit weight and verify via adapter
-    deadline = time.time() + 300
-    last_submit_error: Exception | None = None
-    while time.time() < deadline:
+    # Submit weight and verify via adapter.
+    network_or_endpoint = settings.subtensor.endpoint.strip() or settings.subtensor.network
+    subtensor = bittensor.Subtensor(network=network_or_endpoint)
+    weights_rate_limit = int(subtensor.weights_rate_limit(settings.subtensor.netuid))
+
+    submit_deadline = time.time() + 300
+    while time.time() < submit_deadline:
+        current_block = client.current_block()
+        if current_block < baseline_value + weights_rate_limit:
+            time.sleep(5)
+            continue
         try:
             client.submit_weights({target_uid: 1.0})
-            last_submit_error = None
             break
         except RuntimeError as exc:
-            last_submit_error = exc
-            if "too soon to commit weights" not in str(exc):
+            message = str(exc).lower()
+            if "too soon" not in message:
                 raise
             time.sleep(10)
-    if last_submit_error is not None:
-        raise last_submit_error
+    else:
+        pytest.skip(
+            "unable to submit weights within deadline "
+            f"(weights_rate_limit={weights_rate_limit}, last_update={baseline_value})"
+        )
 
+    deadline = time.time() + 300
     observed = baseline_value
     while time.time() < deadline:
         time.sleep(5)

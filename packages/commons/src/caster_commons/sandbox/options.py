@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 DEFAULT_TOKEN_HEADER = "x-caster-token"  # noqa: S105
+HOST_CONTAINER_URL_HEADER = "x-caster-host-container-url"
 
 
 def default_token_header() -> str:
@@ -41,4 +42,9 @@ class SandboxOptions:
     ulimits: Sequence[str] = field(default_factory=tuple)
 
 
-__all__ = ["SandboxOptions", "DEFAULT_TOKEN_HEADER", "default_token_header"]
+__all__ = [
+    "SandboxOptions",
+    "DEFAULT_TOKEN_HEADER",
+    "HOST_CONTAINER_URL_HEADER",
+    "default_token_header",
+]

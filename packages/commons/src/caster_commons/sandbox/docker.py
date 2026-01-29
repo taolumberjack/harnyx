@@ -37,7 +37,7 @@ class HttpSandboxClient(SandboxClient):
         *,
         token_header: str | None = None,
         host_container_url: str | None = None,
-        timeout: float = 45.0,
+        timeout: float = 130.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._token_header = token_header or default_token_header()
@@ -48,6 +48,17 @@ class HttpSandboxClient(SandboxClient):
             timeout=timeout,
         )
 
+    def configure(
+        self,
+        *,
+        token_header: str | None = None,
+        host_container_url: str | None = None,
+    ) -> None:
+        if token_header is not None:
+            self._token_header = token_header
+        if host_container_url is not None:
+            self._host_container_url = host_container_url
+
     async def invoke(
         self,
         entrypoint: str,
@@ -57,6 +68,11 @@ class HttpSandboxClient(SandboxClient):
         token: str,
         session_id: UUID,
     ) -> Mapping[str, JsonValue]:
+        headers: dict[str, str] = {
+            self._token_header: token,
+            SANDBOX_SESSION_ID_HEADER: str(session_id),
+            SANDBOX_HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
+        }
         try:
             response = await self._client.post(
                 f"/entry/{entrypoint}",
@@ -64,11 +80,7 @@ class HttpSandboxClient(SandboxClient):
                     "payload": dict(payload),
                     "context": dict(context),
                 },
-                headers={
-                    self._token_header: token,
-                    SANDBOX_SESSION_ID_HEADER: str(session_id),
-                    SANDBOX_HOST_CONTAINER_URL_HEADER: self._host_container_url or "",
-                },
+                headers=headers,
             )
             response.raise_for_status()
         except httpx.TimeoutException as exc:
