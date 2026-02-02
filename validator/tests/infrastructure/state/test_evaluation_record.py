@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
-from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
+from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_validator.application.dto.evaluation import (
     EvaluationOutcome,
     MinerTaskResult,
@@ -14,6 +14,13 @@ from caster_validator.application.dto.evaluation import (
 from caster_validator.application.services.evaluation_scoring import EvaluationScore
 from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvaluation
 from caster_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
+
+BINARY_VERDICT_OPTIONS = VerdictOptions(
+    options=(
+        VerdictOption(value=-1, description="Fail"),
+        VerdictOption(value=1, description="Pass"),
+    )
+)
 
 
 def test_in_memory_store_records_miner_task_results() -> None:

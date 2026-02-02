@@ -13,10 +13,17 @@ from caster_commons.domain.tool_call import (
     ToolCallOutcome,
     ToolResultPolicy,
 )
-from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
+from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_validator.domain.evaluation import MinerAnswer, MinerCitation, MinerCriterionEvaluation
 from caster_validator.domain.exceptions import InvalidCitationError
 from caster_validator.domain.services.receipt_registry import ReceiptRegistry
+
+BINARY_VERDICT_OPTIONS = VerdictOptions(
+    options=(
+        VerdictOption(value=-1, description="Fail"),
+        VerdictOption(value=1, description="Pass"),
+    )
+)
 
 
 def make_receipt(

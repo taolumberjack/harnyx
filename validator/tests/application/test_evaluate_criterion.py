@@ -15,7 +15,7 @@ from caster_commons.domain.tool_call import (
     ToolResult,
     ToolResultPolicy,
 )
-from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
+from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_commons.llm.pricing import ALLOWED_TOOL_MODELS
 from caster_validator.application.dto.evaluation import EntrypointInvocationResult, EvaluationRequest
 from caster_validator.application.evaluate_criterion import EvaluationOrchestrator, UsageSummarizer
@@ -23,6 +23,13 @@ from caster_validator.application.services.evaluation_scoring import EvaluationS
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry, StubGrader
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+BINARY_VERDICT_OPTIONS = VerdictOptions(
+    options=(
+        VerdictOption(value=-1, description="Fail"),
+        VerdictOption(value=1, description="Pass"),
+    )
+)
 
 
 class StubEntrypointInvoker:

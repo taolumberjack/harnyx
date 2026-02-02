@@ -8,7 +8,7 @@ import pytest
 from caster_commons.application.session_manager import SessionManager
 from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.session import LlmUsageTotals
-from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
+from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from caster_commons.sandbox.manager import SandboxDeployment, SandboxManager
@@ -29,6 +29,13 @@ from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvalua
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+BINARY_VERDICT_OPTIONS = VerdictOptions(
+    options=(
+        VerdictOption(value=-1, description="Fail"),
+        VerdictOption(value=1, description="Pass"),
+    )
+)
 
 
 class DummySandboxManager(SandboxManager):

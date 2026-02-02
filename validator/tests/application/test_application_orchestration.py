@@ -9,7 +9,7 @@ from caster_commons.application.dto.session import SessionTokenRequest
 from caster_commons.application.session_manager import SessionManager
 from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
 from caster_commons.domain.session import LlmUsageTotals
-from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
+from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from caster_commons.llm.pricing import ALLOWED_TOOL_MODELS
 from caster_commons.tools.dto import ToolInvocationRequest
@@ -24,6 +24,13 @@ from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry, 
 pytestmark = pytest.mark.anyio("asyncio")
 
 TEST_SESSION_TOKEN = uuid4().hex
+
+BINARY_VERDICT_OPTIONS = VerdictOptions(
+    options=(
+        VerdictOption(value=-1, description="Fail"),
+        VerdictOption(value=1, description="Pass"),
+    )
+)
 
 
 class StubSandboxClient:

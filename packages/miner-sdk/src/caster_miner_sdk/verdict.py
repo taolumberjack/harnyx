@@ -78,17 +78,7 @@ class VerdictOptions:
                 return entry.description
         raise ValueError(f"verdict option missing for value {value!r}")
 
-
-BINARY_VERDICT_OPTIONS = VerdictOptions(
-    options=(
-        VerdictOption(value=-1, description="Fail"),
-        VerdictOption(value=1, description="Pass"),
-    )
-)
-
-
 __all__ = [
     "VerdictOption",
     "VerdictOptions",
-    "BINARY_VERDICT_OPTIONS",
 ]

@@ -7,11 +7,18 @@ from uuid import uuid4
 import pytest
 
 from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
-from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
+from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
 from caster_validator.application.status import StatusProvider
 from caster_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from caster_validator.runtime.evaluation_worker import EvaluationWorker
+
+BINARY_VERDICT_OPTIONS = VerdictOptions(
+    options=(
+        VerdictOption(value=-1, description="Fail"),
+        VerdictOption(value=1, description="Pass"),
+    )
+)
 
 
 def _sample_batch() -> MinerTaskBatchSpec:

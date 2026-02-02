@@ -39,7 +39,6 @@ class LlmSettings(BaseSettings):
     generator_llm_max_output_tokens: int = Field(
         default=DEFAULT_MAX_OUTPUT_TOKENS, alias="GENERATOR_LLM_MAX_OUTPUT_TOKENS"
     )
-    generator_harden_claims: bool = Field(default=False, alias="GENERATOR_HARDEN_CLAIMS")
 
     reference_llm_provider: LlmProviderName = Field(default="openai", alias="REFERENCE_LLM_PROVIDER")
     reference_llm_model: str = Field(default="", alias="REFERENCE_LLM_MODEL")

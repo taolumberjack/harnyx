@@ -7,10 +7,17 @@ import pytest
 from pydantic import TypeAdapter
 
 from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
-from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
+from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_validator.application.providers.claims import FileClaimsProvider, StaticClaimsProvider
 
 _MINER_TASK_CLAIM_ADAPTER = TypeAdapter(MinerTaskClaim)
+
+BINARY_VERDICT_OPTIONS = VerdictOptions(
+    options=(
+        VerdictOption(value=-1, description="Fail"),
+        VerdictOption(value=1, description="Pass"),
+    )
+)
 
 
 def _sample_claim(text: str) -> MinerTaskClaim:

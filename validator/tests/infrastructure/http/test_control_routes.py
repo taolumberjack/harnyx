@@ -15,7 +15,7 @@ from caster_commons.domain.tool_usage import (
     SearchToolUsageSummary,
     ToolUsageSummary,
 )
-from caster_commons.domain.verdict import BINARY_VERDICT_OPTIONS
+from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_validator.application.dto.evaluation import (
     EvaluationOutcome,
     MinerTaskResult,
@@ -25,6 +25,13 @@ from caster_validator.application.services.evaluation_scoring import EvaluationS
 from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvaluation
 from caster_validator.infrastructure.http.routes import ValidatorControlDeps, add_control_routes
 from caster_validator.infrastructure.state.run_progress import RunProgressSnapshot
+
+BINARY_VERDICT_OPTIONS = VerdictOptions(
+    options=(
+        VerdictOption(value=-1, description="Fail"),
+        VerdictOption(value=1, description="Pass"),
+    )
+)
 
 
 def _create_test_app(provider: DemoControlDependencyProvider) -> FastAPI:
