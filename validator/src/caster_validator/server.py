@@ -65,6 +65,10 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Caster Validator API", version="0.1.0", lifespan=lifespan)
     app.middleware("http")(request_logging_middleware)
 
+    @app.get("/healthz", description="Validator health check.")
+    def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
     add_tool_routes(app, _runtime.tool_route_deps_provider)
     add_control_routes(app, _runtime.control_deps_provider)
 
