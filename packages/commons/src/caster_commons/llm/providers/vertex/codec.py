@@ -54,6 +54,17 @@ def serialize_tools(tools: Sequence[LlmTool] | None) -> list[types.Tool] | None:
     return serialized
 
 
+def serialize_provider_native_tools(tools: Sequence[LlmTool] | None) -> list[types.Tool]:
+    if not tools:
+        return []
+    serialized: list[types.Tool] = []
+    for tool in tools:
+        if tool.config is None:
+            raise ValueError("provider-native Vertex tools require config payload")
+        serialized.append(types.Tool(**dict(tool.config)))
+    return serialized
+
+
 def resolve_tool_config(
     choice: str | None,
     tools: Sequence[types.Tool] | None,
@@ -266,6 +277,7 @@ def json_schema_from_model(model: type[BaseModel]) -> dict[str, Any]:
 __all__ = [
     "normalize_messages",
     "serialize_tools",
+    "serialize_provider_native_tools",
     "resolve_tool_config",
     "resolve_thinking_config",
     "build_choices",

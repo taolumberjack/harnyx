@@ -312,3 +312,72 @@ async def test_vertex_provider_injects_google_search_tool(monkeypatch: pytest.Mo
     assert config.tools
     tool = config.tools[0]
     assert tool.google_search is not None
+
+
+async def test_vertex_provider_includes_provider_native_grounded_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.models = self._Models()
+
+        class _Models:
+            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
+                captured["model"] = model
+                captured["config"] = config
+                return FakeResponse()
+
+    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    request = GroundedLlmRequest(
+        provider="vertex",
+        model="gemini-2.0",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("check novelty"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=None,
+        tools=(
+            LlmTool(
+                type="provider_native",
+                config={
+                    "retrieval": {
+                        "external_api": {
+                            "api_spec": "ELASTIC_SEARCH",
+                            "endpoint": "https://elastic.example.com",
+                            "api_auth": {"api_key_config": {"api_key_string": "ApiKey test"}},
+                            "elastic_search_params": {
+                                "index": "feed-eval-alias",
+                                "search_template": "feed_eval_hybrid_v1",
+                                "num_hits": 20,
+                            },
+                        }
+                    }
+                },
+            ),
+        ),
+    )
+
+    await provider.invoke(request)
+
+    config = captured["config"]
+    assert config.tools
+    assert len(config.tools) == 2
+    assert config.tools[0].google_search is not None
+    retrieval = config.tools[1].retrieval
+    assert retrieval is not None
+    external_api = retrieval.external_api
+    assert external_api is not None
+    assert external_api.endpoint == "https://elastic.example.com"
+    assert external_api.elastic_search_params is not None
+    assert external_api.elastic_search_params.search_template == "feed_eval_hybrid_v1"

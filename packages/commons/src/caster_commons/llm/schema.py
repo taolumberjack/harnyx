@@ -58,6 +58,10 @@ class GroundedLlmRequest(AbstractLlmRequest):
         provider = self.provider
         if provider not in {"openai", "vertex"}:
             raise ValueError(f"grounded mode not supported for provider '{self.provider}'")
+        if self.tools and provider != "vertex":
+            raise ValueError("grounded requests with additional tools are only supported for provider 'vertex'")
+        if self.tools and _is_vertex_claude_model(self.model):
+            raise ValueError("grounded requests with additional tools are not supported for Vertex Claude models")
         if self.model.startswith("gpt-5") and self.temperature is not None:
             raise ValueError("gpt-5 models do not support temperature parameter")
 
@@ -104,4 +108,27 @@ __all__ = [
     "LlmCitation",
     "LlmResponse",
     "PostprocessResult",
+    "supports_grounded_additional_tools",
 ]
+
+
+def supports_grounded_additional_tools(*, provider: str, model: str) -> bool:
+    return provider == "vertex" and not _is_vertex_claude_model(model)
+
+
+def _is_vertex_claude_model(model: str) -> bool:
+    normalized = model.strip().lower()
+    if not normalized:
+        return False
+    if normalized.startswith("claude-"):
+        return True
+
+    for prefix in ("publishers/anthropic/models/", "anthropic/models/"):
+        idx = normalized.find(prefix)
+        if idx == -1:
+            continue
+        extracted = normalized[idx + len(prefix) :].strip()
+        return extracted.startswith("claude-")
+
+    idx = normalized.find("claude-")
+    return idx != -1 and (idx == 0 or normalized[idx - 1] == "/")

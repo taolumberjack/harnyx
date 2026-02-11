@@ -39,6 +39,7 @@ from .codec import (
     normalize_messages,
     resolve_thinking_config,
     resolve_tool_config,
+    serialize_provider_native_tools,
     serialize_tools,
 )
 from .credentials import cleanup_credentials_file, prepare_credentials
@@ -108,6 +109,7 @@ class VertexLlmProvider(BaseLlmProvider):
             if is_claude_web_search_model(request.model):
                 return None, None
             tools = [types.Tool(google_search=types.GoogleSearch())]
+            tools.extend(serialize_provider_native_tools(request.tools))
             return tools, None
 
         serialized_tools = serialize_tools(request.tools)
