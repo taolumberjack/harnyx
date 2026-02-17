@@ -8,6 +8,7 @@ from caster_sandbox.tools.proxy import ToolInvocationError, ToolProxy
 
 from caster_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from caster_miner_sdk.api import LlmChatResult, llm_chat, search_ai, search_web
+from caster_miner_sdk.sandbox_headers import CASTER_SESSION_ID_HEADER
 
 TEST_TOKEN = "token-123"  # noqa: S105
 ERROR_TOKEN = "bad-token"  # noqa: S105
@@ -40,13 +41,12 @@ async def test_tool_proxy_invokes_endpoint_with_token() -> None:
 
     assert result == {"ok": True, "result": 5}
     assert captured["payload"] == {
-        "session_id": SESSION_ID,
-        "token": TEST_TOKEN,
         "tool": "search_web",
         "args": ["query"],
         "kwargs": {"foo": "bar"},
     }
     assert captured["headers"]["x-caster-token"] == "token-123"
+    assert captured["headers"][CASTER_SESSION_ID_HEADER] == SESSION_ID
 
 
 async def test_tool_proxy_raises_on_http_error() -> None:

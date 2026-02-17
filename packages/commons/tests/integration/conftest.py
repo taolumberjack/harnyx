@@ -20,7 +20,6 @@ from caster_commons.sandbox.docker import (
     resolve_sandbox_host_container_url,
 )
 from caster_commons.sandbox.manager import SandboxDeployment
-from caster_commons.sandbox.options import default_token_header
 from caster_commons.sandbox.runtime import CONTAINER_SECURITY
 from caster_commons.sandbox.seccomp.paths import default_profile_path
 from caster_commons.sandbox.state import DEFAULT_STATE_DIR
@@ -78,7 +77,6 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
     _ensure_image_present(docker_bin, image)
 
     sandbox_network = "bridge"
-    token_header = default_token_header()
     host_container_url = resolve_sandbox_host_container_url(
         docker_binary=docker_bin,
         sandbox_network=sandbox_network,
@@ -111,14 +109,12 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
             env={
                 "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - inside container
                 "SANDBOX_PORT": "8000",
-                "CASTER_TOKEN_HEADER": token_header,
                 "CASTER_AGENT_PATH": artifact.container_path,
             },
             volumes=((str(state_dir), DEFAULT_STATE_DIR, "ro"),),
             wait_for_healthz=True,
             healthz_timeout=30.0,
             network=sandbox_network,
-            token_header=token_header,
             host_container_url=host_container_url,
             user=CONTAINER_SECURITY.user,
             seccomp_profile=default_profile_path(),

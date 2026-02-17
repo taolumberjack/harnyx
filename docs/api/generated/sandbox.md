@@ -15,7 +15,7 @@ Generated from FastAPI OpenAPI.
 
 Invoke a registered entrypoint by name in a sandboxed worker process.
 
-**Auth**: Auth not represented in OpenAPI; see [API auth notes](../README.md).
+**Auth**: Tool token (`x-caster-token` header)
 
 **Parameters**
 | Param | In | Req | Notes |
@@ -61,7 +61,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 Sandbox health check.
 
-**Auth**: Auth not represented in OpenAPI; see [API auth notes](../README.md).
+**Auth**: None.
 
 **Responses**
 `200` Successful Response

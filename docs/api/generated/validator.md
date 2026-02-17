@@ -192,7 +192,12 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 
 Execute a tool invocation and return the tool result and usage.
 
-**Auth**: Token + session in body (ToolExecuteRequestDTO).
+**Auth**: Tool token (`x-caster-token` header)
+
+**Headers**
+| Header | Req | Notes |
+| --- | --- | --- |
+| `x-caster-session-id` | req | `string` (format: uuid) |
 
 **Request**
 Content-Type: `application/json`
@@ -202,8 +207,6 @@ Body: [ToolExecuteRequestDTO](#model-toolexecuterequestdto)
 | --- | --- | --- | --- | --- |
 | `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
-| `session_id` |  |  | req | `string` (format: uuid) |
-| `token` |  |  | req | `string` |
 | `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, llm_chat, search_items, test_tool, tooling_info]) |
 
 **Responses**
@@ -1438,8 +1441,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
-| `session_id` |  |  | req | `string` (format: uuid) |
-| `token` |  |  | req | `string` |
 | `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, llm_chat, search_items, test_tool, tooling_info]) |
 
 <details>
@@ -1447,6 +1448,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "args": {
       "default": [],
@@ -1464,15 +1466,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "title": "Kwargs",
       "type": "object"
     },
-    "session_id": {
-      "format": "uuid",
-      "title": "Session Id",
-      "type": "string"
-    },
-    "token": {
-      "title": "Token",
-      "type": "string"
-    },
     "tool": {
       "enum": [
         "search_web",
@@ -1488,8 +1481,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     }
   },
   "required": [
-    "session_id",
-    "token",
     "tool"
   ],
   "title": "ToolExecuteRequestDTO",

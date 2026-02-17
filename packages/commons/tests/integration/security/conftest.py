@@ -21,7 +21,6 @@ from caster_commons.sandbox.seccomp.paths import default_profile_path
 DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 DOCKER_BINARY = shutil.which(DOCKER_CLI) or DOCKER_CLI
 DOCKER_IMAGE_PATTERN = re.compile(r"^[\w./:-]+$")
-DEFAULT_TOKEN_HEADER = os.getenv("CASTER_TOKEN_HEADER", "x-caster-token")
 
 
 @pytest.fixture(scope="session")
@@ -89,12 +88,10 @@ def sandbox(attacker_agent_path: Path):
         env={
             "SANDBOX_HOST": "0.0.0.0",  # noqa: S104 - container needs to bind all interfaces
             "SANDBOX_PORT": "8000",
-            "CASTER_TOKEN_HEADER": DEFAULT_TOKEN_HEADER,
             "CASTER_AGENT_PATH": "/sandbox/agent.py",
         },
         volumes=((str(attacker_agent_path), "/sandbox/agent.py", "ro"),),
         wait_for_healthz=True,
-        token_header=DEFAULT_TOKEN_HEADER,
         host_container_url=host_container_url,
         network=sandbox_network,
         user=CONTAINER_SECURITY.user,

@@ -10,42 +10,44 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security import APIKeyHeader
 
 from caster_miner_sdk.sandbox_headers import (
-    SANDBOX_HOST_CONTAINER_URL_HEADER,
-    SANDBOX_SESSION_ID_HEADER,
+    CASTER_HOST_CONTAINER_URL_HEADER,
+    CASTER_SESSION_ID_HEADER,
 )
 from caster_sandbox.sandbox.harness import SandboxHarness
 from caster_sandbox.tools.proxy import ToolProxy
 
 logger = logging.getLogger("caster_sandbox")
 
+CASTER_TOKEN_SCHEME = APIKeyHeader(name="x-caster-token", scheme_name="CasterToken", auto_error=False)
 
-def _token_header() -> str:
-    raw = (os.getenv("CASTER_TOKEN_HEADER") or "").strip()
-    return raw or "x-caster-token"
+
+async def require_tool_token(token: str | None = Security(CASTER_TOKEN_SCHEME)) -> str:
+    if not token:
+        raise HTTPException(status_code=401, detail="missing x-caster-token header")
+    return token
 
 
 def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str]) -> ToolProxy | None:
     if config:
         raise ValueError("tool proxy config is not supported; use request headers")
 
-    base_url = (headers.get(SANDBOX_HOST_CONTAINER_URL_HEADER) or "").strip()
-    token_header = _token_header()
-    token = (headers.get(token_header) or "").strip()
-    session_id = (headers.get(SANDBOX_SESSION_ID_HEADER) or "").strip()
+    base_url = (headers.get(CASTER_HOST_CONTAINER_URL_HEADER) or "").strip()
+    token = (headers.get("x-caster-token") or "").strip()
+    session_id = (headers.get(CASTER_SESSION_ID_HEADER) or "").strip()
     if not session_id:
-        raise RuntimeError(f"sandbox request missing {SANDBOX_SESSION_ID_HEADER}")
+        raise RuntimeError(f"sandbox request missing {CASTER_SESSION_ID_HEADER}")
     if not base_url:
-        raise RuntimeError(f"sandbox request missing {SANDBOX_HOST_CONTAINER_URL_HEADER} required to enable tools")
+        raise RuntimeError(f"sandbox request missing {CASTER_HOST_CONTAINER_URL_HEADER} required to enable tools")
     if not token:
-        raise RuntimeError(f"sandbox request missing {token_header} header required to enable tools")
+        raise RuntimeError("sandbox request missing x-caster-token header required to enable tools")
     return ToolProxy(
         base_url=base_url,
         token=token,
         session_id=session_id,
-        token_header=token_header,
     )
 
 
@@ -90,7 +92,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Caster Sandbox", version="0.1.0", lifespan=lifespan)
-app.include_router(sandbox_harness.create_router(), prefix="/entry")
+app.include_router(
+    sandbox_harness.create_router(),
+    prefix="/entry",
+    dependencies=[Depends(require_tool_token)],
+)
 
 
 @app.get("/healthz", tags=["health"], description="Sandbox health check.")

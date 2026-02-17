@@ -9,6 +9,7 @@ from typing import cast
 import httpx
 
 from caster_miner_sdk.json_types import JsonValue
+from caster_miner_sdk.sandbox_headers import CASTER_SESSION_ID_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,6 @@ class ToolProxy:
         endpoint: str = "/v1/tools/execute",
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
-        token_header: str = DEFAULT_TOKEN_HEADER,
     ) -> None:
         if not base_url:
             raise ValueError("base_url must be provided")
@@ -42,7 +42,6 @@ class ToolProxy:
             raise ValueError("session_id must be provided")
         self._endpoint = endpoint
         self._timeout = timeout
-        self._token_header = token_header
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
         self._token = token
@@ -57,13 +56,14 @@ class ToolProxy:
     ) -> JsonValue:
         """Invoke a host-managed tool."""
         payload = {
-            "session_id": self._session_id,
-            "token": self._token,
             "tool": method,
             "args": list(args or []),
             "kwargs": dict(kwargs or {}),
         }
-        headers = {self._token_header: self._token}
+        headers = {
+            DEFAULT_TOKEN_HEADER: self._token,
+            CASTER_SESSION_ID_HEADER: self._session_id,
+        }
         endpoint = f"{self._client.base_url}{self._endpoint}"
         logger.info("[ToolProxy] POST %s %s", endpoint, _describe_payload(payload))
         try:

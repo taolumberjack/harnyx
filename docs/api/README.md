@@ -12,9 +12,15 @@ This directory documents the **subnet-facing HTTP endpoints** which miners/valid
 - **Bittensor-signed requests**
   - `Authorization: Bittensor ss58="<ss58>",sig="<hex>"`
   - Signature is over canonical `{method, path+query, body}`.
-- **Sandbox tool execution (token + session)**
-  - Validator → Sandbox: `x-caster-session-id` + `x-caster-token` + `x-caster-host-container-url` headers
-  - Sandbox → tools: `POST /v1/tools/execute` includes `session_id` + `token`
+- **Sandbox tool execution (auth + session context)**
+  - Validator → Sandbox headers: `x-caster-session-id` + `x-caster-token` + `x-caster-host-container-url`
+  - Sandbox → tool host (`POST /v1/tools/execute`) headers: `x-caster-session-id` + `x-caster-token`
+  - `/v1/tools/execute` body: `ToolExecuteRequestDTO` (`tool`, `args`, `kwargs`); session context is `x-caster-session-id` header
+
+## OpenAPI auth invariant
+
+- If an endpoint has OpenAPI `security`, it is protected by that scheme.
+- If OpenAPI `security` is missing/empty, the endpoint is public (`Auth: None.` in generated docs).
 
 ## Flows (sequence diagrams)
 All Mermaid sequence diagrams live in [flows.md](flows.md), grouped by domain:
@@ -35,5 +41,5 @@ flowchart TB
   Platform -->|Bittensor signed| Validator
 
   Validator --> Sandbox[Sandbox API]
-  Sandbox -->|token + session| Validator
+  Sandbox -->|x-caster-token + x-caster-session-id| Validator
 ```

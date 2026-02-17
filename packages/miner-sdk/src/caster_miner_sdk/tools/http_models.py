@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from uuid import UUID
-
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import JsonValue as PydanticJsonValue
 
@@ -11,10 +9,8 @@ from caster_miner_sdk.tools.types import ToolName
 
 
 class ToolExecuteRequestDTO(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    session_id: UUID
-    token: str
     tool: ToolName
     args: tuple[PydanticJsonValue, ...] = ()
     kwargs: dict[str, PydanticJsonValue] = {}

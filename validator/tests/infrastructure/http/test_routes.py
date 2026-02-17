@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from caster_commons.domain.session import Session, SessionStatus, SessionUsage
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from caster_commons.protocol_headers import CASTER_SESSION_ID_HEADER
 from caster_commons.tools.executor import ToolExecutor
 from caster_commons.tools.token_semaphore import TokenSemaphore
 from caster_commons.tools.usage_tracker import UsageTracker
@@ -113,11 +114,13 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     response = client.post(
         "/v1/tools/execute",
         json={
-            "session_id": str(provider.session.session_id),
-            "token": DEMO_SESSION_TOKEN,
             "tool": "search_web",
             "args": ["demo"],
             "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-caster-token": DEMO_SESSION_TOKEN,
+            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -149,11 +152,13 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     response = client.post(
         "/v1/tools/execute",
         json={
-            "session_id": str(provider.session.session_id),
-            "token": DEMO_SESSION_TOKEN,
             "tool": "search_web",
             "args": ["demo"],
             "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-caster-token": DEMO_SESSION_TOKEN,
+            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -170,11 +175,13 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
     response = client.post(
         "/v1/tools/execute",
         json={
-            "session_id": str(provider.session.session_id),
-            "token": DEMO_SESSION_TOKEN,
             "tool": "tooling_info",
             "args": [],
             "kwargs": {},
+        },
+        headers={
+            "x-caster-token": DEMO_SESSION_TOKEN,
+            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -200,11 +207,13 @@ def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None
         response = client.post(
             "/v1/tools/execute",
             json={
-                "session_id": str(provider.session.session_id),
-                "token": DEMO_SESSION_TOKEN,
                 "tool": "search_web",
                 "args": ["demo"],
                 "kwargs": {"query": "demo"},
+            },
+            headers={
+                "x-caster-token": DEMO_SESSION_TOKEN,
+                CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
             },
         )
     finally:
@@ -216,3 +225,100 @@ def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None
 class _FailingToolExecutor:
     async def execute(self, _: object) -> object:
         raise RuntimeError("expected failure")
+
+
+def test_execute_tool_endpoint_rejects_missing_token_header() -> None:
+    provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={CASTER_SESSION_ID_HEADER: str(provider.session.session_id)},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "missing x-caster-token header"}
+
+
+def test_execute_tool_endpoint_rejects_missing_session_header() -> None:
+    provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={"x-caster-token": DEMO_SESSION_TOKEN},
+    )
+
+    assert response.status_code == 422
+
+
+def test_execute_tool_endpoint_rejects_malformed_session_header() -> None:
+    provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-caster-token": DEMO_SESSION_TOKEN,
+            CASTER_SESSION_ID_HEADER: "not-a-uuid",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_execute_tool_endpoint_rejects_legacy_body_session_id_field() -> None:
+    provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "session_id": str(provider.session.session_id),
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-caster-token": DEMO_SESSION_TOKEN,
+            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_execute_tool_openapi_declares_caster_token_security() -> None:
+    provider = DemoDependencyProvider()
+    app = create_test_app(provider)
+
+    operation = app.openapi()["paths"]["/v1/tools/execute"]["post"]
+    security = operation["security"]
+    parameters = operation["parameters"]
+    assert {"CasterToken": []} in security
+    assert any(
+        parameter.get("name") == CASTER_SESSION_ID_HEADER
+        and parameter.get("in") == "header"
+        and parameter.get("required") is True
+        and parameter.get("schema", {}).get("format") == "uuid"
+        for parameter in parameters
+    )

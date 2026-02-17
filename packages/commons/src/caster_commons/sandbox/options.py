@@ -9,10 +9,6 @@ DEFAULT_TOKEN_HEADER = "x-caster-token"  # noqa: S105
 HOST_CONTAINER_URL_HEADER = "x-caster-host-container-url"
 
 
-def default_token_header() -> str:
-    return DEFAULT_TOKEN_HEADER
-
-
 @dataclass(frozen=True)
 class SandboxOptions:
     """Configuration for launching a sandbox container."""
@@ -26,7 +22,6 @@ class SandboxOptions:
     entrypoint: str | None = None
     command: Sequence[str] | None = None
     network: str | None = None
-    token_header: str = field(default_factory=default_token_header)
     host_container_url: str | None = None
     volumes: Sequence[tuple[str, str, str | None]] = field(default_factory=tuple)
     working_dir: str | None = None
@@ -46,5 +41,4 @@ __all__ = [
     "SandboxOptions",
     "DEFAULT_TOKEN_HEADER",
     "HOST_CONTAINER_URL_HEADER",
-    "default_token_header",
 ]

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Final
 
 from caster_commons.sandbox.docker import DockerSandboxManager, resolve_sandbox_host_container_url
-from caster_commons.sandbox.options import SandboxOptions, default_token_header
+from caster_commons.sandbox.options import SandboxOptions
 from caster_commons.sandbox.seccomp.paths import default_profile_path
 
 DOCKER_BINARY: Final[str] = "/usr/bin/docker"
@@ -74,7 +74,6 @@ def build_sandbox_options(
 ) -> SandboxOptions:
     """Build hardened sandbox options shared by platform and validator."""
 
-    token_header = default_token_header()
     host_container_url = resolve_sandbox_host_container_url(
         docker_binary=DOCKER_BINARY,
         sandbox_network=network,
@@ -84,7 +83,6 @@ def build_sandbox_options(
     env: dict[str, str] = {
         "SANDBOX_HOST": "0.0.0.0",  # noqa: S104
         "SANDBOX_PORT": str(container_port),
-        "CASTER_TOKEN_HEADER": token_header,
     }
     if extra_env:
         env.update(extra_env)
@@ -99,14 +97,13 @@ def build_sandbox_options(
         entrypoint=None,
         command=None,
         network=network,
-        token_header=token_header,
         host_container_url=host_container_url,
         volumes=volumes,
         extra_hosts=(("host.docker.internal", "host-gateway"),),
         startup_delay_seconds=2.0,
         wait_for_healthz=True,
         healthz_path="/healthz",
-        healthz_timeout=15.0,
+        healthz_timeout=30.0,
         stop_timeout_seconds=5,
         user=CONTAINER_SECURITY.user,
         seccomp_profile=default_profile_path(),

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from caster_commons.domain.session import Session, SessionStatus, SessionUsage
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from caster_commons.protocol_headers import CASTER_SESSION_ID_HEADER
 from caster_commons.tools.executor import ToolExecutor
 from caster_commons.tools.token_semaphore import TokenSemaphore
 from caster_commons.tools.usage_tracker import UsageTracker
@@ -113,11 +114,13 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     response = client.post(
         "/v1/tools/execute",
         json={
-            "session_id": str(provider.session.session_id),
-            "token": DEMO_SESSION_TOKEN,
             "tool": "search_web",
             "args": ["demo"],
             "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-caster-token": DEMO_SESSION_TOKEN,
+            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -149,11 +152,13 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     response = client.post(
         "/v1/tools/execute",
         json={
-            "session_id": str(provider.session.session_id),
-            "token": DEMO_SESSION_TOKEN,
             "tool": "search_web",
             "args": ["demo"],
             "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-caster-token": DEMO_SESSION_TOKEN,
+            CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
         },
     )
 
@@ -172,11 +177,13 @@ def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None
         response = client.post(
             "/v1/tools/execute",
             json={
-                "session_id": str(provider.session.session_id),
-                "token": DEMO_SESSION_TOKEN,
                 "tool": "search_web",
                 "args": ["demo"],
                 "kwargs": {"query": "demo"},
+            },
+            headers={
+                "x-caster-token": DEMO_SESSION_TOKEN,
+                CASTER_SESSION_ID_HEADER: str(provider.session.session_id),
             },
         )
     finally:

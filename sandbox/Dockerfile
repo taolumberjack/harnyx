@@ -18,4 +18,3 @@ USER caster
 
 ENTRYPOINT ["caster-sandbox"]
 CMD ["--serve"]
-

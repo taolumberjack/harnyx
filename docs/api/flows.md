@@ -20,11 +20,11 @@ These diagrams are intentionally **linear** (no `alt` / `par` / `loop`) to keep 
 
 ## Flow catalog (fast scan)
 
-| Domain | Flow | Goal | Actors | Auth |
+| Domain | Flow | Goal | Actors | Auth / Context |
 |--------|------|------|--------|------|
 | Subnet runtime | Miner script upload | upload script artifact | Miner ↔ Platform | `Authorization: Bittensor ...` |
-| Subnet runtime | Miner evaluation batch | forward batch + run sandbox + poll progress | Platform ↔ Validator ↔ Sandbox | `Authorization: Bittensor ...` + token/session |
-| Subnet runtime | Tool execution | agent invokes host tools | Sandbox agent ↔ Tool host | token + session |
+| Subnet runtime | Miner evaluation batch | forward batch + run sandbox + poll progress | Platform ↔ Validator ↔ Sandbox | `Authorization: Bittensor ...` + `x-caster-token` + `x-caster-session-id` + `x-caster-host-container-url` headers |
+| Subnet runtime | Tool execution | agent invokes host tools | Sandbox agent ↔ Tool host | `x-caster-token` + `x-caster-session-id` headers |
 | Subnet ops | Validator registration and weights | register API base URL; read weights | Validator ↔ Platform | `Authorization: Bittensor ...` |
 
 ---
@@ -64,7 +64,7 @@ sequenceDiagram
 |---|---|
 | **What’s happening** | Platform distributes a batch; validator fetches artifacts; validator runs sandbox entrypoint; platform polls progress + status. |
 | **Actors** | Platform ↔ Validator API ↔ Sandbox |
-| **Auth** | Platform↔Validator is Bittensor-signed; Validator↔Sandbox uses token + session. |
+| **Auth** | Platform↔Validator is Bittensor-signed; Validator↔Sandbox uses `x-caster-token` (auth) + `x-caster-session-id` (session context) + `x-caster-host-container-url` (tool host base URL) headers. |
 | **Happy path** | forward batch → fetch artifacts → run sandbox → poll progress/status |
 
 #### 1) Platform forwards a batch to validators
@@ -109,6 +109,7 @@ sequenceDiagram
   Note over V,S: Headers: x-caster-session-id + x-caster-token + x-caster-host-container-url
   V->>S: POST /entry/{entrypoint_name}<br/>{ payload, context }
 
+  Note over S,VA: Headers: x-caster-session-id + x-caster-token
   S->>VA: POST /v1/tools/execute<br/>ToolExecuteRequestDTO (0+ times)
   VA-->>S: 200 ToolExecuteResponseDTO
 
@@ -153,7 +154,7 @@ sequenceDiagram
 |---|---|
 | **What’s happening** | Sandboxed agent code invokes host-managed tools (search/LLM/etc.) over HTTP. |
 | **Actors** | Agent (in sandbox) ↔ Tool host (validator) |
-| **Auth** | token + session (`ToolExecuteRequestDTO` includes `session_id` + `token`) |
+| **Auth** | `x-caster-token` (auth) + `x-caster-session-id` (session context) headers |
 | **Happy path** | `POST /v1/tools/execute` returns `ToolExecuteResponseDTO` |
 
 ```mermaid
@@ -161,7 +162,7 @@ sequenceDiagram
   participant A as Agent code (in sandbox)
   participant H as Tool host (validator)
 
-  Note over A,H: ToolProxy sends x-caster-token header (name configurable)
+  Note over A,H: ToolProxy sends x-caster-token + x-caster-session-id headers
   A->>H: POST /v1/tools/execute<br/>ToolExecuteRequestDTO
   H-->>A: 200 ToolExecuteResponseDTO
 ```

@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Security
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
 from caster_commons.bittensor import VerificationError
 from caster_commons.domain.session import Session
 from caster_commons.errors import ConcurrencyLimitError
+from caster_commons.protocol_headers import CASTER_SESSION_ID_HEADER
 from caster_commons.tools.dto import ToolInvocationRequest
 from caster_commons.tools.executor import ToolExecutor
 from caster_commons.tools.http_models import (
@@ -73,6 +74,8 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
     def get_dependencies() -> ToolRouteDeps:
         return dependency_provider()
 
+    tool_token_header = APIKeyHeader(name="x-caster-token", scheme_name="CasterToken", auto_error=False)
+
     @app.post(
         "/v1/tools/execute",
         response_model=ToolExecuteResponseDTO,
@@ -81,10 +84,14 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
     async def execute_tool(
         payload: ToolExecuteRequestDTO,
         deps: ToolRouteDeps = Depends(get_dependencies),  # noqa: B008
+        token_header: str | None = Security(tool_token_header),
+        session_id: UUID = Header(alias=CASTER_SESSION_ID_HEADER),  # noqa: B008
     ) -> ToolExecuteResponseDTO:
+        if not token_header:
+            raise HTTPException(status_code=401, detail="missing x-caster-token header")
         invocation = ToolInvocationRequest(
-            session_id=payload.session_id,
-            token=payload.token,
+            session_id=session_id,
+            token=token_header,
             tool=payload.tool,
             args=payload.args,
             kwargs=payload.kwargs,
@@ -98,7 +105,7 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
             RuntimeError,
             ValueError,
         ) as exc:
-            _log_tool_error(invocation, invocation, exc)
+            _log_tool_error(session_id, invocation, exc)
             raise HTTPException(status_code=400, detail=_public_error_message(exc)) from exc
         return serialize_tool_execute_response(result)
 
@@ -188,15 +195,17 @@ async def _execute_with_semaphore_async(invocation: ToolInvocationRequest, deps:
 
 
 def _log_tool_error(
-    payload: ToolInvocationRequest, invocation: ToolInvocationRequest, exc: Exception
+    request_session_id: UUID,
+    invocation: ToolInvocationRequest,
+    exc: Exception,
 ) -> None:
     logger.exception(
         "tool execution failed (tool=%s session_id=%s request_session_id=%s args=%s kwargs=%s)",
-        payload.tool,
-        str(payload.session_id),
-        str(invocation.session_id) if invocation else None,
-        tuple(invocation.args) if invocation else None,
-        dict(invocation.kwargs) if invocation else None,
+        invocation.tool,
+        str(invocation.session_id),
+        str(request_session_id),
+        tuple(invocation.args),
+        dict(invocation.kwargs),
         extra={"error_detail": str(exc)},
     )
 

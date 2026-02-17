@@ -24,9 +24,9 @@ Generated from FastAPI OpenAPI.
 <a id="endpoint-post-v1-feeds-search"></a>
 #### POST /v1/feeds/search
 
-Search for similar feed items strictly prior to a given feed job.
+Search for similar indexed feed items, optionally scoped to strict prior items.
 
-**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+**Auth**: Google Bearer (`Authorization: Bearer <google_id_token>`) OR ApiKey OR Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
 **Request**
 Content-Type: `application/json`
@@ -34,7 +34,7 @@ Body: [FeedSearchRequestModel](#model-feedsearchrequestmodel)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `enqueue_seq` |  |  | req | `integer` |
+| `enqueue_seq` |  |  | opt | `integer` (nullable) |
 | `feed_id` |  |  | req | `string` (format: uuid) |
 | `num_hit` |  |  | opt | `integer` (default: 20) |
 | `search_queries` |  |  | req | array[`string`] |
@@ -48,9 +48,22 @@ Body: [FeedSearchResponseModel](#model-feedsearchresponsemodel)
 | --- | --- | --- | --- | --- |
 | `hits` |  |  | req | array[[FeedSearchHitModel](#model-feedsearchhitmodel)] |
 |  | `content_id` |  | req | `string` (format: uuid) |
+|  | `content_review_rubric_result` |  | opt | [ExternalEvalResultModel](#model-externalevalresultmodel) (nullable) |
+|  |  | `criteria` | req | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] |
+|  |  | `overall_rationale` | opt | `string` (nullable) |
+|  |  | `rubric_id` | req | `string` |
+|  |  | `rubric_score` | req | `number` |
+|  | `content_review_topic_gate` |  | opt | [TopicGateModel](#model-topicgatemodel) (nullable) |
+|  |  | `criteria` | opt | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] (default: []) |
+|  |  | `score` | opt | `number` (nullable) |
+|  | `decision` |  | opt | `string` (nullable) |
 |  | `enqueue_seq` |  | req | `integer` |
 |  | `external_id` |  | req | `string` |
+|  | `is_excluded` |  | opt | `boolean` (nullable) |
+|  | `job_error_code` |  | opt | `string` (nullable) |
+|  | `job_error_message` |  | opt | `string` (nullable) |
 |  | `job_id` |  | req | `string` (format: uuid) |
+|  | `job_status` |  | opt | `string` (nullable) |
 |  | `provider` |  | req | `string` |
 |  | `requested_at_epoch_ms` |  | req | `integer` |
 |  | `score` |  | opt | `number` (nullable) |
@@ -524,6 +537,213 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-criterionassessmentmodel"></a>
+### Model: CriterionAssessmentModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `aggregate_score` |  |  | req | `number` |
+| `criterion_evaluations` |  |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  | `citations` |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
+|  |  | `note` | req | `string` |
+|  |  | `url` | req | `string` |
+|  | `internal_metadata` |  | opt | `object` (nullable) |
+|  | `justification` |  | req | `string` |
+|  | `spans` |  | opt | array[[SpanModel](#model-spanmodel)] (default: []) |
+|  |  | `end` | req | `integer` |
+|  |  | `excerpt` | req | `string` |
+|  |  | `start` | req | `integer` |
+|  | `verdict` |  | req | `integer` |
+| `criterion_id` |  |  | req | `string` |
+| `verdict_options` |  |  | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
+|  | `description` |  | req | `string` |
+|  | `value` |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "aggregate_score": {
+      "title": "Aggregate Score",
+      "type": "number"
+    },
+    "criterion_evaluations": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CriterionEvaluationModel"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Criterion Evaluations",
+      "type": "array"
+    },
+    "criterion_id": {
+      "title": "Criterion Id",
+      "type": "string"
+    },
+    "verdict_options": {
+      "items": {
+        "$ref": "#/components/schemas/VerdictOptionModel"
+      },
+      "title": "Verdict Options",
+      "type": "array"
+    }
+  },
+  "required": [
+    "criterion_id",
+    "verdict_options",
+    "aggregate_score",
+    "criterion_evaluations"
+  ],
+  "title": "CriterionAssessmentModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-criterionevaluationmodel"></a>
+### Model: CriterionEvaluationModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `citations` |  |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
+|  | `note` |  | req | `string` |
+|  | `url` |  | req | `string` |
+| `internal_metadata` |  |  | opt | `object` (nullable) |
+| `justification` |  |  | req | `string` |
+| `spans` |  |  | opt | array[[SpanModel](#model-spanmodel)] (default: []) |
+|  | `end` |  | req | `integer` |
+|  | `excerpt` |  | req | `string` |
+|  | `start` |  | req | `integer` |
+| `verdict` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "citations": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/CitationModel"
+      },
+      "title": "Citations",
+      "type": "array"
+    },
+    "internal_metadata": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Internal Metadata"
+    },
+    "justification": {
+      "title": "Justification",
+      "type": "string"
+    },
+    "spans": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/SpanModel"
+      },
+      "title": "Spans",
+      "type": "array"
+    },
+    "verdict": {
+      "title": "Verdict",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "verdict",
+    "justification"
+  ],
+  "title": "CriterionEvaluationModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-externalevalresultmodel"></a>
+### Model: ExternalEvalResultModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `criteria` |  |  | req | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] |
+|  | `aggregate_score` |  | req | `number` |
+|  | `criterion_evaluations` |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
+|  |  | `internal_metadata` | opt | `object` (nullable) |
+|  |  | `justification` | req | `string` |
+|  |  | `spans` | opt | array[[SpanModel](#model-spanmodel)] (default: []) |
+|  |  | `verdict` | req | `integer` |
+|  | `criterion_id` |  | req | `string` |
+|  | `verdict_options` |  | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
+|  |  | `description` | req | `string` |
+|  |  | `value` | req | `integer` |
+| `overall_rationale` |  |  | opt | `string` (nullable) |
+| `rubric_id` |  |  | req | `string` |
+| `rubric_score` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "criteria": {
+      "items": {
+        "$ref": "#/components/schemas/CriterionAssessmentModel"
+      },
+      "title": "Criteria",
+      "type": "array"
+    },
+    "overall_rationale": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Overall Rationale"
+    },
+    "rubric_id": {
+      "title": "Rubric Id",
+      "type": "string"
+    },
+    "rubric_score": {
+      "title": "Rubric Score",
+      "type": "number"
+    }
+  },
+  "required": [
+    "rubric_id",
+    "criteria",
+    "rubric_score"
+  ],
+  "title": "ExternalEvalResultModel",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-feedsearchcontext"></a>
 ### Model: FeedSearchContext
 
@@ -567,9 +787,30 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `content_id` |  |  | req | `string` (format: uuid) |
+| `content_review_rubric_result` |  |  | opt | [ExternalEvalResultModel](#model-externalevalresultmodel) (nullable) |
+|  | `criteria` |  | req | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] |
+|  |  | `aggregate_score` | req | `number` |
+|  |  | `criterion_evaluations` | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  |  | `criterion_id` | req | `string` |
+|  |  | `verdict_options` | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
+|  | `overall_rationale` |  | opt | `string` (nullable) |
+|  | `rubric_id` |  | req | `string` |
+|  | `rubric_score` |  | req | `number` |
+| `content_review_topic_gate` |  |  | opt | [TopicGateModel](#model-topicgatemodel) (nullable) |
+|  | `criteria` |  | opt | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] (default: []) |
+|  |  | `aggregate_score` | req | `number` |
+|  |  | `criterion_evaluations` | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  |  | `criterion_id` | req | `string` |
+|  |  | `verdict_options` | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
+|  | `score` |  | opt | `number` (nullable) |
+| `decision` |  |  | opt | `string` (nullable) |
 | `enqueue_seq` |  |  | req | `integer` |
 | `external_id` |  |  | req | `string` |
+| `is_excluded` |  |  | opt | `boolean` (nullable) |
+| `job_error_code` |  |  | opt | `string` (nullable) |
+| `job_error_message` |  |  | opt | `string` (nullable) |
 | `job_id` |  |  | req | `string` (format: uuid) |
+| `job_status` |  |  | opt | `string` (nullable) |
 | `provider` |  |  | req | `string` |
 | `requested_at_epoch_ms` |  |  | req | `integer` |
 | `score` |  |  | opt | `number` (nullable) |
@@ -587,6 +828,37 @@ Body: [WeightsResponse](#model-weightsresponse)
       "title": "Content Id",
       "type": "string"
     },
+    "content_review_rubric_result": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ExternalEvalResultModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "content_review_topic_gate": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/TopicGateModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Decision"
+    },
     "enqueue_seq": {
       "title": "Enqueue Seq",
       "type": "integer"
@@ -595,10 +867,54 @@ Body: [WeightsResponse](#model-weightsresponse)
       "title": "External Id",
       "type": "string"
     },
+    "is_excluded": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Is Excluded"
+    },
+    "job_error_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Job Error Code"
+    },
+    "job_error_message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Job Error Message"
+    },
     "job_id": {
       "format": "uuid",
       "title": "Job Id",
       "type": "string"
+    },
+    "job_status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Job Status"
     },
     "provider": {
       "title": "Provider",
@@ -656,7 +972,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `enqueue_seq` |  |  | req | `integer` |
+| `enqueue_seq` |  |  | opt | `integer` (nullable) |
 | `feed_id` |  |  | req | `string` (format: uuid) |
 | `num_hit` |  |  | opt | `integer` (default: 20) |
 | `search_queries` |  |  | req | array[`string`] |
@@ -669,9 +985,16 @@ Body: [WeightsResponse](#model-weightsresponse)
   "additionalProperties": false,
   "properties": {
     "enqueue_seq": {
-      "minimum": 0.0,
-      "title": "Enqueue Seq",
-      "type": "integer"
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Enqueue Seq"
     },
     "feed_id": {
       "format": "uuid",
@@ -696,7 +1019,6 @@ Body: [WeightsResponse](#model-weightsresponse)
   },
   "required": [
     "feed_id",
-    "enqueue_seq",
     "search_queries"
   ],
   "title": "FeedSearchRequestModel",
@@ -713,9 +1035,22 @@ Body: [WeightsResponse](#model-weightsresponse)
 | --- | --- | --- | --- | --- |
 | `hits` |  |  | req | array[[FeedSearchHitModel](#model-feedsearchhitmodel)] |
 |  | `content_id` |  | req | `string` (format: uuid) |
+|  | `content_review_rubric_result` |  | opt | [ExternalEvalResultModel](#model-externalevalresultmodel) (nullable) |
+|  |  | `criteria` | req | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] |
+|  |  | `overall_rationale` | opt | `string` (nullable) |
+|  |  | `rubric_id` | req | `string` |
+|  |  | `rubric_score` | req | `number` |
+|  | `content_review_topic_gate` |  | opt | [TopicGateModel](#model-topicgatemodel) (nullable) |
+|  |  | `criteria` | opt | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] (default: []) |
+|  |  | `score` | opt | `number` (nullable) |
+|  | `decision` |  | opt | `string` (nullable) |
 |  | `enqueue_seq` |  | req | `integer` |
 |  | `external_id` |  | req | `string` |
+|  | `is_excluded` |  | opt | `boolean` (nullable) |
+|  | `job_error_code` |  | opt | `string` (nullable) |
+|  | `job_error_message` |  | opt | `string` (nullable) |
 |  | `job_id` |  | req | `string` (format: uuid) |
+|  | `job_status` |  | opt | `string` (nullable) |
 |  | `provider` |  | req | `string` |
 |  | `requested_at_epoch_ms` |  | req | `integer` |
 |  | `score` |  | opt | `number` (nullable) |
@@ -1457,6 +1792,46 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-spanmodel"></a>
+### Model: SpanModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `end` |  |  | req | `integer` |
+| `excerpt` |  |  | req | `string` |
+| `start` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "end": {
+      "title": "End",
+      "type": "integer"
+    },
+    "excerpt": {
+      "title": "Excerpt",
+      "type": "string"
+    },
+    "start": {
+      "title": "Start",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "excerpt",
+    "start",
+    "end"
+  ],
+  "title": "SpanModel",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-statusresponse"></a>
 ### Model: StatusResponse
 
@@ -1479,6 +1854,58 @@ Body: [WeightsResponse](#model-weightsresponse)
     "status"
   ],
   "title": "StatusResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-topicgatemodel"></a>
+### Model: TopicGateModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `criteria` |  |  | opt | array[[CriterionAssessmentModel](#model-criterionassessmentmodel)] (default: []) |
+|  | `aggregate_score` |  | req | `number` |
+|  | `criterion_evaluations` |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
+|  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
+|  |  | `internal_metadata` | opt | `object` (nullable) |
+|  |  | `justification` | req | `string` |
+|  |  | `spans` | opt | array[[SpanModel](#model-spanmodel)] (default: []) |
+|  |  | `verdict` | req | `integer` |
+|  | `criterion_id` |  | req | `string` |
+|  | `verdict_options` |  | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
+|  |  | `description` | req | `string` |
+|  |  | `value` | req | `integer` |
+| `score` |  |  | opt | `number` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "properties": {
+    "criteria": {
+      "default": [],
+      "items": {
+        "$ref": "#/components/schemas/CriterionAssessmentModel"
+      },
+      "title": "Criteria",
+      "type": "array"
+    },
+    "score": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Score"
+    }
+  },
+  "title": "TopicGateModel",
   "type": "object"
 }
 ```
