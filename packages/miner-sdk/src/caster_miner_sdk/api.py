@@ -15,7 +15,9 @@ from caster_miner_sdk.tools.http_models import (
 )
 from caster_miner_sdk.tools.search_models import (
     FeedSearchResponse,
+    GetRepoFileResponse,
     SearchAiSearchResponse,
+    SearchRepoSearchResponse,
     SearchWebSearchResponse,
     SearchXSearchResponse,
 )
@@ -158,6 +160,68 @@ async def search_ai(prompt: str, /, **kwargs: Any) -> ToolCallResponse[SearchAiS
     )
 
 
+async def search_repo(
+    *,
+    repo_url: str,
+    commit_sha: str,
+    query: str,
+    **kwargs: Any,
+) -> ToolCallResponse[SearchRepoSearchResponse]:
+    """Execute the validator-hosted repository search tool."""
+
+    payload = {
+        "repo_url": repo_url,
+        "commit_sha": commit_sha,
+        "query": query,
+    }
+    payload.update(kwargs)
+    raw_response = await _current_tool_invoker().invoke("search_repo", args=(), kwargs=payload)
+    dto = _parse_execute_response(raw_response)
+    if not isinstance(dto.response, Mapping):
+        raise RuntimeError("search_repo response payload must be a mapping")
+    response = SearchRepoSearchResponse.model_validate(dto.response)
+    return ToolCallResponse(
+        receipt_id=dto.receipt_id,
+        response=response,
+        results=dto.results,
+        result_policy=dto.result_policy,
+        cost_usd=dto.cost_usd,
+        usage=dto.usage,
+        budget=dto.budget,
+    )
+
+
+async def get_repo_file(
+    *,
+    repo_url: str,
+    commit_sha: str,
+    path: str,
+    **kwargs: Any,
+) -> ToolCallResponse[GetRepoFileResponse]:
+    """Execute the validator-hosted repository file tool."""
+
+    payload = {
+        "repo_url": repo_url,
+        "commit_sha": commit_sha,
+        "path": path,
+    }
+    payload.update(kwargs)
+    raw_response = await _current_tool_invoker().invoke("get_repo_file", args=(), kwargs=payload)
+    dto = _parse_execute_response(raw_response)
+    if not isinstance(dto.response, Mapping):
+        raise RuntimeError("get_repo_file response payload must be a mapping")
+    response = GetRepoFileResponse.model_validate(dto.response)
+    return ToolCallResponse(
+        receipt_id=dto.receipt_id,
+        response=response,
+        results=dto.results,
+        result_policy=dto.result_policy,
+        cost_usd=dto.cost_usd,
+        usage=dto.usage,
+        budget=dto.budget,
+    )
+
+
 async def llm_chat(
     *,
     messages: Sequence[Mapping[str, Any]],
@@ -227,6 +291,8 @@ __all__ = [
     "search_x",
     "search_web",
     "search_ai",
+    "search_repo",
+    "get_repo_file",
     "search_items",
     "test_tool",
     "tooling_info",

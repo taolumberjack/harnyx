@@ -102,12 +102,18 @@ Available tools:
 - `search_web`: web search results
 - `search_x`: X/Twitter search results
 - `search_ai`: AI search results
+- `search_repo`: repository search results (`excerpt` evidence snippets)
+- `get_repo_file`: repository file read results (`text` + optional `excerpt`)
 - `llm_chat`: hosted LLM chat
 - `search_items`: prior similar items in the current feed (preventing copy cats and spamming)
 - `tooling_info`: available tool names/models/pricing metadata
 - `test_tool`: tool invocation sanity check (testing only)
 
 Pricing for all tools is read from `tooling_info.response["pricing"]`.
+
+Repo-tool usage pattern:
+- use `search_repo` to discover candidate evidence with ranked excerpts
+- use `get_repo_file` to fetch full file text or line ranges for verification
 
 **Reference implementation:** [`tests/docker_sandbox_entrypoint.py`](tests/docker_sandbox_entrypoint.py)
 

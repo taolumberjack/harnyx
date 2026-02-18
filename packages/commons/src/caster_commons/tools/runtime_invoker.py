@@ -37,10 +37,14 @@ from caster_commons.tools.executor import ToolInvoker
 from caster_commons.tools.normalize import normalize_response
 from caster_commons.tools.ports import DeSearchPort
 from caster_commons.tools.search_models import (
+    GetRepoFileRequest,
+    GetRepoFileResponse,
     SearchAiResult,
     SearchAiSearchRequest,
     SearchAiSearchResponse,
     SearchAiTool,
+    SearchRepoSearchRequest,
+    SearchRepoSearchResponse,
     SearchWebSearchRequest,
     SearchXSearchRequest,
 )
@@ -58,6 +62,33 @@ class FeedSearchToolProvider(Protocol):
         num_hit: int,
     ) -> JsonObject:
         pass
+
+
+class RepoSearchToolProvider(Protocol):
+    async def search_repo(
+        self,
+        *,
+        repo_url: str,
+        commit_sha: str,
+        query: str,
+        path_glob: str | None,
+        limit: int,
+    ) -> JsonObject:
+        pass
+
+    async def get_repo_file(
+        self,
+        *,
+        repo_url: str,
+        commit_sha: str,
+        path: str,
+        start_line: int | None,
+        end_line: int | None,
+    ) -> JsonObject:
+        pass
+
+
+MAX_REPO_EXCERPT_CHARS = 1_000
 
 
 class LlmToolMessage(BaseModel):
@@ -106,6 +137,7 @@ class RuntimeToolInvoker(ToolInvoker):
         llm_provider: LlmProviderPort | None = None,
         llm_provider_name: str | None = None,
         feed_search_provider: FeedSearchToolProvider | None = None,
+        repo_search_provider: RepoSearchToolProvider | None = None,
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
     ) -> None:
         self._receipts = receipt_log
@@ -114,6 +146,7 @@ class RuntimeToolInvoker(ToolInvoker):
         self._llm_provider = llm_provider
         self._llm_provider_name = llm_provider_name or "llm"
         self._feed_search_provider = feed_search_provider
+        self._repo_search_provider = repo_search_provider
         self._allowed_models: set[ToolModelName] = set(allowed_models)
 
     async def invoke(
@@ -127,6 +160,9 @@ class RuntimeToolInvoker(ToolInvoker):
             return self._invoke_test_tool(args, kwargs)
         if tool_name == "tooling_info":
             return self._invoke_tooling_info(args, kwargs)
+        if tool_name in {"search_repo", "get_repo_file"}:
+            repo_tool_name = cast(Literal["search_repo", "get_repo_file"], tool_name)
+            return await self._dispatch_repo_search(repo_tool_name, args, kwargs)
         if is_search_tool(tool_name):
             return await self._dispatch_search(tool_name, args, kwargs)
         if tool_name == "llm_chat":
@@ -275,6 +311,58 @@ class RuntimeToolInvoker(ToolInvoker):
             num_hit=invocation.num_hit,
         )
 
+    @normalize_response
+    async def _dispatch_repo_search(
+        self,
+        tool_name: Literal["search_repo", "get_repo_file"],
+        args: Sequence[JsonValue],
+        kwargs: Mapping[str, JsonValue],
+    ) -> JsonObject:
+        if self._repo_search_provider is None:
+            raise LookupError("repo search provider is not configured")
+
+        payload = self._payload_from_args_kwargs(args, kwargs)
+        if tool_name == "search_repo":
+            search_request = SearchRepoSearchRequest.model_validate(payload)
+            raw_response = await self._repo_search_provider.search_repo(
+                repo_url=search_request.repo_url,
+                commit_sha=search_request.commit_sha,
+                query=search_request.query,
+                path_glob=search_request.path_glob,
+                limit=search_request.limit,
+            )
+            search_response = SearchRepoSearchResponse.model_validate(raw_response)
+            ordered = sorted(
+                search_response.data,
+                key=lambda item: (_sortable_bm25(item.bm25), item.path),
+            )
+            normalized = SearchRepoSearchResponse(
+                data=[
+                    item.model_copy(update={"excerpt": _normalize_excerpt(item.excerpt)})
+                    for item in ordered
+                ]
+            )
+            as_mapping = normalized.model_dump(exclude_none=True, mode="json")
+            return cast(JsonObject, as_mapping)
+
+        file_request = GetRepoFileRequest.model_validate(payload)
+        raw_response = await self._repo_search_provider.get_repo_file(
+            repo_url=file_request.repo_url,
+            commit_sha=file_request.commit_sha,
+            path=file_request.path,
+            start_line=file_request.start_line,
+            end_line=file_request.end_line,
+        )
+        file_response = GetRepoFileResponse.model_validate(raw_response)
+        normalized_file_response = GetRepoFileResponse(
+            data=[
+                item.model_copy(update={"excerpt": _normalize_excerpt(item.excerpt)})
+                for item in file_response.data
+            ]
+        )
+        as_mapping = normalized_file_response.model_dump(exclude_none=True, mode="json")
+        return cast(JsonObject, as_mapping)
+
     async def _dispatch_llm(
         self,
         args: Sequence[JsonValue],
@@ -384,6 +472,23 @@ def _optional_mapping(value: object | None, *, label: str) -> Mapping[str, objec
         if not isinstance(key, str):
             raise TypeError(f"tool spec {label} must have string keys")
     return cast(Mapping[str, object], value)
+
+
+def _sortable_bm25(score: float | None) -> float:
+    if score is None:
+        return float("inf")
+    return float(score)
+
+
+def _normalize_excerpt(value: str | None) -> str | None:
+    if value is None:
+        return None
+    excerpt = value.strip()
+    if not excerpt:
+        return None
+    if len(excerpt) <= MAX_REPO_EXCERPT_CHARS:
+        return excerpt
+    return excerpt[:MAX_REPO_EXCERPT_CHARS]
 
 
 

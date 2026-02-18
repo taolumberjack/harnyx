@@ -12,6 +12,10 @@ Generated from FastAPI OpenAPI.
   - [GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}](#endpoint-get-v1-miner-task-batches-batch_id-artifacts-artifact_id)
 - [miners](#miners)
   - [POST /v1/miners/scripts](#endpoint-post-v1-miners-scripts)
+- [repo-search](#repo-search)
+  - [POST /v1/repo-search/ensure-index](#endpoint-post-v1-repo-search-ensure-index)
+  - [POST /v1/repo-search/get-file](#endpoint-post-v1-repo-search-get-file)
+  - [POST /v1/repo-search/search](#endpoint-post-v1-repo-search-search)
 - [validators](#validators)
   - [POST /v1/validators/register](#endpoint-post-v1-validators-register)
 - [weights](#weights)
@@ -327,6 +331,142 @@ Body: [ScriptArtifactModel](#model-scriptartifactmodel)
 | `content_hash` |  |  | req | `string` |
 | `size_bytes` |  |  | req | `integer` |
 | `uid` |  |  | req | `integer` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+
+## repo-search
+
+### ensure-index
+
+<a id="endpoint-post-v1-repo-search-ensure-index"></a>
+#### POST /v1/repo-search/ensure-index
+
+Ensure a repository index is available for repo tools.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Request**
+Content-Type: `application/json`
+Body: [RepoSearchEnsureIndexRequestModel](#model-reposearchensureindexrequestmodel)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `commit_sha` |  |  | req | `string` |
+| `repo_url` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [StatusResponse](#model-statusresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `status` |  |  | req | `string` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+### get-file
+
+<a id="endpoint-post-v1-repo-search-get-file"></a>
+#### POST /v1/repo-search/get-file
+
+Fetch a markdown file from a repository snapshot.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Request**
+Content-Type: `application/json`
+Body: [GetRepoFileRequest](#model-getrepofilerequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `commit_sha` |  |  | req | `string` |
+| `end_line` |  |  | opt | `integer` (nullable) |
+| `path` |  |  | req | `string` |
+| `repo_url` |  |  | req | `string` |
+| `start_line` |  |  | opt | `integer` (nullable) |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [GetRepoFileResponse](#model-getrepofileresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `data` |  |  | opt | array[[GetRepoFileResult](#model-getrepofileresult)] |
+|  | `excerpt` |  | opt | `string` (nullable) |
+|  | `path` |  | req | `string` |
+|  | `text` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+### search
+
+<a id="endpoint-post-v1-repo-search-search"></a>
+#### POST /v1/repo-search/search
+
+Search markdown files in a repository snapshot.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Request**
+Content-Type: `application/json`
+Body: [SearchRepoSearchRequest](#model-searchreposearchrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `commit_sha` |  |  | req | `string` |
+| `limit` |  |  | opt | `integer` (default: 10) |
+| `path_glob` |  |  | opt | `string` (nullable) |
+| `query` |  |  | req | `string` |
+| `repo_url` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [SearchRepoSearchResponse](#model-searchreposearchresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `data` |  |  | opt | array[[SearchRepoResult](#model-searchreporesult)] |
+|  | `bm25` |  | opt | `number` (nullable) |
+|  | `excerpt` |  | opt | `string` (nullable) |
+|  | `path` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -1081,6 +1221,174 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-getrepofilerequest"></a>
+### Model: GetRepoFileRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `commit_sha` |  |  | req | `string` |
+| `end_line` |  |  | opt | `integer` (nullable) |
+| `path` |  |  | req | `string` |
+| `repo_url` |  |  | req | `string` |
+| `start_line` |  |  | opt | `integer` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Query parameters for the `get_repo_file` tool.",
+  "properties": {
+    "commit_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Commit Sha",
+      "type": "string"
+    },
+    "end_line": {
+      "anyOf": [
+        {
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "End Line"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "repo_url": {
+      "title": "Repo Url",
+      "type": "string"
+    },
+    "start_line": {
+      "anyOf": [
+        {
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Start Line"
+    }
+  },
+  "required": [
+    "repo_url",
+    "commit_sha",
+    "path"
+  ],
+  "title": "GetRepoFileRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-getrepofileresponse"></a>
+### Model: GetRepoFileResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `data` |  |  | opt | array[[GetRepoFileResult](#model-getrepofileresult)] |
+|  | `excerpt` |  | opt | `string` (nullable) |
+|  | `path` |  | req | `string` |
+|  | `text` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "Response payload for the `get_repo_file` tool.",
+  "properties": {
+    "data": {
+      "items": {
+        "$ref": "#/components/schemas/GetRepoFileResult"
+      },
+      "title": "Data",
+      "type": "array"
+    }
+  },
+  "title": "GetRepoFileResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-getrepofileresult"></a>
+### Model: GetRepoFileResult
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `excerpt` |  |  | opt | `string` (nullable) |
+| `path` |  |  | req | `string` |
+| `text` |  |  | req | `string` |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "Single repository file response item.",
+  "properties": {
+    "excerpt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Excerpt"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "url",
+    "text"
+  ],
+  "title": "GetRepoFileResult",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-httpvalidationerror"></a>
 ### Model: HTTPValidationError
 
@@ -1618,6 +1926,42 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-reposearchensureindexrequestmodel"></a>
+### Model: RepoSearchEnsureIndexRequestModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `commit_sha` |  |  | req | `string` |
+| `repo_url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "commit_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Commit Sha",
+      "type": "string"
+    },
+    "repo_url": {
+      "title": "Repo Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repo_url",
+    "commit_sha"
+  ],
+  "title": "RepoSearchEnsureIndexRequestModel",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-rubric"></a>
 ### Model: Rubric
 
@@ -1746,6 +2090,174 @@ Body: [WeightsResponse](#model-weightsresponse)
     "size_bytes"
   ],
   "title": "ScriptArtifactModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-searchreporesult"></a>
+### Model: SearchRepoResult
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `bm25` |  |  | opt | `number` (nullable) |
+| `excerpt` |  |  | opt | `string` (nullable) |
+| `path` |  |  | req | `string` |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "Single repository search result item.",
+  "properties": {
+    "bm25": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Bm25"
+    },
+    "excerpt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Excerpt"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "url"
+  ],
+  "title": "SearchRepoResult",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-searchreposearchrequest"></a>
+### Model: SearchRepoSearchRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `commit_sha` |  |  | req | `string` |
+| `limit` |  |  | opt | `integer` (default: 10) |
+| `path_glob` |  |  | opt | `string` (nullable) |
+| `query` |  |  | req | `string` |
+| `repo_url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Query parameters for the `search_repo` tool.",
+  "properties": {
+    "commit_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Commit Sha",
+      "type": "string"
+    },
+    "limit": {
+      "default": 10,
+      "maximum": 50.0,
+      "minimum": 1.0,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "path_glob": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Path Glob"
+    },
+    "query": {
+      "title": "Query",
+      "type": "string"
+    },
+    "repo_url": {
+      "title": "Repo Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repo_url",
+    "commit_sha",
+    "query"
+  ],
+  "title": "SearchRepoSearchRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-searchreposearchresponse"></a>
+### Model: SearchRepoSearchResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `data` |  |  | opt | array[[SearchRepoResult](#model-searchreporesult)] |
+|  | `bm25` |  | opt | `number` (nullable) |
+|  | `excerpt` |  | opt | `string` (nullable) |
+|  | `path` |  | req | `string` |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "description": "Response payload for the `search_repo` tool.",
+  "properties": {
+    "data": {
+      "items": {
+        "$ref": "#/components/schemas/SearchRepoResult"
+      },
+      "title": "Data",
+      "type": "array"
+    }
+  },
+  "title": "SearchRepoSearchResponse",
   "type": "object"
 }
 ```

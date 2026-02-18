@@ -20,6 +20,8 @@ async def test_tooling_info_returns_pricing_metadata() -> None:
 
     assert payload["pricing"]["search_web"]["usd_per_call"] == pytest.approx(SEARCH_PRICING["search_web"])
     assert payload["pricing"]["search_x"]["usd_per_call"] == pytest.approx(SEARCH_PRICING["search_x"])
+    assert payload["pricing"]["search_repo"]["usd_per_call"] == pytest.approx(SEARCH_PRICING["search_repo"])
+    assert payload["pricing"]["get_repo_file"]["usd_per_call"] == pytest.approx(SEARCH_PRICING["get_repo_file"])
     assert payload["pricing"]["search_ai"]["usd_per_referenceable_result"] == pytest.approx(
         SEARCH_AI_PER_REFERENCEABLE_RESULT_USD
     )

@@ -207,7 +207,7 @@ Body: [ToolExecuteRequestDTO](#model-toolexecuterequestdto)
 | --- | --- | --- | --- | --- |
 | `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, llm_chat, search_items, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, search_repo, get_repo_file, llm_chat, search_items, test_tool, tooling_info]) |
 
 **Responses**
 `200` Successful Response
@@ -1441,7 +1441,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `args` |  |  | opt | array[[JsonValue](#model-jsonvalue)] (default: []) |
 | `kwargs` |  |  | opt | `object` (default: {}) |
-| `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, llm_chat, search_items, test_tool, tooling_info]) |
+| `tool` |  |  | req | `string` (enum: [search_web, search_x, search_ai, search_repo, get_repo_file, llm_chat, search_items, test_tool, tooling_info]) |
 
 <details>
 <summary>JSON schema</summary>
@@ -1471,6 +1471,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
         "search_web",
         "search_x",
         "search_ai",
+        "search_repo",
+        "get_repo_file",
         "llm_chat",
         "search_items",
         "test_tool",

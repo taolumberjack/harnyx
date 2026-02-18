@@ -48,6 +48,7 @@ from caster_validator.infrastructure.subtensor.client import RuntimeSubtensorCli
 from caster_validator.infrastructure.subtensor.hotkey import create_wallet
 from caster_validator.infrastructure.tools.feed_search_provider import HttpFeedSearchToolProvider
 from caster_validator.infrastructure.tools.platform_client import HttpPlatformClient
+from caster_validator.infrastructure.tools.repo_search_provider import HttpRepoSearchToolProvider
 from caster_validator.runtime.llm_factory import create_llm_provider_factory
 from caster_validator.runtime.settings import Settings
 
@@ -121,12 +122,18 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         hotkey=platform_hotkey,
         timeout_seconds=PLATFORM.timeout_seconds,
     )
+    repo_search_provider = HttpRepoSearchToolProvider(
+        base_url=str(resolved.platform_api.platform_base_url),
+        hotkey=platform_hotkey,
+        timeout_seconds=PLATFORM.timeout_seconds,
+    )
     tool_invoker, tool_executor = _build_tooling(
         state=state,
         resolved=resolved,
         search_client=search_client,
         tool_llm_provider=tool_llm_provider,
         feed_search_provider=feed_search_provider,
+        repo_search_provider=repo_search_provider,
     )
 
     scoring_service, weight_submission_service = _build_services(
@@ -225,6 +232,7 @@ def _build_tooling(
     search_client: DeSearchClient | None,
     tool_llm_provider: LlmProviderPort | None,
     feed_search_provider: HttpFeedSearchToolProvider | None,
+    repo_search_provider: HttpRepoSearchToolProvider | None,
 ) -> tuple[RuntimeToolInvoker, ToolExecutor]:
     tool_invoker = RuntimeToolInvoker(
         state.receipt_log,
@@ -232,6 +240,7 @@ def _build_tooling(
         llm_provider=tool_llm_provider,
         llm_provider_name=resolved.llm.tool_llm_provider,
         feed_search_provider=feed_search_provider,
+        repo_search_provider=repo_search_provider,
         allowed_models=ALLOWED_TOOL_MODELS,
     )
     tool_executor = ToolExecutor(
