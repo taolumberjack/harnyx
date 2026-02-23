@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 from caster_commons.json_types import JsonValue
 from caster_commons.tools.types import TOOL_NAMES, ToolName
 
 
-class ToolCallOutcome(str, Enum):
+class ToolCallOutcome(StrEnum):
     """High-level outcome for a tool invocation."""
 
     OK = "ok"
@@ -21,7 +21,7 @@ class ToolCallOutcome(str, Enum):
     TIMEOUT = "timeout"
 
 
-class ToolResultPolicy(str, Enum):
+class ToolResultPolicy(StrEnum):
     """Indicates whether tool results can be cited."""
 
     REFERENCEABLE = "referenceable"

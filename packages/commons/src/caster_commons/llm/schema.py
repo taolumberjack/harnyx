@@ -17,6 +17,7 @@ from caster_miner_sdk.llm import (
     LlmInputImageData,
     LlmInputImagePart,
     LlmInputTextPart,
+    LlmInputToolResultPart,
     LlmMessage,
     LlmMessageContentPart,
     LlmMessageToolCall,
@@ -56,10 +57,8 @@ class GroundedLlmRequest(AbstractLlmRequest):
 
     def __post_init__(self) -> None:  # pragma: no cover - simple guard
         provider = self.provider
-        if provider not in {"openai", "vertex"}:
+        if provider != "vertex":
             raise ValueError(f"grounded mode not supported for provider '{self.provider}'")
-        if self.tools and provider != "vertex":
-            raise ValueError("grounded requests with additional tools are only supported for provider 'vertex'")
         if self.tools and _is_vertex_claude_model(self.model):
             raise ValueError("grounded requests with additional tools are not supported for Vertex Claude models")
         if self.model.startswith("gpt-5") and self.temperature is not None:
@@ -101,6 +100,7 @@ __all__ = [
     "LlmInputImageData",
     "LlmInputImagePart",
     "LlmInputTextPart",
+    "LlmInputToolResultPart",
     "LlmMessageContentPart",
     "LlmChoiceMessage",
     "LlmChoice",
@@ -108,12 +108,32 @@ __all__ = [
     "LlmCitation",
     "LlmResponse",
     "PostprocessResult",
+    "supports_repo_diff_dual_thread",
+    "supports_tool_result_messages",
     "supports_grounded_additional_tools",
 ]
 
 
 def supports_grounded_additional_tools(*, provider: str, model: str) -> bool:
     return provider == "vertex" and not _is_vertex_claude_model(model)
+
+
+def supports_tool_result_messages(*, provider: str, model: str) -> bool:
+    normalized_provider = provider.strip().lower()
+    if normalized_provider == "chutes":
+        return True
+    if normalized_provider == "vertex":
+        return not _is_vertex_claude_model(model)
+    return False
+
+
+def supports_repo_diff_dual_thread(*, provider: str, model: str) -> bool:
+    normalized_provider = provider.strip().lower()
+    if normalized_provider == "chutes":
+        return False
+    if normalized_provider == "vertex":
+        return supports_tool_result_messages(provider=normalized_provider, model=model)
+    return False
 
 
 def _is_vertex_claude_model(model: str) -> bool:

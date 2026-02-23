@@ -17,6 +17,7 @@ from caster_commons.llm.schema import (
     LlmInputContentPart,
     LlmInputImagePart,
     LlmInputTextPart,
+    LlmInputToolResultPart,
     LlmMessage,
     LlmMessageContentPart,
     LlmMessageToolCall,
@@ -27,6 +28,16 @@ from caster_commons.llm.schema import (
 _IMAGE_FETCH_TIMEOUT_SECONDS = 20.0
 
 
+def _to_vertex_request_role(role: str) -> str:
+    if role == "user":
+        return "user"
+    if role == "assistant":
+        return "model"
+    if role == "tool":
+        return "user"
+    raise ValueError(f"unsupported Vertex request role: {role!r}")
+
+
 def normalize_messages(messages: Sequence[LlmMessage]) -> tuple[str | None, list[Any]]:
     system_instruction: str | None = None
     converted: list[Any] = []
@@ -35,7 +46,7 @@ def normalize_messages(messages: Sequence[LlmMessage]) -> tuple[str | None, list
             system_instruction = _join_text_parts(message.content, label="system")
             continue
         parts = _serialize_vertex_parts(message.content)
-        content = types.Content(role=message.role, parts=parts)
+        content = types.Content(role=_to_vertex_request_role(message.role), parts=parts)
         converted.append(content)
     return system_instruction, converted
 
@@ -167,6 +178,8 @@ def _join_text_parts(parts: Sequence[LlmInputContentPart], *, label: str) -> str
                 fragments.append(text)
             case LlmInputImagePart():
                 raise ValueError(f"{label} messages do not support input_image content parts")
+            case LlmInputToolResultPart():
+                raise ValueError(f"{label} messages do not support input_tool_result content parts")
             case _:
                 raise ValueError(f"unsupported request content part type: {part!r}")
     return "\n".join(fragments)
@@ -180,9 +193,29 @@ def _serialize_vertex_parts(parts: Sequence[LlmInputContentPart]) -> list[Any]:
                 converted.append(types.Part.from_text(text=text))
             case LlmInputImagePart() as image_part:
                 converted.append(_serialize_vertex_image_part(image_part))
+            case LlmInputToolResultPart() as tool_result_part:
+                converted.append(_serialize_vertex_tool_result_part(tool_result_part))
             case _:
                 raise ValueError(f"unsupported request content part type: {part!r}")
     return converted
+
+
+def _serialize_vertex_tool_result_part(part: LlmInputToolResultPart) -> Any:
+    try:
+        parsed = json.loads(part.output_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("input_tool_result output_json must be valid JSON") from exc
+
+    if isinstance(parsed, dict):
+        payload: dict[str, Any] = dict(parsed)
+    else:
+        payload = {"value": parsed}
+
+    payload["tool_call_id"] = part.tool_call_id
+    return types.Part.from_function_response(
+        name=part.name,
+        response=payload,
+    )
 
 
 def _serialize_vertex_image_part(part: LlmInputImagePart) -> Any:

@@ -26,11 +26,11 @@ class LlmSettings(BaseSettings):
     )
 
     # --- Tooling / search ---
-    tool_llm_provider: LlmProviderName = Field(default="openai", alias="TOOL_LLM_PROVIDER")
+    tool_llm_provider: LlmProviderName = Field(default="chutes", alias="TOOL_LLM_PROVIDER")
     search_provider: Literal["desearch"] | None = Field(default=None, alias="SEARCH_PROVIDER")
 
     # --- Generation / reference / benchmark ---
-    generator_llm_provider: LlmProviderName = Field(default="openai", alias="GENERATOR_LLM_PROVIDER")
+    generator_llm_provider: LlmProviderName = Field(default="chutes", alias="GENERATOR_LLM_PROVIDER")
     generator_llm_model: str = Field(default="", alias="GENERATOR_LLM_MODEL")
     generator_llm_reasoning_effort: str | None = Field(
         default=None, alias="GENERATOR_LLM_REASONING_EFFORT"
@@ -40,7 +40,7 @@ class LlmSettings(BaseSettings):
         default=DEFAULT_MAX_OUTPUT_TOKENS, alias="GENERATOR_LLM_MAX_OUTPUT_TOKENS"
     )
 
-    reference_llm_provider: LlmProviderName = Field(default="openai", alias="REFERENCE_LLM_PROVIDER")
+    reference_llm_provider: LlmProviderName = Field(default="chutes", alias="REFERENCE_LLM_PROVIDER")
     reference_llm_model: str = Field(default="", alias="REFERENCE_LLM_MODEL")
     reference_llm_reasoning_effort: str | None = Field(
         default=None, alias="REFERENCE_LLM_REASONING_EFFORT"
@@ -50,7 +50,7 @@ class LlmSettings(BaseSettings):
         default=DEFAULT_MAX_OUTPUT_TOKENS, alias="REFERENCE_LLM_MAX_OUTPUT_TOKENS"
     )
 
-    benchmark_llm_provider: LlmProviderName = Field(default="openai", alias="BENCHMARK_LLM_PROVIDER")
+    benchmark_llm_provider: LlmProviderName = Field(default="chutes", alias="BENCHMARK_LLM_PROVIDER")
     benchmark_llm_model: str = Field(default="", alias="BENCHMARK_LLM_MODEL")
     benchmark_llm_reasoning_effort: str | None = Field(
         default=None, alias="BENCHMARK_LLM_REASONING_EFFORT"
@@ -63,7 +63,7 @@ class LlmSettings(BaseSettings):
     )
 
     # --- Digest (platform-only; run-scoped daily summaries) ---
-    digest_llm_provider: LlmProviderName = Field(default="openai", alias="DIGEST_LLM_PROVIDER")
+    digest_llm_provider: LlmProviderName = Field(default="chutes", alias="DIGEST_LLM_PROVIDER")
     digest_llm_model: str = Field(default="", alias="DIGEST_LLM_MODEL")
     digest_llm_reasoning_effort: str | None = Field(default=None, alias="DIGEST_LLM_REASONING_EFFORT")
     digest_llm_temperature: float | None = Field(default=None, alias="DIGEST_LLM_TEMPERATURE")
@@ -107,10 +107,7 @@ class LlmSettings(BaseSettings):
         default=None, alias="CONTENT_REVIEW_LLM_TIMEOUT_SECONDS"
     )
 
-    # --- OpenAI / Chutes / DeSearch ---
-    openai_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="OPENAI_API_KEY")
-    openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
-
+    # --- Chutes / DeSearch ---
     desearch_api_key: SecretStr = Field(
         default_factory=lambda: SecretStr(""), alias="DESEARCH_API_KEY"
     )
@@ -121,7 +118,6 @@ class LlmSettings(BaseSettings):
     chutes_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="CHUTES_API_KEY")
 
     # --- Concurrency limits ---
-    openai_max_concurrent: int = Field(default=10, alias="OPENAI_MAX_CONCURRENT")
     vertex_max_concurrent: int = Field(default=8, alias="VERTEX_MAX_CONCURRENT")
     chutes_max_concurrent: int = Field(default=5, alias="CHUTES_MAX_CONCURRENT")
     desearch_max_concurrent: int = Field(default=5, alias="DESEARCH_MAX_CONCURRENT")
@@ -135,10 +131,6 @@ class LlmSettings(BaseSettings):
         return value
 
     # --- Convenience accessors ---
-    @property
-    def openai_api_key_value(self) -> str:
-        return self.openai_api_key.get_secret_value()
-
     @property
     def desearch_api_key_value(self) -> str:
         return self.desearch_api_key.get_secret_value()

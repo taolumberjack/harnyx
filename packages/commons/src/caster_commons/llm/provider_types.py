@@ -7,6 +7,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-LlmProviderName = Literal["openai", "chutes", "vertex", "vertex-maas"]
+LlmProviderName = Literal["chutes", "vertex", "vertex-maas"]
 
 __all__ = ["LlmProviderName"]

@@ -267,7 +267,7 @@ class VertexLlmProvider(BaseLlmProvider):
     def _verify_response(resp: LlmResponse) -> tuple[bool, bool, str | None]:
         if not resp.choices:
             return False, True, "empty_choices"
-        if not resp.raw_text:
+        if not resp.raw_text and not resp.tool_calls:
             return False, True, "empty_output"
         return True, False, None
 

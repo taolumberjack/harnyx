@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 
-class SessionStatus(str, Enum):
+class SessionStatus(StrEnum):
     """Lifecycle states for evaluation sessions."""
 
     ACTIVE = "active"

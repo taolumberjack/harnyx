@@ -39,7 +39,6 @@ from caster_commons.llm.schema import (
 from caster_commons.observability.langfuse import start_llm_generation, update_generation_best_effort
 
 ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
-    "openai",
     "chutes",
     "vertex",
     "vertex-maas",

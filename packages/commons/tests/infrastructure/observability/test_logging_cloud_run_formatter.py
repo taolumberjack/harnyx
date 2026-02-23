@@ -25,7 +25,7 @@ def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) 
         args=(),
         exc_info=None,
     )
-    record.data = {"provider": "openai"}
+    record.data = {"provider": "chutes"}
     record.json_fields = {"request": {"payload": b"hello"}, "response": {"ok": True}}
 
     rendered = formatter.format(record)
@@ -35,7 +35,7 @@ def test_formatter_emits_json_payload_for_json_fields_in_cloud_run(monkeypatch) 
     assert payload["message"] == f"{record.getMessage()} | data={expected_data}"
     assert payload["severity"] == "INFO"
     assert payload["logger"] == "caster_commons.llm.calls"
-    assert payload["data"]["provider"] == "openai"
+    assert payload["data"]["provider"] == "chutes"
     assert payload["request"]["payload"] == "<bytes len=5>"
     assert payload["response"]["ok"] is True
 
@@ -140,7 +140,7 @@ def test_formatter_ignores_json_fields_outside_managed_runtimes(monkeypatch) -> 
         args=(),
         exc_info=None,
     )
-    record.data = {"provider": "openai"}
+    record.data = {"provider": "chutes"}
     record.json_fields = {"request": {"payload": "hello"}}
 
     rendered = formatter.format(record)
@@ -161,12 +161,12 @@ def test_cloud_json_sanitizer_injects_data_into_json_fields() -> None:
         args=(),
         exc_info=None,
     )
-    record.data = {"provider": "openai", "payload": b"hello"}
+    record.data = {"provider": "chutes", "payload": b"hello"}
     record.json_fields = {"request": {"ok": True}}
 
     assert sanitizer.filter(record) is True
     assert record.json_fields["request"]["ok"] is True
-    assert record.json_fields["data"]["provider"] == "openai"
+    assert record.json_fields["data"]["provider"] == "chutes"
     assert record.json_fields["data"]["payload"] == "<bytes len=5>"
 
 

@@ -10,6 +10,7 @@ from pydantic import TypeAdapter
 
 INPUT_TEXT_PART_TYPE: Final[Literal["input_text"]] = "input_text"
 INPUT_IMAGE_PART_TYPE: Final[Literal["input_image"]] = "input_image"
+INPUT_TOOL_RESULT_PART_TYPE: Final[Literal["input_tool_result"]] = "input_tool_result"
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,7 @@ class LlmMessage:
         if not self.content:
             raise ValueError("LlmMessage.content must include at least one content part")
         for part in self.content:
-            if isinstance(part, (LlmInputTextPart, LlmInputImagePart)):
+            if isinstance(part, (LlmInputTextPart, LlmInputImagePart, LlmInputToolResultPart)):
                 continue
             raise TypeError(f"unsupported request content part type: {type(part).__name__}")
 
@@ -117,7 +118,29 @@ class LlmInputImagePart:
             raise TypeError("input_image parts require data")
 
 
-LlmInputContentPart: TypeAlias = LlmInputTextPart | LlmInputImagePart
+@dataclass(frozen=True)
+class LlmInputToolResultPart:
+    tool_call_id: str
+    name: str
+    output_json: str
+    type: Literal["input_tool_result"] = field(init=False, default=INPUT_TOOL_RESULT_PART_TYPE)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool_call_id, str):
+            raise TypeError("input_tool_result tool_call_id must be a string")
+        if not self.tool_call_id.strip():
+            raise ValueError("input_tool_result tool_call_id must be non-empty")
+        if not isinstance(self.name, str):
+            raise TypeError("input_tool_result name must be a string")
+        if not self.name.strip():
+            raise ValueError("input_tool_result name must be non-empty")
+        if not isinstance(self.output_json, str):
+            raise TypeError("input_tool_result output_json must be a string")
+        if not self.output_json.strip():
+            raise ValueError("input_tool_result output_json must be non-empty")
+
+
+LlmInputContentPart: TypeAlias = LlmInputTextPart | LlmInputImagePart | LlmInputToolResultPart
 
 
 @dataclass(frozen=True)
@@ -281,6 +304,7 @@ __all__ = [
     "LlmInputImageData",
     "LlmInputImagePart",
     "LlmInputTextPart",
+    "LlmInputToolResultPart",
     "LlmMessage",
     "LlmTool",
     "ToolLlmRequest",

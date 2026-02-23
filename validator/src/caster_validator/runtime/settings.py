@@ -50,10 +50,6 @@ class Settings(BaseSettings):
         return self.llm.chutes_api_key_value
 
     @property
-    def openai_api_key_value(self) -> str:
-        return self.llm.openai_api_key_value
-
-    @property
     def gcp_sa_credential_b64_value(self) -> str:
         return self.vertex.gcp_sa_credential_b64_value
 

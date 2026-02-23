@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from caster_commons.clients import OPENAI
+from caster_commons.clients import CHUTES
+from caster_commons.llm.providers.vertex.codec import normalize_messages
 from caster_commons.llm.providers.vertex.provider import VertexLlmProvider
 from caster_commons.llm.schema import (
     GroundedLlmRequest,
     LlmChoice,
     LlmChoiceMessage,
+    LlmInputToolResultPart,
     LlmMessage,
     LlmMessageContentPart,
+    LlmMessageToolCall,
     LlmRequest,
     LlmResponse,
     LlmTool,
@@ -91,7 +94,7 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     provider = VertexLlmProvider(
         project="demo-project",
         location="us-central1",
-        timeout=OPENAI.timeout_seconds,
+        timeout=CHUTES.timeout_seconds,
     )
 
     request = LlmRequest(
@@ -149,6 +152,69 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     assert tool_calls[0].name == "lookup"
 
 
+async def test_vertex_provider_normalizes_assistant_and_tool_roles(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.models = self._Models()
+
+        class _Models:
+            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
+                captured["model"] = model
+                captured["contents"] = contents
+                captured["config"] = config
+                return FakeResponse()
+
+    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    request = LlmRequest(
+        provider="vertex",
+        model="publishers/openai/models/gpt-oss-20b-maas",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("user-turn"),),
+            ),
+            LlmMessage(
+                role="assistant",
+                content=(LlmMessageContentPart.input_text("assistant-turn"),),
+            ),
+            LlmMessage(
+                role="tool",
+                content=(LlmMessageContentPart.input_text("tool-turn"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=128,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    contents = captured["contents"]
+    assert [entry.role for entry in contents] == ["user", "model", "user"]
+
+
+def test_vertex_codec_fails_fast_on_unknown_request_role() -> None:
+    with pytest.raises(ValueError, match="unsupported Vertex request role: 'critic'"):
+        normalize_messages(
+            (
+                LlmMessage(
+                    role=cast(Any, "critic"),
+                    content=(LlmMessageContentPart.input_text("invalid-role"),),
+                ),
+            )
+        )
+
+
 async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {"vertex_calls": 0, "anthropic_calls": 0}
@@ -167,7 +233,7 @@ async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: py
     provider = VertexLlmProvider(
         project="demo-project",
         location="us-central1",
-        timeout=OPENAI.timeout_seconds,
+        timeout=CHUTES.timeout_seconds,
     )
 
     def fake_call_claude(request: Any) -> LlmResponse:
@@ -381,3 +447,89 @@ async def test_vertex_provider_includes_provider_native_grounded_tools(monkeypat
     assert external_api.endpoint == "https://elastic.example.com"
     assert external_api.elastic_search_params is not None
     assert external_api.elastic_search_params.search_template == "feed_eval_hybrid_v1"
+
+
+async def test_vertex_serializes_input_tool_result_as_function_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.models = self._Models()
+
+        class _Models:
+            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
+                captured["model"] = model
+                captured["contents"] = contents
+                captured["config"] = config
+                return FakeResponse()
+
+    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    request = LlmRequest(
+        provider="vertex",
+        model="publishers/openai/models/gpt-oss-20b-maas",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(
+                    LlmInputToolResultPart(
+                        tool_call_id="call-1",
+                        name="search_repo",
+                        output_json=json.dumps({"data": [{"path": "README.md"}]}),
+                    ),
+                ),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=128,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    contents = captured["contents"]
+    assert contents
+    part = contents[0].parts[0]
+    function_response = part.function_response
+    assert function_response is not None
+    assert function_response.name == "search_repo"
+    assert function_response.response["tool_call_id"] == "call-1"
+    assert function_response.response["data"][0]["path"] == "README.md"
+
+
+def test_vertex_verify_accepts_tool_call_only_choice() -> None:
+    response = LlmResponse(
+        id="resp-tool-call-only",
+        choices=(
+            LlmChoice(
+                index=0,
+                message=LlmChoiceMessage(
+                    role="assistant",
+                    content=(LlmMessageContentPart(type="text", text=""),),
+                    tool_calls=(
+                        LlmMessageToolCall(
+                            id="tc-1",
+                            type="function",
+                            name="search_repo",
+                            arguments='{"query":"caster"}',
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+        ),
+        usage=LlmUsage(),
+        finish_reason="tool_calls",
+    )
+
+    ok, retryable, reason = VertexLlmProvider._verify_response(response)
+    assert ok is True
+    assert retryable is False
+    assert reason is None

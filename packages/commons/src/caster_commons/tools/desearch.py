@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import httpx
@@ -32,7 +32,7 @@ from caster_commons.tools.search_models import (
 
 _LOGGER = logging.getLogger("caster_commons.tools.desearch.calls")
 
-class DeSearchAiTool(str, Enum):
+class DeSearchAiTool(StrEnum):
     WEB = "web"
     HACKER_NEWS = "hackernews"
     REDDIT = "reddit"
@@ -42,13 +42,13 @@ class DeSearchAiTool(str, Enum):
     ARXIV = "arxiv"
 
 
-class DeSearchAiModel(str, Enum):
+class DeSearchAiModel(StrEnum):
     NOVA = "NOVA"
     ORBIT = "ORBIT"
     HORIZON = "HORIZON"
 
 
-class DeSearchAiDateFilter(str, Enum):
+class DeSearchAiDateFilter(StrEnum):
     PAST_24_HOURS = "PAST_24_HOURS"
     PAST_2_DAYS = "PAST_2_DAYS"
     PAST_WEEK = "PAST_WEEK"
@@ -59,7 +59,7 @@ class DeSearchAiDateFilter(str, Enum):
     PAST_2_YEARS = "PAST_2_YEARS"
 
 
-class DeSearchAiResultType(str, Enum):
+class DeSearchAiResultType(StrEnum):
     ONLY_LINKS = "ONLY_LINKS"
     LINKS_WITH_SUMMARIES = "LINKS_WITH_SUMMARIES"
     LINKS_WITH_FINAL_SUMMARY = "LINKS_WITH_FINAL_SUMMARY"

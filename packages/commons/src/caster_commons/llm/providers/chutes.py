@@ -16,6 +16,7 @@ from caster_commons.llm.schema import (
     LlmChoiceMessage,
     LlmInputImagePart,
     LlmInputTextPart,
+    LlmInputToolResultPart,
     LlmMessage,
     LlmMessageContentPart,
     LlmMessageToolCall,
@@ -135,7 +136,9 @@ class ChutesLlmProvider(BaseLlmProvider):
 
     @staticmethod
     def _verify_response(resp: LlmResponse) -> tuple[bool, bool, str | None]:
-        if not resp.raw_text:
+        if not resp.choices:
+            return False, True, "empty_choices"
+        if not resp.raw_text and not resp.tool_calls:
             return False, True, "empty_output"
         for call in _iter_tool_calls(resp):
             if not _is_valid_json(call.arguments):
@@ -177,14 +180,30 @@ def _serialize_tool(spec: LlmTool) -> dict[str, Any]:
 
 def _serialize_message(message: LlmMessage) -> dict[str, Any]:
     fragments: list[str] = []
+    tool_results: list[LlmInputToolResultPart] = []
     for part in message.content:
         match part:
             case LlmInputTextPart(text=text):
                 fragments.append(text)
             case LlmInputImagePart():
                 raise ValueError("chutes provider does not support image content parts")
+            case LlmInputToolResultPart() as tool_result:
+                tool_results.append(tool_result)
             case _:
                 raise ValueError(f"unsupported Chutes request content part type: {part!r}")
+
+    if tool_results:
+        if fragments:
+            raise ValueError("chutes input_tool_result messages cannot mix text parts")
+        if len(tool_results) != 1:
+            raise ValueError("chutes input_tool_result messages must include exactly one part")
+        tool_result = tool_results[0]
+        return {
+            "role": "tool",
+            "tool_call_id": tool_result.tool_call_id,
+            "name": tool_result.name,
+            "content": tool_result.output_json,
+        }
 
     return {
         "role": message.role,

@@ -18,12 +18,6 @@ class ChutesDefaults:
 
 
 @dataclass(frozen=True, slots=True)
-class OpenAIDefaults:
-    base_url: str = "https://api.openai.com/v1"
-    timeout_seconds: float = 30.0
-
-
-@dataclass(frozen=True, slots=True)
 class PlatformDefaults:
     timeout_seconds: float = 10.0
 
@@ -31,16 +25,13 @@ class PlatformDefaults:
 # Instances
 DESEARCH = DeSearchDefaults()
 CHUTES = ChutesDefaults()
-OPENAI = OpenAIDefaults()
 PLATFORM = PlatformDefaults()
 
 __all__ = [
     "CHUTES",
     "DESEARCH",
-    "OPENAI",
     "PLATFORM",
     "ChutesDefaults",
     "DeSearchDefaults",
-    "OpenAIDefaults",
     "PlatformDefaults",
 ]

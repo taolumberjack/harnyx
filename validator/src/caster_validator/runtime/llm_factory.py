@@ -8,15 +8,11 @@ from dataclasses import dataclass
 from caster_commons.llm.adapter import LlmProviderAdapter
 from caster_commons.llm.provider import LlmProviderName, LlmProviderPort, parse_provider_name
 from caster_commons.llm.providers.chutes import ChutesLlmProvider
-from caster_commons.llm.providers.openai import OpenAILlmProvider
 from caster_commons.llm.providers.vertex.provider import VertexLlmProvider
 
 
 def create_llm_provider_factory(
     *,
-    openai_api_key: str,
-    openai_base_url: str,
-    openai_timeout: float,
     chutes_api_key: str,
     chutes_base_url: str,
     chutes_timeout: float,
@@ -28,9 +24,6 @@ def create_llm_provider_factory(
 ) -> Callable[[str], LlmProviderPort]:
     """Create a factory function for resolving LLM providers by name."""
     cfg = ProviderConfig(
-        openai_api_key=openai_api_key,
-        openai_base_url=openai_base_url,
-        openai_timeout=openai_timeout,
         chutes_api_key=chutes_api_key,
         chutes_base_url=chutes_base_url,
         chutes_timeout=chutes_timeout,
@@ -62,9 +55,6 @@ def create_llm_provider_factory(
 
 @dataclass(frozen=True, slots=True)
 class ProviderConfig:
-    openai_api_key: str
-    openai_base_url: str
-    openai_timeout: float
     chutes_api_key: str
     chutes_base_url: str
     chutes_timeout: float
@@ -83,22 +73,11 @@ class ProviderSpec:
 
 def _provider_registry() -> dict[LlmProviderName, ProviderSpec]:
     specs = (
-        ProviderSpec("openai", _build_openai),
         ProviderSpec("chutes", _build_chutes),
         ProviderSpec("vertex", _build_vertex),
         ProviderSpec("vertex-maas", _build_vertex_maas),
     )
     return {spec.name: spec for spec in specs}
-
-
-def _build_openai(cfg: ProviderConfig) -> LlmProviderPort:
-    if not cfg.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY must be configured for the openai provider")
-    return OpenAILlmProvider(
-        api_key=cfg.openai_api_key,
-        base_url=cfg.openai_base_url,
-        timeout=cfg.openai_timeout,
-    )
 
 
 def _build_chutes(cfg: ProviderConfig) -> LlmProviderPort:

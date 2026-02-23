@@ -100,17 +100,17 @@ def _make_task_result(*, batch_id: UUID) -> MinerTaskResult:
     total_tool_usage = ToolUsageSummary(
         search_tool=SearchToolUsageSummary(call_count=2, cost=0.005),
         search_tool_cost=0.005,
-        llm=LlmUsageSummary(
-            call_count=1,
-            prompt_tokens=10,
-            completion_tokens=5,
-            total_tokens=15,
-            cost=0.02,
-            providers={
-                "openai": {
-                    "openai/gpt-oss-20b": LlmModelUsageCost(
-                        usage=LlmUsageTotals(
-                            prompt_tokens=10,
+            llm=LlmUsageSummary(
+                call_count=1,
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+                cost=0.02,
+                providers={
+                    "chutes": {
+                        "openai/gpt-oss-20b": LlmModelUsageCost(
+                            usage=LlmUsageTotals(
+                                prompt_tokens=10,
                             completion_tokens=5,
                             total_tokens=15,
                             call_count=1,
@@ -185,4 +185,4 @@ def test_progress_endpoint_includes_total_tool_usage() -> None:
     assert tool_usage["llm_cost"] == pytest.approx(0.02)
 
     llm = tool_usage["llm"]
-    assert llm["providers"]["openai"]["openai/gpt-oss-20b"]["cost"] == pytest.approx(0.02)
+    assert llm["providers"]["chutes"]["openai/gpt-oss-20b"]["cost"] == pytest.approx(0.02)

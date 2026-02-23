@@ -12,7 +12,7 @@ import bittensor as bt
 from fastapi import Request
 
 from caster_commons.application.session_manager import SessionManager
-from caster_commons.clients import CHUTES, DESEARCH, OPENAI, PLATFORM
+from caster_commons.clients import CHUTES, DESEARCH, PLATFORM
 from caster_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from caster_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
@@ -486,9 +486,6 @@ def _create_search_client(settings: Settings) -> DeSearchClient:
 
 def _create_tool_llm_provider(settings: Settings) -> LlmProviderPort | None:
     resolve_provider = create_llm_provider_factory(
-        openai_api_key=settings.llm.openai_api_key_value,
-        openai_base_url=settings.llm.openai_base_url,
-        openai_timeout=OPENAI.timeout_seconds,
         chutes_api_key=settings.llm.chutes_api_key_value,
         chutes_base_url=CHUTES.base_url,
         chutes_timeout=CHUTES.timeout_seconds,
@@ -503,9 +500,6 @@ def _create_tool_llm_provider(settings: Settings) -> LlmProviderPort | None:
 
 def _create_scoring_llm_provider(settings: Settings) -> LlmProviderPort | None:
     resolve_provider = create_llm_provider_factory(
-        openai_api_key=settings.llm.openai_api_key_value,
-        openai_base_url=settings.llm.openai_base_url,
-        openai_timeout=settings.llm.scoring_llm_timeout_seconds,
         chutes_api_key=settings.llm.chutes_api_key_value,
         chutes_base_url=CHUTES.base_url,
         chutes_timeout=CHUTES.timeout_seconds,

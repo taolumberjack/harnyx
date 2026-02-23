@@ -23,14 +23,14 @@ def _messages() -> tuple[LlmMessage, ...]:
     )
 
 
-def test_grounded_openai_rejects_additional_tools() -> None:
+def test_grounded_chutes_rejected() -> None:
     with pytest.raises(
         ValueError,
-        match="grounded requests with additional tools are only supported for provider 'vertex'",
+        match="grounded mode not supported for provider 'chutes'",
     ):
         GroundedLlmRequest(
-            provider="openai",
-            model="gpt-5-mini",
+            provider="chutes",
+            model="openai/gpt-oss-20b",
             messages=_messages(),
             temperature=None,
             max_output_tokens=None,

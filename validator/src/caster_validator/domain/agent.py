@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 
-class AgentStatus(str, Enum):
+class AgentStatus(StrEnum):
     """Lifecycle states for a registered agent."""
 
     ACTIVE = "active"
