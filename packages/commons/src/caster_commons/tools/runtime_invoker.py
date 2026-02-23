@@ -442,6 +442,7 @@ class RuntimeToolInvoker(ToolInvoker):
             tool_choice=invocation.tool_choice,
             include=invocation.include,
             reasoning_effort=invocation.reasoning_effort,
+            internal_metadata={"use_case": "tool_runtime_invoker"},
             extra=dict(invocation.model_extra) if invocation.model_extra else None,
         )
 

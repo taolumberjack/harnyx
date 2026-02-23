@@ -10,12 +10,15 @@ from dataclasses import asdict, is_dataclass
 from types import TracebackType
 from typing import Any, Protocol, cast
 
-from langfuse import Langfuse
+from langfuse import Langfuse, propagate_attributes
 
 from caster_commons.llm.schema import AbstractLlmRequest, LlmUsage
 
 _LOGGER = logging.getLogger("caster_commons.observability.langfuse")
 _REQUIRED_ENV_VARS = ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY")
+_SERVER_LABEL_ENV_VARS = ("OTEL_SERVICE_NAME", "K_SERVICE", "SERVICE_NAME")
+_LOW_CARDINALITY_TAG_KEYS = ("server", "use_case")
+_UNKNOWN_SERVER_LABEL = "unknown"
 _LANGFUSE_CLIENT: Langfuse | None = None
 
 
@@ -37,12 +40,24 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
         self._provider_label = provider_label
         self._request = request
         self._observation_cm: AbstractContextManager[object] | None = None
+        self._propagate_cm: AbstractContextManager[object] | None = None
 
     def __enter__(self) -> LangfuseGeneration | None:
         if self._client is None:
             return None
 
+        metadata = build_generation_metadata(
+            provider_label=self._provider_label,
+            request=self._request,
+        )
         try:
+            tags = _derive_tags(metadata)
+            if tags:
+                self._propagate_cm = cast(
+                    AbstractContextManager[object],
+                    propagate_attributes(tags=tags),
+                )
+                self._propagate_cm.__enter__()
             self._observation_cm = cast(
                 AbstractContextManager[object],
                 self._client.start_as_current_observation(
@@ -57,10 +72,11 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
             update_generation_best_effort(
                 generation,
                 input_payload=_request_payload(self._request),
-                metadata={"provider": self._provider_label},
+                metadata=metadata,
             )
             return generation
         except Exception:
+            self._close_propagate_scope()
             _LOGGER.exception(
                 "langfuse.generation.start_failed",
                 extra={
@@ -79,10 +95,11 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
         exc: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool:
-        if self._observation_cm is None:
-            return False
+        result = False
         try:
-            return bool(self._observation_cm.__exit__(exc_type, exc, exc_tb))
+            if self._observation_cm is None:
+                return False
+            result = bool(self._observation_cm.__exit__(exc_type, exc, exc_tb))
         except Exception:
             _LOGGER.exception(
                 "langfuse.generation.finish_failed",
@@ -93,7 +110,34 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
                     }
                 },
             )
-            return False
+            result = False
+        finally:
+            self._close_propagate_scope(exc_type=exc_type, exc=exc, exc_tb=exc_tb)
+        return result
+
+    def _close_propagate_scope(
+        self,
+        *,
+        exc_type: type[BaseException] | None = None,
+        exc: BaseException | None = None,
+        exc_tb: TracebackType | None = None,
+    ) -> None:
+        if self._propagate_cm is None:
+            return
+        propagate_cm = self._propagate_cm
+        self._propagate_cm = None
+        try:
+            propagate_cm.__exit__(exc_type, exc, exc_tb)
+        except Exception:
+            _LOGGER.exception(
+                "langfuse.generation.propagate_cleanup_failed",
+                extra={
+                    "data": {
+                        "provider": self._provider_label,
+                        "model": self._request.model,
+                    }
+                },
+            )
 
 
 def get_client() -> Langfuse | None:
@@ -167,6 +211,21 @@ def update_generation_best_effort(
         )
 
 
+def build_generation_metadata(
+    *,
+    provider_label: str,
+    request: AbstractLlmRequest,
+    metadata: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    internal_metadata = request.internal_metadata or {}
+    merged: dict[str, object] = {str(key): value for key, value in internal_metadata.items()}
+    merged["provider"] = provider_label
+    merged["server"] = _resolve_server_label()
+    if metadata is not None:
+        merged.update({str(key): value for key, value in metadata.items()})
+    return merged
+
+
 def _read_config() -> dict[str, str] | None:
     values = {key: (os.getenv(key) or "").strip() for key in _REQUIRED_ENV_VARS}
     configured = [key for key, value in values.items() if value]
@@ -220,6 +279,27 @@ def _request_payload(request: AbstractLlmRequest) -> dict[str, object]:
     return payload
 
 
+def _resolve_server_label() -> str:
+    for key in _SERVER_LABEL_ENV_VARS:
+        value = (os.getenv(key) or "").strip()
+        if value:
+            return value
+    return _UNKNOWN_SERVER_LABEL
+
+
+def _derive_tags(metadata: Mapping[str, object]) -> list[str]:
+    tags: list[str] = []
+    for key in _LOW_CARDINALITY_TAG_KEYS:
+        value = metadata.get(key)
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if not normalized:
+            continue
+        tags.append(f"{key}:{normalized}")
+    return tags
+
+
 def _usage_details(usage: LlmUsage) -> dict[str, int]:
     details: dict[str, int] = {
         "input": int(usage.prompt_tokens or 0),
@@ -246,6 +326,7 @@ def _sanitize_for_json(value: object) -> object:
 
 __all__ = [
     "LangfuseGeneration",
+    "build_generation_metadata",
     "get_client",
     "start_llm_generation",
     "update_generation_best_effort",

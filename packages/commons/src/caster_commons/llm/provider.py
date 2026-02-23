@@ -36,7 +36,11 @@ from caster_commons.llm.schema import (
     LlmUsage,
     PostprocessResult,
 )
-from caster_commons.observability.langfuse import start_llm_generation, update_generation_best_effort
+from caster_commons.observability.langfuse import (
+    build_generation_metadata,
+    start_llm_generation,
+    update_generation_best_effort,
+)
 
 ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
     "chutes",
@@ -108,6 +112,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             "reasoning_effort": request.reasoning_effort,
             "timeout_seconds": request.timeout_seconds,
         }
+        data |= request.internal_metadata or {}
         data |= request.extra or {}
 
         span_attributes: dict[str, AttributeValue] = {
@@ -152,11 +157,15 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                     elapsed = round((time.perf_counter() - start) * 1000, 2)
                     update_generation_best_effort(
                         generation,
-                        metadata={
-                            "error": repr(exc),
-                            "elapsed_ms": elapsed,
-                            "wait_ms": round(wait_ms, 2),
-                        },
+                        metadata=build_generation_metadata(
+                            provider_label=self._provider_label,
+                            request=request,
+                            metadata={
+                                "error": repr(exc),
+                                "elapsed_ms": elapsed,
+                                "wait_ms": round(wait_ms, 2),
+                            },
+                        ),
                     )
                     self._llm_logger.exception(
                         "llm.invoke.error",
@@ -207,13 +216,16 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                         "payload": response.payload,
                     },
                     usage=usage,
-                    metadata={
-                        "provider": self._provider_label,
-                        "elapsed_ms": elapsed,
-                        "wait_ms": round(wait_ms, 2),
-                        "finish_reason": response.finish_reason,
-                        "response_metadata": response_metadata,
-                    },
+                    metadata=build_generation_metadata(
+                        provider_label=self._provider_label,
+                        request=request,
+                        metadata={
+                            "elapsed_ms": elapsed,
+                            "wait_ms": round(wait_ms, 2),
+                            "finish_reason": response.finish_reason,
+                            "response_metadata": response_metadata,
+                        },
+                    ),
                 )
                 return response
 

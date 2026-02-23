@@ -104,6 +104,7 @@ class JustificationGrader:
             temperature=self._config.temperature,
             max_output_tokens=self._config.max_output_tokens,
             reasoning_effort=self._config.reasoning_effort,
+            internal_metadata={"use_case": "justification_grading"},
         )
 
         response = await self._provider.invoke(request)

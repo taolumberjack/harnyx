@@ -72,7 +72,11 @@ class _StubProvider(BaseLlmProvider):
         return self._response
 
 
-def _request() -> LlmRequest:
+def _request(
+    *,
+    internal_metadata: Mapping[str, object] | None = None,
+    extra: Mapping[str, object] | None = None,
+) -> LlmRequest:
     return LlmRequest(
         provider="openai",
         model="gpt-5-mini",
@@ -85,6 +89,8 @@ def _request() -> LlmRequest:
         temperature=None,
         max_output_tokens=64,
         output_mode="text",
+        internal_metadata=internal_metadata,
+        extra=extra,
     )
 
 
@@ -109,7 +115,13 @@ def _response(*, metadata: Mapping[str, object] | None = None) -> LlmResponse:
 
 
 async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    request = _request()
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "test-server")
+    request = _request(
+        internal_metadata={
+            "use_case": "claim_generation",
+            "feed_run_id": "feed-run-123",
+        }
+    )
     response = _response(metadata={"source": "stub"})
     provider = _StubProvider(response=response)
     scope = _Scope(generation=object())
@@ -171,6 +183,9 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
     assert update_call.usage == response.usage
     assert update_call.metadata is not None
     assert update_call.metadata["provider"] == "openai"
+    assert update_call.metadata["server"] == "test-server"
+    assert update_call.metadata["use_case"] == "claim_generation"
+    assert update_call.metadata["feed_run_id"] == "feed-run-123"
     assert update_call.metadata["finish_reason"] == "stop"
     assert update_call.metadata["response_metadata"] == {"source": "stub"}
 
@@ -286,3 +301,40 @@ async def test_invoke_with_none_generation_still_returns_response(
     assert scope.exited == 1
     assert len(update_calls) == 1
     assert update_calls[0].generation is None
+
+
+async def test_invoke_preserves_provider_facing_extra_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(
+        internal_metadata={"use_case": "tool_runtime_invoker"},
+        extra={"web_search_options": {"mode": "auto"}},
+    )
+    response = _response(metadata={"source": "stub"})
+    provider = _StubProvider(response=response)
+    scope = _Scope(generation=object())
+
+    def fake_start(
+        *,
+        trace_id: str | None,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+
+    await provider.invoke(request)
+
+    assert provider.requests == [request]
+    assert provider.requests[0].extra == {"web_search_options": {"mode": "auto"}}
+    assert provider.requests[0].internal_metadata == {"use_case": "tool_runtime_invoker"}
