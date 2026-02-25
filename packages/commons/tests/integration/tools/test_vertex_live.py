@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from anthropic import APIError as AnthropicAPIError
-from google.genai.errors import ClientError
 from pydantic import BaseModel
 
 from caster_commons.clients import PLATFORM
@@ -94,8 +92,47 @@ async def test_vertex_multimodal_image_live() -> None:
 
         response = await provider.invoke(request)
         assert response.raw_text, "Vertex multimodal response should include text output"
-    except ClientError as exc:
-        pytest.skip(f"Vertex model unavailable for multimodal test: {exc}")
+    finally:
+        await provider.aclose()
+
+
+async def test_vertex_reasoning_effort_live() -> None:
+    vertex = VertexSettings()
+    project = vertex.gcp_project_id
+    location = vertex.gcp_location
+    credentials_b64 = vertex.gcp_sa_credential_b64_value
+
+    assert project, "GCP_PROJECT_ID must be configured"
+    assert location, "GCP_LOCATION must be configured"
+    assert credentials_b64, "Vertex credentials must be configured"
+
+    provider = VertexLlmProvider(
+        project=project,
+        location=location,
+        timeout=float(vertex.vertex_timeout_seconds or PLATFORM.timeout_seconds),
+        credentials_path=None,
+        service_account_b64=credentials_b64 or "",
+    )
+    try:
+        request = LlmRequest(
+            provider="vertex",
+            model="gemini-3-flash-preview",
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(
+                        LlmMessageContentPart.input_text(
+                            "Give one concise sentence about why explicit retry telemetry matters."
+                        ),
+                    ),
+                ),
+            ),
+            temperature=0.2,
+            max_output_tokens=256,
+            reasoning_effort="low",
+        )
+        response = await provider.invoke(request)
+        assert response.raw_text, "Vertex reasoning response should include text output"
     finally:
         await provider.aclose()
 
@@ -189,8 +226,6 @@ async def test_vertex_claude_web_search_live() -> None:
         )
 
         response = await provider.invoke(request)
-    except (ClientError, AnthropicAPIError) as exc:
-        pytest.skip(f"Claude web search request failed: {exc}")
     finally:
         await provider.aclose()
 
@@ -232,8 +267,6 @@ async def test_vertex_json_mode_live() -> None:
     try:
         response = await provider.invoke(request)
         assert response.raw_text and "pong" in response.raw_text.lower()
-    except ClientError as exc:
-        pytest.skip(f"Vertex model unavailable for json_object test: {exc}")
     finally:
         await provider.aclose()
 
@@ -277,7 +310,5 @@ async def test_vertex_structured_output_live() -> None:
     try:
         response = await provider.invoke(request)
         assert response.raw_text and "ok" in response.raw_text.lower()
-    except ClientError as exc:
-        pytest.skip(f"Vertex model unavailable for structured test: {exc}")
     finally:
         await provider.aclose()

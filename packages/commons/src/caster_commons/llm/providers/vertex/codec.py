@@ -159,7 +159,7 @@ def _candidate_parts_and_calls(
             _append_tool_call(tool_calls, parts, part)
             continue
 
-        is_reasoning_part = bool(part.thought) or bool(part.thought_signature)
+        is_reasoning_part = bool(part.thought)
         if is_reasoning_part:
             text_value = str(part.text or "")
             if text_value:

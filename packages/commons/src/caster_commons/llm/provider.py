@@ -70,9 +70,18 @@ class RetryContext:
     reasons: list[str] = field(default_factory=list)
     total_usage: LlmUsage = field(default_factory=LlmUsage)
     total_latency_ms: float = 0.0
+    last_response: LlmResponse | None = None
 
     def is_exhausted(self, attempt: int) -> bool:
         return (attempt + 1) >= self.policy.attempts
+
+
+class LlmRetryExhaustedError(RuntimeError):
+    """Retry flow failed after exhausting attempts."""
+
+    def __init__(self, reason: str, *, response: LlmResponse | None = None) -> None:
+        super().__init__(reason)
+        self.response = response
 
 
 class LlmProviderPort(Protocol):
@@ -157,16 +166,20 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                             response = await self._invoke(request)
                 except Exception as exc:
                     elapsed = round((time.perf_counter() - start) * 1000, 2)
+                    error_metadata: dict[str, object] = {
+                        "error": repr(exc),
+                        "elapsed_ms": elapsed,
+                        "wait_ms": round(wait_ms, 2),
+                    }
+                    raw_error_payload = _error_raw_payload_metadata(request=request, exc=exc)
+                    if raw_error_payload is not None:
+                        error_metadata["raw"] = raw_error_payload
                     update_generation_best_effort(
                         generation,
                         metadata=build_generation_metadata(
                             provider_label=self._provider_label,
                             request=request,
-                            metadata={
-                                "error": repr(exc),
-                                "elapsed_ms": elapsed,
-                                "wait_ms": round(wait_ms, 2),
-                            },
+                            metadata=error_metadata,
                         ),
                     )
                     self._llm_logger.exception(
@@ -294,7 +307,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             # Success
             return self._build_response(request, response, ctx, processed)
 
-        raise RuntimeError("LLM call exhausted all retry attempts")
+        raise LlmRetryExhaustedError("LLM call exhausted all retry attempts", response=ctx.last_response)
 
     async def _try_call(
         self,
@@ -318,6 +331,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         latency_ms = (time.perf_counter() - start) * 1000
         ctx.total_latency_ms += latency_ms
         ctx.total_usage += response.usage or LlmUsage()
+        ctx.last_response = response
         return response
 
     async def _try_verify(
@@ -332,7 +346,15 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         ok, retryable, reason = verifier(response)
         if ok:
             return True
-        await self._handle_failure(attempt, ctx, request, "verifier", reason or "verification_failed", retryable)
+        await self._handle_failure(
+            attempt,
+            ctx,
+            request,
+            "verifier",
+            reason or "verification_failed",
+            retryable,
+            response=response,
+        )
         return False
 
     async def _try_postprocess(
@@ -351,7 +373,13 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             return result.processed, False
 
         await self._handle_failure(
-            attempt, ctx, request, "postprocess", result.reason or "postprocess_failed", result.retryable
+            attempt,
+            ctx,
+            request,
+            "postprocess",
+            result.reason or "postprocess_failed",
+            result.retryable,
+            response=response,
         )
         return None, True
 
@@ -363,10 +391,12 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         phase: str,
         reason: str,
         retryable: bool,
+        response: LlmResponse | None = None,
     ) -> None:
         """Handle a phase failure - either raise or prepare for retry."""
+        response_for_error = response if response is not None else ctx.last_response
         if ctx.is_exhausted(attempt) or not retryable:
-            raise RuntimeError(reason)
+            raise LlmRetryExhaustedError(reason, response=response_for_error)
         ctx.reasons.append(reason)
         self._log_retry(phase, request, attempt, reason, ctx.policy)
         await asyncio.sleep(backoff_ms(attempt, ctx.policy) / 1000)
@@ -472,6 +502,25 @@ def _build_raw_payload_metadata(
             response_metadata=response_metadata,
         ),
     }
+
+
+def _error_raw_payload_metadata(
+    *,
+    request: AbstractLlmRequest,
+    exc: Exception,
+) -> dict[str, object] | None:
+    if not isinstance(exc, LlmRetryExhaustedError):
+        return None
+
+    response = exc.response
+    if response is None:
+        return None
+    response_metadata = dict(response.metadata or {})
+    return _build_raw_payload_metadata(
+        request=request,
+        response=response,
+        response_metadata=response_metadata,
+    )
 
 
 def _provider_response_payload(

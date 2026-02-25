@@ -65,7 +65,7 @@ class FakeResponse:
 
         return _Candidate()
 
-    def model_dump(self) -> dict[str, Any]:
+    def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
         return {"text": self.text}
 
 
@@ -157,6 +157,87 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     raw_response = response.metadata["raw_response"]
     assert isinstance(raw_response, dict)
     assert raw_response["text"] == "ok"
+
+
+async def test_vertex_provider_raw_response_metadata_is_json_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    thought_signature = "ZmFrZS10aG91Z2h0LXNpZw=="
+
+    class _RawResponseWithThoughtSignature(FakeResponse):
+        def model_dump(self, *, mode: str = "python") -> dict[str, Any]:
+            if mode == "json":
+                return {
+                    "text": self.text,
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "thought_signature": thought_signature,
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                }
+            return {
+                "text": self.text,
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "thought_signature": b"\xff\xfe",
+                                }
+                            ]
+                        }
+                    }
+                ],
+            }
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.models = self._Models()
+
+        class _Models:
+            def generate_content(self, *, model: str, contents: Any, config: Any) -> _RawResponseWithThoughtSignature:
+                return _RawResponseWithThoughtSignature()
+
+    monkeypatch.setattr("caster_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    request = LlmRequest(
+        provider="vertex",
+        model="gemini-2.5-pro",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=64,
+        output_mode="text",
+        reasoning_effort="high",
+    )
+
+    response = await provider.invoke(request)
+
+    assert response.metadata is not None
+    raw_response = response.metadata["raw_response"]
+    assert isinstance(raw_response, dict)
+    signature_value = raw_response["candidates"][0]["content"]["parts"][0]["thought_signature"]
+    assert isinstance(signature_value, str)
+    assert signature_value == thought_signature
+    payload_signature = response.payload["metadata"]["raw_response"]["candidates"][0]["content"]["parts"][0][
+        "thought_signature"
+    ]
+    assert payload_signature == thought_signature
 
 
 async def test_vertex_provider_normalizes_assistant_and_tool_roles(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -268,7 +349,7 @@ def test_vertex_codec_build_choices_separates_thought_text_from_assistant_output
     }
 
 
-def test_vertex_codec_build_choices_treats_thought_signature_without_thought_flag_as_reasoning() -> None:
+def test_vertex_codec_build_choices_preserves_signature_only_text_as_output() -> None:
     class _ThoughtPart:
         text = "deliberation"
         function_call = None
@@ -295,11 +376,8 @@ def test_vertex_codec_build_choices_treats_thought_signature_without_thought_fla
     choices = build_choices(_Response())
     message = choices[0].message
 
-    assert tuple(part.text for part in message.content) == ("final answer",)
-    assert message.reasoning == {
-        "thought_text_parts": ("deliberation",),
-        "has_thought_signature": True,
-    }
+    assert tuple(part.text for part in message.content) == ("deliberation", "final answer")
+    assert message.reasoning is None
 
 
 async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:

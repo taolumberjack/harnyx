@@ -308,7 +308,7 @@ def _as_str(value: Any) -> str:
 
 
 def _vertex_response_payload(response: Any) -> Mapping[str, Any]:
-    return cast(Mapping[str, Any], response.model_dump())
+    return cast(Mapping[str, Any], response.model_dump(mode="json"))
 
 
 def _anthropic_messages_from_request(

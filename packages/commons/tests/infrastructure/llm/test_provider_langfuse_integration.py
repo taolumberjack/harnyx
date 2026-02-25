@@ -74,6 +74,28 @@ class _StubProvider(BaseLlmProvider):
         return self._response
 
 
+class _VerifierFailureProvider(BaseLlmProvider):
+    def __init__(self, *, response: LlmResponse) -> None:
+        super().__init__(provider_label="vertex")
+        self._response = response
+        self.requests: list[AbstractLlmRequest] = []
+
+    async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+        self.requests.append(request)
+
+        async def _call() -> LlmResponse:
+            return self._response
+
+        def _always_fail_verifier(_: LlmResponse) -> tuple[bool, bool, str | None]:
+            return False, False, "empty_output"
+
+        return await self._call_with_retry(
+            request,
+            call_coro=_call,
+            verifier=_always_fail_verifier,
+        )
+
+
 def _request(
     *,
     provider: str = "openai",
@@ -217,6 +239,85 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
     assert isinstance(wait_ms, float)
 
 
+async def test_invoke_success_handles_json_safe_vertex_thought_signature_in_raw_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(provider="vertex", model="gemini-2.5-pro", reasoning_effort="high")
+    response = _response(
+        metadata={
+            "source": "stub",
+            "raw_response": {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "thought_signature": "ZmFrZS10aG91Z2h0LXNpZw==",
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        }
+    )
+    provider = _StubProvider(response=response, provider_label="vertex")
+    scope = _Scope(generation=object())
+    update_calls: list[_UpdateCall] = []
+
+    def fake_start(
+        *,
+        trace_id: str | None,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        update_calls.append(
+            _UpdateCall(
+                generation=generation,
+                input_payload=input_payload,
+                output=output,
+                usage=usage,
+                metadata=metadata,
+            )
+        )
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+
+    result = await provider.invoke(request)
+
+    assert result == response
+    assert len(update_calls) == 1
+    update_call = update_calls[0]
+    assert update_call.metadata is not None
+    raw = update_call.metadata["raw"]
+    assert isinstance(raw, Mapping)
+    assert raw["response_payload"] == response.payload
+    assert raw["provider_response"] == {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "thought_signature": "ZmFrZS10aG91Z2h0LXNpZw==",
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+
 async def test_invoke_skips_child_observation_recording_when_generation_scope_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -331,6 +432,59 @@ async def test_invoke_error_updates_generation_error_and_reraises(
     assert "invoke failed" in error_value
     assert isinstance(update_call.metadata["elapsed_ms"], float)
     assert isinstance(update_call.metadata["wait_ms"], float)
+
+
+async def test_invoke_verifier_failure_includes_raw_payload_in_error_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(provider="vertex", model="gemini-2.5-pro")
+    response = _response(metadata={"source": "stub", "raw_response": {"response_id": "provider-raw"}})
+    provider = _VerifierFailureProvider(response=response)
+    scope = _Scope(generation=object())
+    update_calls: list[_UpdateCall] = []
+
+    def fake_start(
+        *,
+        trace_id: str | None,
+        provider_label: str,
+        request: AbstractLlmRequest,
+    ) -> _Scope:
+        return scope
+
+    def fake_update(
+        generation: object | None,
+        *,
+        input_payload: object | None = None,
+        output: object | None = None,
+        usage: LlmUsage | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> None:
+        update_calls.append(
+            _UpdateCall(
+                generation=generation,
+                input_payload=input_payload,
+                output=output,
+                usage=usage,
+                metadata=metadata,
+            )
+        )
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", fake_update)
+
+    with pytest.raises(RuntimeError, match="empty_output"):
+        await provider.invoke(request)
+
+    assert provider.requests == [request]
+    assert len(update_calls) == 1
+    update_call = update_calls[0]
+    assert update_call.metadata is not None
+    raw = update_call.metadata.get("raw")
+    assert isinstance(raw, Mapping)
+    assert raw["request"] == provider_module._request_snapshot(request)
+    assert raw["response_payload"] == response.payload
+    assert raw["response_metadata"] == {"source": "stub", "raw_response": {"response_id": "provider-raw"}}
+    assert raw["provider_response"] == {"response_id": "provider-raw"}
 
 
 async def test_invoke_with_none_generation_still_returns_response(
