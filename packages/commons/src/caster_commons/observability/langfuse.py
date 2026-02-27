@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, is_dataclass
 from types import TracebackType
 from typing import Any, Literal, Protocol, cast
@@ -148,6 +148,85 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
             )
 
 
+class _LangfuseTraceAttributesScope(AbstractContextManager[None]):
+    def __init__(
+        self,
+        *,
+        trace_name: str | None,
+        session_id: str | None,
+        metadata: Mapping[str, object] | None,
+        tags: Sequence[str] | None,
+    ) -> None:
+        self._trace_name = trace_name
+        self._session_id = session_id
+        self._metadata = metadata
+        self._tags = tags
+        self._propagate_cm: AbstractContextManager[object] | None = None
+
+    def __enter__(self) -> None:
+        metadata_payload = _normalize_trace_metadata(self._metadata)
+        tags_payload: list[str] | None = None
+        if self._tags is not None:
+            tags_payload = [str(tag) for tag in self._tags]
+
+        if (
+            self._trace_name is None
+            and self._session_id is None
+            and metadata_payload is None
+            and tags_payload is None
+        ):
+            return None
+
+        try:
+            self._propagate_cm = cast(
+                AbstractContextManager[object],
+                propagate_attributes(
+                    trace_name=self._trace_name,
+                    session_id=self._session_id,
+                    metadata=metadata_payload,
+                    tags=tags_payload,
+                ),
+            )
+            self._propagate_cm.__enter__()
+        except Exception:
+            self._propagate_cm = None
+            _LOGGER.exception(
+                "langfuse.trace.propagate_start_failed",
+                extra={
+                    "data": {
+                        "trace_name": self._trace_name,
+                        "session_id": self._session_id,
+                    }
+                },
+            )
+        return None
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
+        if self._propagate_cm is None:
+            return False
+
+        propagate_cm = self._propagate_cm
+        self._propagate_cm = None
+        try:
+            return bool(propagate_cm.__exit__(exc_type, exc, exc_tb))
+        except Exception:
+            _LOGGER.exception(
+                "langfuse.trace.propagate_cleanup_failed",
+                extra={
+                    "data": {
+                        "trace_name": self._trace_name,
+                        "session_id": self._session_id,
+                    }
+                },
+            )
+            return False
+
+
 def get_client() -> Langfuse | None:
     """Return the singleton Langfuse client when fully configured."""
 
@@ -182,6 +261,31 @@ def start_llm_generation(
         trace_id=trace_id,
         provider_label=provider_label,
         request=request,
+    )
+
+
+def propagate_trace_attributes_best_effort(
+    *,
+    trace_name: str | None = None,
+    session_id: str | None = None,
+    metadata: Mapping[str, object] | None = None,
+    tags: Sequence[str] | None = None,
+) -> AbstractContextManager[None]:
+    """Best-effort trace attribute propagation.
+
+    - Returns a no-op scope when Langfuse is not configured.
+    - Raises when Langfuse env vars are partially configured.
+    - Never raises when trace propagation enter/exit fails.
+    """
+
+    client = get_client()
+    if client is None:
+        return nullcontext()
+    return _LangfuseTraceAttributesScope(
+        trace_name=trace_name,
+        session_id=session_id,
+        metadata=metadata,
+        tags=tags,
     )
 
 
@@ -405,6 +509,17 @@ def _derive_tags(metadata: Mapping[str, object]) -> list[str]:
     return tags
 
 
+def _normalize_trace_metadata(metadata: Mapping[str, object] | None) -> dict[str, str] | None:
+    if metadata is None:
+        return None
+    normalized = {
+        str(key): str(value)
+        for key, value in metadata.items()
+        if value is not None
+    }
+    return normalized or None
+
+
 def _usage_details(usage: LlmUsage) -> dict[str, int]:
     details: dict[str, int] = {
         "input": int(usage.prompt_tokens or 0),
@@ -435,6 +550,7 @@ __all__ = [
     "build_generation_metadata",
     "build_generation_output_payload",
     "get_client",
+    "propagate_trace_attributes_best_effort",
     "record_child_observation_best_effort",
     "start_llm_generation",
     "update_generation_best_effort",

@@ -308,6 +308,133 @@ def test_derive_tags_uses_only_low_cardinality_dimensions() -> None:
     assert tags == ["server:caster-platform-worker", "use_case:claim_generation"]
 
 
+def test_propagate_trace_attributes_best_effort_noops_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    def _unexpected_propagate_attributes(**kwargs: object) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("propagate_attributes should not be called when Langfuse is unconfigured")
+
+    monkeypatch.setattr(langfuse, "get_client", lambda: None)
+    monkeypatch.setattr(langfuse, "propagate_attributes", _unexpected_propagate_attributes)
+
+    with langfuse.propagate_trace_attributes_best_effort(
+        trace_name="content_review_job",
+        session_id="content_review_run:run-123",
+        metadata={"content_review_job_id": "job-123"},
+    ):
+        pass
+
+    assert called is False
+
+
+def test_propagate_trace_attributes_best_effort_calls_propagate_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CaptureContextManager:
+        entered = False
+        exited = False
+
+        def __enter__(self) -> object:
+            self.entered = True
+            return object()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            self.exited = True
+            return False
+
+    captured_kwargs: dict[str, object] = {}
+    capture_cm = CaptureContextManager()
+
+    def _fake_propagate_attributes(**kwargs: object) -> CaptureContextManager:
+        captured_kwargs.update(kwargs)
+        return capture_cm
+
+    monkeypatch.setattr(langfuse, "get_client", lambda: object())
+    monkeypatch.setattr(langfuse, "propagate_attributes", _fake_propagate_attributes)
+
+    with langfuse.propagate_trace_attributes_best_effort(
+        trace_name="content_review_job",
+        session_id="content_review_run:run-123",
+        metadata={
+            "content_review_job_id": "job-123",
+            "rubric_id": "rubric-123",
+            "attempt": 2,
+            "is_retry": True,
+            "optional_field": None,
+        },
+        tags=["server:caster-platform-worker", "use_case:content_review_job"],
+    ):
+        pass
+
+    assert capture_cm.entered is True
+    assert capture_cm.exited is True
+    assert captured_kwargs == {
+        "trace_name": "content_review_job",
+        "session_id": "content_review_run:run-123",
+        "metadata": {
+            "content_review_job_id": "job-123",
+            "rubric_id": "rubric-123",
+            "attempt": "2",
+            "is_retry": "True",
+        },
+        "tags": ["server:caster-platform-worker", "use_case:content_review_job"],
+    }
+
+
+def test_propagate_trace_attributes_best_effort_swallows_enter_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def _raising_propagate_attributes(**kwargs: object) -> object:
+        raise RuntimeError("propagate start failed")
+
+    monkeypatch.setattr(langfuse, "get_client", lambda: object())
+    monkeypatch.setattr(langfuse, "propagate_attributes", _raising_propagate_attributes)
+    caplog.set_level("ERROR", logger="caster_commons.observability.langfuse")
+
+    with langfuse.propagate_trace_attributes_best_effort(
+        trace_name="content_review_job",
+        session_id="content_review_run:run-123",
+        metadata={"content_review_job_id": "job-123"},
+    ):
+        pass
+
+    assert "langfuse.trace.propagate_start_failed" in [record.message for record in caplog.records]
+
+
+def test_propagate_trace_attributes_best_effort_swallows_exit_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class RaisingExitContextManager:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            raise RuntimeError("propagate cleanup failed")
+
+    monkeypatch.setattr(langfuse, "get_client", lambda: object())
+    monkeypatch.setattr(
+        langfuse,
+        "propagate_attributes",
+        lambda **kwargs: RaisingExitContextManager(),
+    )
+    caplog.set_level("ERROR", logger="caster_commons.observability.langfuse")
+
+    with langfuse.propagate_trace_attributes_best_effort(
+        trace_name="content_review_job",
+        session_id="content_review_run:run-123",
+        metadata={"content_review_job_id": "job-123"},
+    ):
+        pass
+
+    assert "langfuse.trace.propagate_cleanup_failed" in [record.message for record in caplog.records]
+
+
 def test_close_propagate_scope_swallows_exit_exception_and_clears_state(caplog: pytest.LogCaptureFixture) -> None:
     class RaisingPropagateContextManager:
         def __enter__(self) -> object:
