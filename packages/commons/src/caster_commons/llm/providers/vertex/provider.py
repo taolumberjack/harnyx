@@ -45,7 +45,9 @@ from .codec import (
 )
 from .credentials import cleanup_credentials_file, prepare_credentials
 
-_API_VERSION = "v1"
+# v1beta1 exposes grounding metadata (e.g. retrievalQueries) that we use for
+# richer tool attribution in observability.
+_API_VERSION = "v1beta1"
 
 
 class VertexLlmProvider(BaseLlmProvider):

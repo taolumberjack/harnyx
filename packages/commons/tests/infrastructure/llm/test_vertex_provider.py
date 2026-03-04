@@ -134,7 +134,7 @@ async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.Monk
     assert client_kwargs["project"] == "demo-project"
     assert client_kwargs["location"] == "us-central1"
     http_options = client_kwargs["http_options"]
-    assert http_options.api_version == "v1"
+    assert http_options.api_version == "v1beta1"
     assert client_kwargs["credentials"] is None
 
     model_call = captured["model_call"]
