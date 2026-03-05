@@ -36,6 +36,10 @@ Edit `.env` and set at least:
 | `CHUTES_API_KEY` | API key for LLM calls |
 | `DESEARCH_API_KEY` | API key for search tools |
 
+`PLATFORM_BASE_URL` examples:
+- Production: `https://api.casterhub.ai`
+- Staging / testnet: `https://api.staging.casterhub.ai`
+
 The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`, and use `castersubnet/caster-subnet-sandbox:latest` for sandbox execution.
 
 ### Wallet configuration
