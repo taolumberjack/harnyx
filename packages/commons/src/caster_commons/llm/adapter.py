@@ -6,13 +6,11 @@ handled in one place (model aliasing, output-mode compatibility, etc.).
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import replace
 
-from pydantic import BaseModel
-
 from caster_commons.llm.provider import LlmProviderPort
-from caster_commons.llm.schema import AbstractLlmRequest, LlmMessage, LlmMessageContentPart, LlmResponse
+from caster_commons.llm.schema import AbstractLlmRequest, LlmResponse
 
 # Translate specific OSS ids when routed through Vertex MaaS. We allow both
 # provider labels so callers can distinguish regions (e.g., vertex-maas for
@@ -41,8 +39,7 @@ class LlmProviderAdapter(LlmProviderPort):
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
         provider = (request.provider or self._provider_name).strip().lower()
-        adapted_request = _adapt_output_mode(provider, request)
-        adapted_request = _adapt_model_aliases(provider, adapted_request, self._model_aliases)
+        adapted_request = _adapt_model_aliases(provider, request, self._model_aliases)
         return await self._delegate.invoke(adapted_request)
 
     async def aclose(self) -> None:
@@ -78,42 +75,6 @@ def _adapt_model_aliases(provider: str, request: AbstractLlmRequest, aliases: Ma
     if resolved is None or resolved == model:
         return request
     return replace(request, model=resolved)
-
-
-def _adapt_output_mode(provider: str, request: AbstractLlmRequest) -> AbstractLlmRequest:
-    if provider != "chutes":
-        return request
-    if request.output_mode == "text":
-        return request
-
-    instruction = _json_only_instruction(request.output_schema)
-    messages = (LlmMessage(role="system", content=(LlmMessageContentPart.input_text(instruction),)),) + tuple(
-        request.messages
-    )
-    return replace(
-        request,
-        output_mode="text",
-        output_schema=None,
-        messages=messages,
-    )
-
-
-def _json_only_instruction(schema: type[BaseModel] | None) -> str:
-    if schema is None:
-        return "Reply with JSON only. Do not wrap in Markdown."
-    required = _required_keys(schema)
-    if required:
-        keys = ", ".join(required)
-        return f"Reply with JSON only. Do not wrap in Markdown. Output keys: {keys}."
-    return "Reply with JSON only. Do not wrap in Markdown."
-
-
-def _required_keys(schema: type[BaseModel]) -> Sequence[str]:
-    json_schema = schema.model_json_schema()
-    required = json_schema.get("required") if isinstance(json_schema, dict) else None
-    if isinstance(required, list) and all(isinstance(item, str) for item in required):
-        return tuple(required)
-    return tuple(schema.model_fields.keys())
 
 
 __all__ = [

@@ -1,63 +1,56 @@
-"""Miner criterion evaluation payloads."""
+"""Validator miner-task run domain models."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
+from typing import Self
 from uuid import UUID
 
-from caster_commons.domain.claim import Rubric
+from pydantic import BaseModel, Field, model_validator
+
+from caster_commons.domain.miner_task import (
+    EvaluationDetails,
+    EvaluationError,
+    MinerTask,
+    Query,
+    ReferenceAnswer,
+    Response,
+    ScoreBreakdown,
+)
+from caster_validator.domain.shared_config import VALIDATOR_STRICT_CONFIG
 
 
-@dataclass(frozen=True, slots=True)
-class MinerCitation:
-    """Citation emitted by a miner."""
+class MinerTaskRun(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
 
-    url: str | None
-    note: str | None
-    receipt_id: str
-    result_id: str
-
-    def __post_init__(self) -> None:
-        if self.url is not None and not self.url.strip():
-            raise ValueError("citation url must not be empty when supplied")
-        if self.note is not None and not self.note.strip():
-            raise ValueError("citation note must not be empty when supplied")
-        if not self.receipt_id.strip():
-            raise ValueError("citation receipt_id must not be empty")
-        if not self.result_id.strip():
-            raise ValueError("citation result_id must not be empty")
-
-
-@dataclass(frozen=True, slots=True)
-class MinerAnswer:
-    """Structured response returned by a miner."""
-
-    verdict: int
-    justification: str
-    citations: tuple[MinerCitation, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not self.justification.strip():
-            raise ValueError("justification must not be empty")
-
-
-@dataclass(frozen=True, slots=True)
-class MinerCriterionEvaluation:
-    """Recorded miner criterion evaluation for a single claim run."""
-
-    criterion_evaluation_id: UUID
     session_id: UUID
-    uid: int
+    uid: int = Field(ge=0)
     artifact_id: UUID
-    claim_id: UUID
-    rubric: Rubric
-    miner_answer: MinerAnswer
+    task_id: UUID
+    response: Response | None = None
+    details: EvaluationDetails
     completed_at: datetime
 
-    def __post_init__(self) -> None:
-        if self.uid < 0:
-            raise ValueError("uid must be non-negative")
+    @model_validator(mode="after")
+    def _validate_state(self) -> Self:
+        if self.details.score_breakdown is not None:
+            if self.response is None:
+                raise ValueError("successful runs must include a response")
+            return self
+        if self.details.error is None:
+            raise ValueError("failed runs must include an evaluation error")
+        if self.response is not None:
+            raise ValueError("failed runs must not include a response")
+        return self
 
 
-__all__ = ["MinerAnswer", "MinerCitation", "MinerCriterionEvaluation"]
+__all__ = [
+    "EvaluationDetails",
+    "EvaluationError",
+    "MinerTask",
+    "MinerTaskRun",
+    "Query",
+    "ReferenceAnswer",
+    "Response",
+    "ScoreBreakdown",
+]

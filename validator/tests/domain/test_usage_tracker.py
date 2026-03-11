@@ -14,7 +14,7 @@ def make_session(*, budget_usd: float) -> Session:
     return Session(
         session_id=uuid4(),
         uid=1,
-        claim_id=uuid4(),
+        task_id=uuid4(),
         issued_at=datetime(2025, 10, 15, tzinfo=UTC),
         expires_at=datetime(2025, 10, 16, tzinfo=UTC),
         budget_usd=budget_usd,

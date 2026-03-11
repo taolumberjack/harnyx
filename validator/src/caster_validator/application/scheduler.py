@@ -1,4 +1,4 @@
-"""Batch scheduler orchestrating claim evaluations across miners."""
+"""Batch scheduler orchestrating miner task runs across artifacts."""
 
 from __future__ import annotations
 
@@ -9,20 +9,21 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from caster_commons.application.ports.receipt_log import ReceiptLogPort
 from caster_commons.application.session_manager import SessionManager
+from caster_commons.domain.miner_task import MinerTask
 from caster_commons.sandbox.client import SandboxClient
 from caster_commons.sandbox.manager import SandboxManager
 from caster_commons.sandbox.options import SandboxOptions
-from caster_validator.application.dto.evaluation import MinerTaskBatchResult, ScriptArtifactSpec
-from caster_validator.application.evaluate_criterion import EvaluationOrchestrator
-from caster_validator.application.ports.claims import ClaimsProviderPort
+from caster_validator.application.dto.evaluation import MinerTaskBatchRunResult, ScriptArtifactSpec
+from caster_validator.application.evaluate_task_run import TaskRunOrchestrator
 from caster_validator.application.ports.evaluation_record import EvaluationRecordPort
 from caster_validator.application.ports.progress import ProgressRecorder
 from caster_validator.application.ports.subtensor import SubtensorClientPort
 from caster_validator.application.services.evaluation_runner import EvaluationRunner
 
 SandboxOptionsFactory = Callable[[ScriptArtifactSpec], SandboxOptions]
-EvaluationOrchestratorFactory = Callable[[SandboxClient], EvaluationOrchestrator]
+TaskRunOrchestratorFactory = Callable[[SandboxClient], TaskRunOrchestrator]
 Clock = Callable[[], datetime]
 
 logger = logging.getLogger("caster_validator.scheduler")
@@ -32,42 +33,38 @@ logger = logging.getLogger("caster_validator.scheduler")
 class SchedulerConfig:
     """Static configuration used for session issuance."""
 
-    entrypoint: str
     token_secret_bytes: int
     session_ttl: timedelta
 
 
 class EvaluationScheduler:
-    """Coordinates issuing sessions and evaluating claims across miners."""
+    """Coordinates issuing sessions and running tasks across artifacts."""
 
     def __init__(
         self,
         *,
-        claims_provider: ClaimsProviderPort,
+        tasks: Sequence[MinerTask],
         subtensor_client: SubtensorClientPort,
         sandbox_manager: SandboxManager,
         session_manager: SessionManager,
         evaluation_records: EvaluationRecordPort,
-        orchestrator_factory: EvaluationOrchestratorFactory,
+        receipt_log: ReceiptLogPort,
+        orchestrator_factory: TaskRunOrchestratorFactory,
         sandbox_options_factory: SandboxOptionsFactory,
         clock: Clock,
         config: SchedulerConfig,
         progress: ProgressRecorder | None = None,
     ) -> None:
-        self._claims = claims_provider
-        self._subtensor = subtensor_client
+        self._tasks = tuple(tasks)
         self._sandboxes = sandbox_manager
-        self._sessions = session_manager
-        self._evaluation_records = evaluation_records
         self._make_orchestrator = orchestrator_factory
         self._sandbox_options = sandbox_options_factory
-        self._clock = clock
-        self._config = config
         self._progress = progress
         self._runner = EvaluationRunner(
             subtensor_client=subtensor_client,
             session_manager=session_manager,
             evaluation_records=evaluation_records,
+            receipt_log=receipt_log,
             config=config,
             clock=clock,
             progress=progress,
@@ -77,77 +74,92 @@ class EvaluationScheduler:
         self,
         *,
         batch_id: UUID,
-        requested_candidates: Sequence[ScriptArtifactSpec],
-    ) -> MinerTaskBatchResult:
-        """Run evaluations for the supplied miner-task batch identifier."""
-        claims = tuple(self._claims.fetch(batch_id=batch_id))
-        if not claims:
-            raise ValueError("claims provider returned no entries")
+        requested_artifacts: Sequence[ScriptArtifactSpec],
+    ) -> MinerTaskBatchRunResult:
+        tasks = self._tasks
+        if not tasks:
+            raise ValueError("scheduler requires at least one task")
 
-        candidates = tuple(requested_candidates)
-        if not candidates:
-            raise ValueError("no candidates supplied for evaluation batch")
-        evaluations = []
+        artifacts = tuple(requested_artifacts)
+        if not artifacts:
+            raise ValueError("scheduler requires at least one artifact")
 
-        for candidate in candidates:
+        submissions = []
+        recorded_pairs = self._progress.recorded_pairs(batch_id) if self._progress is not None else frozenset()
+        for artifact in artifacts:
+            remaining_tasks = tuple(
+                task
+                for task in tasks
+                if (artifact.artifact_id, task.task_id) not in recorded_pairs
+            )
+            if not remaining_tasks:
+                continue
+
             logger.debug(
-                "starting evaluation for candidate",
-                extra={"uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},
+                "starting miner task run for artifact",
+                extra={"uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
             )
             try:
-                options = self._sandbox_options(candidate)
+                options = self._sandbox_options(artifact)
             except Exception as exc:
                 logger.error(
-                    "Failed to prepare sandbox options",
-                    extra={"batch_id": str(batch_id), "uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},
+                    "failed to prepare sandbox options",
+                    extra={"batch_id": str(batch_id), "uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
                     exc_info=exc,
                 )
-                await self._runner.record_failure_for_candidate(
-                    batch_id=batch_id,
-                    candidate=candidate,
-                    claims=claims,
-                    error_code="agent_unavailable",
-                    error_message=str(exc),
+                submissions.extend(
+                    await self._runner.record_failure_for_artifact(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        tasks=remaining_tasks,
+                        error_code="agent_unavailable",
+                        error_message=str(exc),
+                    ),
                 )
                 continue
+
             try:
                 deployment = await asyncio.to_thread(self._sandboxes.start, options)
             except Exception as exc:
                 logger.error(
-                    "Failed to start sandbox",
-                    extra={"batch_id": str(batch_id), "uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},
+                    "failed to start sandbox",
+                    extra={"batch_id": str(batch_id), "uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
                     exc_info=exc,
                 )
-                await self._runner.record_failure_for_candidate(
-                    batch_id=batch_id,
-                    candidate=candidate,
-                    claims=claims,
-                    error_code="sandbox_start_failed",
-                    error_message=str(exc),
+                submissions.extend(
+                    await self._runner.record_failure_for_artifact(
+                        batch_id=batch_id,
+                        artifact=artifact,
+                        tasks=remaining_tasks,
+                        error_code="sandbox_start_failed",
+                        error_message=str(exc),
+                    ),
                 )
                 continue
+
             try:
                 orchestrator = self._make_orchestrator(deployment.client)
-                evaluations.extend(
-                    await self._runner.evaluate_candidate(
+                submissions.extend(
+                    await self._runner.evaluate_artifact(
                         batch_id=batch_id,
-                        candidate=candidate,
-                        claims=claims,
+                        artifact=artifact,
+                        tasks=remaining_tasks,
                         orchestrator=orchestrator,
                     ),
                 )
             finally:
                 await asyncio.to_thread(self._sandboxes.stop, deployment)
+
             logger.debug(
-                "finished evaluation for candidate",
-                extra={"uid": candidate.uid, "artifact_id": str(candidate.artifact_id)},
+                "finished miner task run for artifact",
+                extra={"uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
             )
 
-        return MinerTaskBatchResult(
+        return MinerTaskBatchRunResult(
             batch_id=batch_id,
-            claims=claims,
-            evaluations=tuple(evaluations),
-            candidate_uids=tuple(candidate.uid for candidate in candidates),
+            tasks=tasks,
+            runs=tuple(submissions),
         )
+
 
 __all__ = ["EvaluationScheduler", "SchedulerConfig"]

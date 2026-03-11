@@ -44,7 +44,7 @@ class StubProvider:
         )
 
 
-async def test_chutes_structured_request_is_rewritten_to_text() -> None:
+async def test_chutes_structured_request_is_not_rewritten() -> None:
     delegate = StubProvider()
     provider = LlmProviderAdapter(provider_name="chutes", delegate=delegate)
 
@@ -66,10 +66,32 @@ async def test_chutes_structured_request_is_rewritten_to_text() -> None:
     await provider.invoke(request)
 
     adapted = delegate.requests[0]
-    assert adapted.output_mode == "text"
+    assert adapted.output_mode == "structured"
+    assert adapted.output_schema is GradeSchema
+    assert adapted.messages == request.messages
+
+
+async def test_chutes_json_object_request_is_not_rewritten() -> None:
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="chutes", delegate=delegate)
+
+    request = LlmRequest(
+        provider="chutes",
+        model="openai/gpt-oss-20b",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("Return JSON only."),),
+            ),
+        ),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="json_object",
+    )
+
+    await provider.invoke(request)
+
+    adapted = delegate.requests[0]
+    assert adapted.output_mode == "json_object"
     assert adapted.output_schema is None
-    assert adapted.messages[0].role == "system"
-    assert "Reply with JSON only" in adapted.messages[0].content[0].text
-    assert "rationale" in adapted.messages[0].content[0].text
-    assert "support_ok" in adapted.messages[0].content[0].text
-    assert adapted.messages[1] == request.messages[0]
+    assert adapted.messages == request.messages

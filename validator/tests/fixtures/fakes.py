@@ -7,7 +7,6 @@ from caster_commons.application.ports.receipt_log import ReceiptLogPort
 from caster_commons.application.ports.session_registry import SessionRegistryPort
 from caster_commons.domain.session import Session
 from caster_commons.domain.tool_call import ToolCall
-from caster_commons.llm.grading import JustificationGrade
 from caster_validator.application.ports.agent_registry import AgentRegistryPort
 from caster_validator.domain.agent import AgentRegistry, AgentStatus
 
@@ -77,15 +76,5 @@ class FakeReceiptLog(ReceiptLogPort):
             self._receipts.pop(receipt_id, None)
 
 
-class StubGrader:
-    """Deterministic justification grader for tests."""
 
-    def __init__(self, *, support_ok: bool = True, rationale: str = "ok") -> None:
-        self.support_ok = support_ok
-        self.rationale = rationale
-
-    async def grade(self, **_: object) -> JustificationGrade:
-        return JustificationGrade(rationale=self.rationale, support_ok=self.support_ok)
-
-
-__all__ = ["FakeAgentRegistry", "FakeReceiptLog", "FakeSessionRegistry", "StubGrader"]
+__all__ = ["FakeAgentRegistry", "FakeReceiptLog", "FakeSessionRegistry"]

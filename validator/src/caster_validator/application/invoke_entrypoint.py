@@ -1,4 +1,4 @@
-"""Use case for invoking sandbox entrypoints under concurrency control."""
+"""Use case for invoking the miner query entrypoint under concurrency control."""
 
 from __future__ import annotations
 
@@ -7,12 +7,15 @@ from uuid import UUID
 from caster_commons.application.ports.receipt_log import ReceiptLogPort
 from caster_commons.application.ports.session_registry import SessionRegistryPort
 from caster_commons.application.ports.token_registry import TokenRegistryPort
+from caster_commons.domain.miner_task import Response
 from caster_commons.domain.session import Session, SessionStatus
 from caster_commons.sandbox.client import SandboxClient
 from caster_validator.application.dto.evaluation import (
     EntrypointInvocationRequest,
     EntrypointInvocationResult,
 )
+
+QUERY_ENTRYPOINT = "query"
 
 
 class SandboxInvocationError(RuntimeError):
@@ -42,21 +45,22 @@ class EntrypointInvoker:
         token = request.token
         try:
             payload = await self._sandbox.invoke(
-                request.entrypoint,
-                payload=request.payload,
-                context=request.context,
+                QUERY_ENTRYPOINT,
+                payload=request.query.model_dump(mode="json"),
+                context={},
                 token=token,
                 session_id=session.session_id,
             )
         except Exception as exc:
-            identifier = (
-                f"session={session.session_id} uid={request.uid} entrypoint={request.entrypoint}"
-            )
+            identifier = f"session={session.session_id} uid={request.uid} entrypoint={QUERY_ENTRYPOINT}"
             message = f"sandbox invocation failed ({identifier}): {exc}"
             raise SandboxInvocationError(message) from exc
 
         receipts = tuple(self._receipts.for_session(session.session_id))
-        return EntrypointInvocationResult(result=payload, tool_receipts=receipts)
+        return EntrypointInvocationResult(
+            response=Response.model_validate(payload, strict=True),
+            tool_receipts=receipts,
+        )
 
     def _load_session(self, session_id: UUID) -> Session:
         session = self._sessions.get(session_id)

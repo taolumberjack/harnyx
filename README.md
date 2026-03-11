@@ -2,7 +2,7 @@
 
 **Consensus made scalable.**
 
-Caster Subnet is a Bittensor subnet that evaluates content claims against community-defined rubrics by running miner scripts in validator sandboxes. Validators aggregate results into weights and submit them on-chain.
+Caster Subnet is a Bittensor subnet that evaluates generic query-answering scripts by running miner code in validator sandboxes. Validators compare miner responses against reference answers, aggregate scores, and submit weights on-chain.
 
 ## Start here
 
@@ -18,24 +18,18 @@ uv sync --all-packages --dev
 
 ## How evaluation works (roles + flow)
 
-Caster Subnet rewards the best miner scripts by having validators run standardized evaluation tasks against them, aggregating results, and assigning emissions to a "sticky" top‑3 roster.
+Caster rewards the best miner scripts by having validators run standardized query tasks against them, aggregating scores, and assigning emissions to a sticky top-3 roster.
 
-A **task** is one criterion evaluation request: a `claim_text` plus a rubric (`rubric_title`, `rubric_description`) and allowed `verdict_options`.
+A **task** is one generic query plus one reference answer.
 
 <details>
 <summary><strong>Exact task contract (JSON)</strong></summary>
 
-Miners implement the `evaluate_criterion` entrypoint. Validators call it with this payload:
+Miners implement the `query` entrypoint. Validators call it with this payload:
 
 ```json
 {
-  "claim_text": "Caster Subnet validators manage sandboxed miners.",
-  "rubric_title": "Accuracy",
-  "rubric_description": "Judge whether the claim is factually correct.",
-  "verdict_options": [
-    { "value": -1, "description": "Fail" },
-    { "value": 1, "description": "Pass" }
-  ]
+  "text": "Caster Subnet validators manage sandboxed miners."
 }
 ```
 
@@ -43,44 +37,41 @@ Your script must return:
 
 ```json
 {
-  "verdict": 1,
-  "justification": "...",
-  "citations": [
-    { "receipt_id": "tool-receipt-id", "result_id": "search-result-id" }
-  ]
+  "text": "Validators execute miner scripts inside sandboxed environments."
 }
 ```
 
 Notes:
-- `verdict` must be one of the provided `verdict_options[].value`.
-- `citations` are optional; each references a prior tool call (`receipt_id`) and a specific search result (`result_id`). Validators hydrate citation details from tool receipts.
+- Requests and responses are plain text wrapped in typed objects so the contract can expand later without breaking the entrypoint shape.
 
 **Dig deeper**
-- [Miner entrypoint contract (SDK)](packages/miner-sdk/README.md#criterion-evaluation-contract)
-- [Flow: miner evaluation batch](docs/api/flows.md#miner-evaluation-batch)
+- [Miner entrypoint contract (SDK)](packages/miner-sdk/README.md#query-contract)
+- [Flow: miner-task batch](docs/api/flows.md#miner-task-batch)
 - [Flow: tool execution](docs/api/flows.md#tool-execution)
 - [API auth conventions + index](docs/api/README.md)
 </details>
 
 **How the evaluation dataset is built**
-- Claims are anchored to factoids from the last 24 hours.
-- For each claim, the platform generates a high-quality **reference answer** using an expensive, high-token model (e.g. `gpt-5.2-xhigh`).
-- The dataset is curated to stay competitive: it targets the sitting champion getting **≥50%** of tasks wrong, so difficulty increases as miner scripts improve.
-- The dataset generation will be open sourced in the near future to allow for community contributions and reproducibility.
+- The platform generates batches of realistic standalone user queries.
+- For each query, the platform generates a stronger **reference answer** using a more expensive model than the typical miner budget allows.
+- Tasks are intentionally mixed across factual recall, explanation, comparison, and synthesis so miners need real search/reasoning behavior rather than memorized outputs.
 
 **How miners are evaluated**
-- Miners submit scripts that must match the reference answer while operating under a much tighter budget.
-- Scripts run in a sandbox and only have access to a small toolset: `llm_chat` with whitelisted open‑source `gpt-oss-*` models (via Chutes) and DeSearch-backed search tools.
+- Miners submit scripts that answer the query under a tight tool budget.
+- Validators score each response against the reference answer with:
+  - `comparison_score`: pairwise judge vs reference answer, run twice with swapped order
+  - `similarity_score`: embedding cosine similarity between response text and reference-answer text
+  - `total_score = 0.5 * comparison_score + 0.5 * similarity_score`
+- Candidate totals are aggregated across validators, and ties prefer lower total tool cost.
 
 **Validator flow + gating**
-- The platform sends evaluation batches to validators; validators run scripts × tasks and report grades.
-- Validators that are “functioning” can query the latest weights for on‑chain emission submission. Validators are allowlisted initially; removing this allowlist is a priority once the subnet stabilizes.
+- The platform sends miner-task batches to validators; validators run script x task combinations and report scored runs.
+- Validators that are "functioning" can query the latest weights for on-chain emission submission.
 
-**Roles:**
-
-- **Miners** submit Python agent scripts that evaluate claims against rubrics
-- **Validators** execute miner scripts in sandboxed containers and grade results
-- **Platform** coordinates runs, aggregates grades, and computes weights
+**Roles**
+- **Miners** submit Python agent scripts that answer queries
+- **Validators** execute miner scripts in sandboxed containers and score results
+- **Platform** coordinates runs, aggregates scores, and computes weights
 - **Bittensor** records weights on-chain for emission distribution
 
 ```mermaid
@@ -90,28 +81,28 @@ sequenceDiagram
     participant Sandbox
     participant Bittensor
 
-    Platform->>Validator: 1) Run (tasks, scripts)
-    Validator->>Sandbox: 2) Execute script × task
+    Platform->>Validator: 1) Run batch (tasks, scripts)
+    Validator->>Sandbox: 2) Execute script x task
     Sandbox-->>Validator: 3) Miner response
-    Validator-->>Platform: 5) Task grades
-    Validator->>Bittensor: 6) submit_weights
+    Validator-->>Platform: 4) Scored runs
+    Validator->>Bittensor: 5) submit_weights
 ```
 
 ## What we optimize for
 
-- **Cost-efficient & permissionless** — scales beyond centralized alternatives
-- **Fair & transparent** — community-defined rubrics, decentralized execution
-- **Quick & precise** — faster feedback loops than manual review
+- **Cost-efficient and permissionless** — open participation under explicit budget constraints
+- **Measurable and transparent** — scripts, monitoring, and scoring rules are visible
+- **Competitive and adaptive** — the dataset and sticky roster keep miners improving over time
 
 ## Sticky roster keeps incentives honest
 
 We open-source miner scripts. Without a guardrail, a copycat can clone the current best script and win #2/#3 with minimal changes.
 
-The sticky top‑3 roster prevents that:
+The sticky top-3 roster prevents that:
 
 - Only a challenger that beats the current #1 can enter the roster.
-- If a challenger does **not** beat #1, the roster stays unchanged (copying doesn’t pay).
-- If a challenger beats #1, the roster shifts: challenger → #1, old #1 → #2, old #2 → #3.
+- If a challenger does **not** beat #1, the roster stays unchanged.
+- If a challenger beats #1, the roster shifts: challenger -> #1, old #1 -> #2, old #2 -> #3.
 
 ## Repo layout
 

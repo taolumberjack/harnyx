@@ -1,72 +1,40 @@
-"""DTOs for claim evaluation use cases."""
+"""DTOs for validator miner-task query/run workflows."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from typing import Self
 from uuid import UUID
 
-from caster_commons.domain.claim import MinerTaskClaim
+from pydantic import AliasChoices, BaseModel, Field, model_validator
+
+from caster_commons.domain.miner_task import MinerTask, Query, Response
 from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from caster_commons.domain.tool_call import ToolCall
-from caster_commons.domain.tool_usage import ToolUsageSummary
-from caster_commons.json_types import JsonValue
-from caster_validator.application.services.evaluation_scoring import EvaluationScore
-from caster_validator.domain.evaluation import MinerCriterionEvaluation
+from caster_validator.domain.evaluation import MinerTaskRun
+from caster_validator.domain.shared_config import VALIDATOR_STRICT_CONFIG
 
 
-@dataclass(frozen=True)
-class TokenUsageSummary:
+class TokenUsageSummary(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
     """Aggregated LLM usage totals grouped by provider and model."""
 
-    by_provider: dict[str, dict[str, LlmUsageTotals]]
-    total_prompt_tokens: int
-    total_completion_tokens: int
-    total_tokens: int
-    call_count: int
+    by_provider: dict[str, dict[str, LlmUsageTotals]] = Field(default_factory=dict)
+    total_prompt_tokens: int = Field(default=0, ge=0)
+    total_completion_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    call_count: int = Field(default=0, ge=0)
 
     @classmethod
     def empty(cls) -> TokenUsageSummary:
-        return cls(
-            by_provider={},
-            total_prompt_tokens=0,
-            total_completion_tokens=0,
-            total_tokens=0,
-            call_count=0,
-        )
+        return cls()
 
     @classmethod
     def from_totals(
         cls,
-        totals: Mapping[str, Mapping[str, LlmUsageTotals]],
+        totals: dict[str, dict[str, LlmUsageTotals]],
     ) -> TokenUsageSummary:
-        if not totals:
-            raise ValueError("llm usage totals missing")
-
-        prompt = 0
-        completion = 0
-        total = 0
-        calls = 0
-
-        providers: dict[str, dict[str, LlmUsageTotals]] = {}
-        for provider, models in totals.items():
-            if not models:
-                continue
-
-            provider_models: dict[str, LlmUsageTotals] = {}
-            for model, usage in models.items():
-                provider_models[model] = usage
-                prompt += usage.prompt_tokens
-                completion += usage.completion_tokens
-                total += usage.total_tokens
-                calls += usage.call_count
-
-            if provider_models:
-                providers[provider] = provider_models
-
-        if not providers:
-            raise ValueError("llm usage totals missing")
-
+        providers, prompt, completion, total, calls = _aggregate_usage_totals(totals)
         return cls(
             by_provider=providers,
             total_prompt_tokens=prompt,
@@ -79,149 +47,156 @@ class TokenUsageSummary:
     def from_usage(cls, usage: SessionUsage) -> TokenUsageSummary:
         if not usage.llm_usage_totals:
             return cls.empty()
-        totals = usage.require_usage_totals()
-        return cls.from_totals(totals)
-
-    def merge(self, other: TokenUsageSummary) -> TokenUsageSummary:
-        providers: dict[str, dict[str, LlmUsageTotals]] = {}
-
-        def _merge_source(summary: TokenUsageSummary) -> None:
-            for provider, models in summary.by_provider.items():
-                provider_models = providers.setdefault(provider, {})
-                for model, usage in models.items():
-                    existing = provider_models.get(model)
-                    if existing is None:
-                        provider_models[model] = usage
-                    else:
-                        provider_models[model] = LlmUsageTotals(
-                            prompt_tokens=existing.prompt_tokens + usage.prompt_tokens,
-                            completion_tokens=existing.completion_tokens + usage.completion_tokens,
-                            total_tokens=existing.total_tokens + usage.total_tokens,
-                            call_count=existing.call_count + usage.call_count,
-                        )
-
-        _merge_source(self)
-        _merge_source(other)
-
-        return TokenUsageSummary(
-            by_provider=providers,
-            total_prompt_tokens=self.total_prompt_tokens + other.total_prompt_tokens,
-            total_completion_tokens=self.total_completion_tokens + other.total_completion_tokens,
-            total_tokens=self.total_tokens + other.total_tokens,
-            call_count=self.call_count + other.call_count,
-        )
+        return cls.from_totals(usage.require_usage_totals())
 
 
-@dataclass(frozen=True)
-class ScriptArtifactSpec:
+def _aggregate_usage_totals(
+    totals: dict[str, dict[str, LlmUsageTotals]],
+) -> tuple[dict[str, dict[str, LlmUsageTotals]], int, int, int, int]:
+    prompt = 0
+    completion = 0
+    total = 0
+    calls = 0
+    providers: dict[str, dict[str, LlmUsageTotals]] = {}
+
+    for provider, models in totals.items():
+        provider_models: dict[str, LlmUsageTotals] = {}
+        for model, usage in models.items():
+            provider_models[model] = usage
+            prompt += usage.prompt_tokens
+            completion += usage.completion_tokens
+            total += usage.total_tokens
+            calls += usage.call_count
+        if provider_models:
+            providers[provider] = provider_models
+
+    return providers, prompt, completion, total, calls
+
+
+class ScriptArtifactSpec(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
     """Script artifact metadata supplied by the platform."""
 
-    uid: int
+    uid: int = Field(ge=0)
     artifact_id: UUID
-    content_hash: str
-    size_bytes: int
+    content_hash: str = Field(min_length=1)
+    size_bytes: int = Field(ge=0)
 
 
-@dataclass(frozen=True)
-class MinerTaskBatchSpec:
+class MinerTaskBatchSpec(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
     """Miner-task batch supplied by the platform."""
 
     batch_id: UUID
-    entrypoint: str
-    cutoff_at_iso: str
-    created_at_iso: str
-    claims: tuple[MinerTaskClaim, ...]
-    candidates: tuple[ScriptArtifactSpec, ...]
+    cutoff_at: str = Field(min_length=1, validation_alias=AliasChoices("cutoff_at", "cutoff_at_iso"))
+    created_at: str = Field(min_length=1, validation_alias=AliasChoices("created_at", "created_at_iso"))
+    tasks: tuple[MinerTask, ...] = Field(min_length=1)
+    artifacts: tuple[ScriptArtifactSpec, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_membership(self) -> Self:
+        task_ids = tuple(task.task_id for task in self.tasks)
+        if len(set(task_ids)) != len(task_ids):
+            raise ValueError("batch tasks must be unique by task_id")
+
+        artifact_ids = tuple(artifact.artifact_id for artifact in self.artifacts)
+        if len(set(artifact_ids)) != len(artifact_ids):
+            raise ValueError("batch artifacts must be unique by artifact_id")
+        return self
 
 
-@dataclass(frozen=True)
-class EntrypointInvocationRequest:
-    """Input payload for invoking a miner entrypoint."""
+class EntrypointInvocationRequest(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
 
-    session_id: UUID
-    token: str
-    uid: int
-    entrypoint: str
-    payload: Mapping[str, JsonValue]
-    context: Mapping[str, JsonValue]
-
-
-@dataclass(frozen=True)
-class EntrypointInvocationResult:
-    """Response returned by the sandbox entrypoint."""
-
-    result: Mapping[str, JsonValue]
-    tool_receipts: Sequence[ToolCall]
-
-
-@dataclass(frozen=True)
-class EvaluationOutcome:
-    """Aggregate outcome of running a miner criterion evaluation."""
-
-    criterion_evaluation: MinerCriterionEvaluation
-    score: EvaluationScore
-    tool_receipts: Sequence[ToolCall]
-    usage: TokenUsageSummary
-    total_tool_usage: ToolUsageSummary = field(default_factory=ToolUsageSummary.zero)
-
-
-@dataclass(frozen=True)
-class ScoredEvaluation:
-    """Miner criterion evaluation paired with its computed score."""
-
-    criterion_evaluation: MinerCriterionEvaluation
-    score: EvaluationScore
-    usage: TokenUsageSummary
-    total_tool_usage: ToolUsageSummary = field(default_factory=ToolUsageSummary.zero)
-
-
-@dataclass(frozen=True)
-class EvaluationRequest:
-    """Input payload for orchestrating a full miner criterion evaluation."""
+    """Input payload for invoking a miner query entrypoint."""
 
     session_id: UUID
-    token: str
-    uid: int
+    token: str = Field(min_length=1)
+    uid: int = Field(ge=0)
+    query: Query
+
+
+class EntrypointInvocationResult(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    """Response returned by the sandbox query entrypoint."""
+
+    response: Response
+    tool_receipts: tuple[ToolCall, ...] = ()
+
+
+class MinerTaskRunRequest(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    """Input payload for orchestrating a full miner task run."""
+
+    session_id: UUID
+    token: str = Field(min_length=1)
+    uid: int = Field(ge=0)
     artifact_id: UUID
-    entrypoint: str
-    payload: Mapping[str, JsonValue]
-    context: Mapping[str, JsonValue]
-    claim: MinerTaskClaim
-    criterion_evaluation_id: UUID
+    task: MinerTask
 
 
-@dataclass(frozen=True)
-class MinerTaskBatchResult:
-    """Outcome of running a batch of miner criterion evaluations for a miner-task batch."""
+class TaskRunOutcome(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
 
-    batch_id: UUID
-    claims: Sequence[MinerTaskClaim]
-    evaluations: Sequence[ScoredEvaluation]
-    candidate_uids: Sequence[int]
+    """Aggregate outcome of running a miner task query."""
+
+    run: MinerTaskRun
+    tool_receipts: tuple[ToolCall, ...] = ()
+    usage: TokenUsageSummary = Field(default_factory=TokenUsageSummary.empty)
 
 
-@dataclass(frozen=True)
-class MinerTaskResult:
-    """Payload persisted when a miner-task result is recorded."""
+class MinerTaskRunSubmission(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    """Payload persisted when a miner task run is recorded."""
 
     batch_id: UUID
-    validator_uid: int
-    outcome: EvaluationOutcome
+    validator_uid: int = Field(ge=0)
+    run: MinerTaskRun
+    score: float = Field(ge=0.0, le=1.0)
+    usage: TokenUsageSummary = Field(default_factory=TokenUsageSummary.empty)
     session: Session
-    error_code: str | None = None
-    error_message: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_submission(self) -> MinerTaskRunSubmission:
+        breakdown = self.run.details.score_breakdown
+        error = self.run.details.error
+        if error is None:
+            if breakdown is None:
+                raise ValueError("successful task runs must include score breakdown details")
+            if self.run.response is None:
+                raise ValueError("successful task runs must include a response")
+            if breakdown.total_score != self.score:
+                raise ValueError("score must match details.score_breakdown.total_score")
+            return self
+
+        if self.score != 0.0:
+            raise ValueError("failed task runs must report score=0")
+        return self
+
+
+class MinerTaskBatchRunResult(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    """Outcome of running a miner-task batch across the supplied artifacts."""
+
+    batch_id: UUID
+    tasks: tuple[MinerTask, ...]
+    runs: tuple[MinerTaskRunSubmission, ...]
 
 
 __all__ = [
-    "TokenUsageSummary",
     "EntrypointInvocationRequest",
     "EntrypointInvocationResult",
-    "EvaluationOutcome",
-    "EvaluationScore",
-    "MinerTaskResult",
-    "EvaluationRequest",
-    "MinerTaskBatchResult",
-    "ScoredEvaluation",
-    "ScriptArtifactSpec",
+    "MinerTaskBatchRunResult",
     "MinerTaskBatchSpec",
+    "MinerTaskRunRequest",
+    "MinerTaskRunSubmission",
+    "ScriptArtifactSpec",
+    "TaskRunOutcome",
+    "TokenUsageSummary",
 ]

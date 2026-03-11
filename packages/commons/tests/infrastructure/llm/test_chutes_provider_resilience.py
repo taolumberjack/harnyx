@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import httpx
+import pytest
+from pydantic import BaseModel
+
 from caster_commons.llm.providers.chutes import ChutesLlmProvider, _parse_chutes_response_payload
-from caster_commons.llm.schema import LlmResponse, LlmUsage
+from caster_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse, LlmUsage
+
+
+class _JudgeDecision(BaseModel):
+    better: str
 
 
 def test_parse_payload_skips_malformed_choice_and_keeps_valid_choice() -> None:
@@ -114,3 +122,87 @@ def test_parse_payload_skips_malformed_content_fragment_and_keeps_valid_text() -
     parts = parsed.choices[0].message.content
     assert len(parts) == 1
     assert parts[0].text == "ok"
+
+
+def test_parse_payload_rejects_non_object_reasoning_field() -> None:
+    payload = {
+        "id": "resp_reasoning",
+        "choices": [
+            {
+                "message": {
+                    "content": "ok",
+                    "reasoning": "model supplied unsupported reasoning shape",
+                },
+            },
+        ],
+    }
+
+    with pytest.raises(RuntimeError, match="chutes message reasoning must be a JSON object"):
+        _parse_chutes_response_payload(payload)
+
+
+def test_classify_http_status_includes_upstream_detail() -> None:
+    request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={"detail": "response_format.json_schema is invalid"},
+    )
+    exc = httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    retryable, reason = ChutesLlmProvider._classify_exception(exc)
+
+    assert retryable is False
+    assert reason == "http_400: response_format.json_schema is invalid"
+
+
+def test_build_payload_accepts_json_object_output_mode() -> None:
+    provider = ChutesLlmProvider(base_url="https://example.com", api_key="test-key")
+
+    payload = provider._build_payload(
+        LlmRequest(
+            provider="chutes",
+            model="deepseek-ai/DeepSeek-V3.1",
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text("Return JSON"),),
+                ),
+            ),
+            temperature=0.0,
+            max_output_tokens=64,
+            output_mode="json_object",
+        )
+    )
+
+    assert payload["response_format"] == {"type": "json_object"}
+
+
+def test_build_payload_accepts_structured_output_mode() -> None:
+    provider = ChutesLlmProvider(base_url="https://example.com", api_key="test-key")
+
+    payload = provider._build_payload(
+        LlmRequest(
+            provider="chutes",
+            model="deepseek-ai/DeepSeek-V3.1",
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text("Choose the better answer"),),
+                ),
+            ),
+            temperature=0.0,
+            max_output_tokens=64,
+            output_mode="structured",
+            output_schema=_JudgeDecision,
+        )
+    )
+
+    response_format = payload["response_format"]
+    assert response_format == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "_JudgeDecision",
+            "schema": _JudgeDecision.model_json_schema(),
+        },
+    }

@@ -16,7 +16,6 @@ from caster_commons.clients import CHUTES, DESEARCH, PLATFORM
 from caster_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from caster_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from caster_commons.llm.grading import JustificationGrader, JustificationGraderConfig
 from caster_commons.llm.provider import LlmProviderPort
 from caster_commons.sandbox.docker import DockerSandboxManager
 from caster_commons.sandbox.options import SandboxOptions
@@ -27,12 +26,16 @@ from caster_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS, RuntimeToo
 from caster_commons.tools.token_semaphore import TokenSemaphore
 from caster_commons.tools.usage_tracker import UsageTracker
 from caster_validator.application.accept_batch import AcceptEvaluationBatch
-from caster_validator.application.evaluate_criterion import EvaluationOrchestrator
+from caster_validator.application.evaluate_task_run import TaskRunOrchestrator
 from caster_validator.application.invoke_entrypoint import EntrypointInvoker, SandboxClient
 from caster_validator.application.ports.evaluation_record import EvaluationRecordPort
 from caster_validator.application.ports.platform import PlatformPort
 from caster_validator.application.ports.subtensor import SubtensorClientPort
-from caster_validator.application.services.evaluation_scoring import EvaluationScoringService
+from caster_validator.application.services.evaluation_scoring import (
+    EvaluationScoringConfig,
+    EvaluationScoringService,
+    TextEmbeddingPort,
+)
 from caster_validator.application.status import StatusProvider
 from caster_validator.application.submit_weights import WeightSubmissionService
 from caster_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
@@ -41,6 +44,7 @@ from caster_validator.infrastructure.platform.registration_client import (
     PlatformRegistrationClient,
     register_with_retry,
 )
+from caster_validator.infrastructure.scoring.factory import create_scoring_embedding_client
 from caster_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from caster_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
 from caster_validator.infrastructure.state.run_progress import InMemoryRunProgress
@@ -53,6 +57,14 @@ from caster_validator.runtime.llm_factory import create_llm_provider_factory
 from caster_validator.runtime.settings import Settings
 
 logger = logging.getLogger("caster_validator.runtime")
+
+_SCORING_EMBEDDING_MODEL = "gemini-embedding-001"
+_SCORING_CHUTES_EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+class _ScoringEmbeddingClient(TextEmbeddingPort, Protocol):
+    async def aclose(self) -> None:
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,10 +88,11 @@ class RuntimeContext:
     tool_executor: ToolExecutor
     token_semaphore: TokenSemaphore
     subtensor_client: SubtensorClientPort
+    scoring_embedding_client: _ScoringEmbeddingClient | None
     scoring_service: EvaluationScoringService
     weight_submission_service: WeightSubmissionService
     create_entrypoint_invoker: Callable[[SandboxClient], EntrypointInvoker]
-    create_evaluation_orchestrator: Callable[[SandboxClient], EvaluationOrchestrator]
+    create_evaluation_orchestrator: Callable[[SandboxClient], TaskRunOrchestrator]
     build_sandbox_options: Callable[[], SandboxOptions]
     platform_client: PlatformPort | None
     batch_inbox: InMemoryBatchInbox
@@ -136,9 +149,8 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         repo_search_provider=repo_search_provider,
     )
 
-    scoring_service, weight_submission_service = _build_services(
+    scoring_service, weight_submission_service, scoring_embedding_client = _build_services(
         resolved=resolved,
-        state=state,
         scoring_llm_provider=scoring_llm_provider,
         subtensor_client=subtensor_client,
         platform_client=platform_client,
@@ -174,6 +186,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         tool_executor=tool_executor,
         token_semaphore=state.token_semaphore,
         subtensor_client=subtensor_client,
+        scoring_embedding_client=scoring_embedding_client,
         scoring_service=scoring_service,
         weight_submission_service=weight_submission_service,
         create_entrypoint_invoker=entrypoint_factory,
@@ -257,19 +270,22 @@ def _build_tooling(
 def _build_services(
     *,
     resolved: Settings,
-    state: InMemoryState,
     scoring_llm_provider: LlmProviderPort | None,
     subtensor_client: SubtensorClientPort,
     platform_client: PlatformPort,
-) -> tuple[EvaluationScoringService, WeightSubmissionService]:
-    scoring_grader = _create_scoring_grader(resolved, scoring_llm_provider)
-    scoring_service = EvaluationScoringService(state.receipt_log, grader=scoring_grader)
+) -> tuple[EvaluationScoringService, WeightSubmissionService, _ScoringEmbeddingClient]:
+    scoring_embedding_client = _create_scoring_embedding_client(resolved)
+    scoring_service = _create_scoring_service(
+        resolved,
+        scoring_llm_provider,
+        embedding_client=scoring_embedding_client,
+    )
     weight_submission_service = _build_weight_service(
         resolved,
         subtensor_client=subtensor_client,
         platform_client=platform_client,
     )
-    return scoring_service, weight_submission_service
+    return scoring_service, weight_submission_service, scoring_embedding_client
 
 
 def _build_factories(
@@ -279,7 +295,7 @@ def _build_factories(
     scoring_service: EvaluationScoringService,
 ) -> tuple[
     Callable[[SandboxClient], EntrypointInvoker],
-    Callable[[SandboxClient], EvaluationOrchestrator],
+    Callable[[SandboxClient], TaskRunOrchestrator],
     Callable[[], SandboxOptions],
 ]:
     entrypoint_factory = _make_entrypoint_factory(state.session_registry, state.token_registry, state.receipt_log)
@@ -413,10 +429,10 @@ def _make_orchestrator_factory(
     session_registry: InMemorySessionRegistry,
     scoring_service: EvaluationScoringService,
     entrypoint_factory: Callable[[SandboxClient], EntrypointInvoker],
-) -> Callable[[SandboxClient], EvaluationOrchestrator]:
-    def factory(client: SandboxClient) -> EvaluationOrchestrator:
+) -> Callable[[SandboxClient], TaskRunOrchestrator]:
+    def factory(client: SandboxClient) -> TaskRunOrchestrator:
         invoker = entrypoint_factory(client)
-        return EvaluationOrchestrator(
+        return TaskRunOrchestrator(
             entrypoint_invoker=invoker,
             receipt_log=receipt_log,
             scoring_service=scoring_service,
@@ -512,17 +528,43 @@ def _create_scoring_llm_provider(settings: Settings) -> LlmProviderPort | None:
     return resolve_provider(settings.llm.scoring_llm_provider)
 
 
-def _create_scoring_grader(settings: Settings, provider: LlmProviderPort | None) -> JustificationGrader:
+def _create_scoring_service(
+    settings: Settings,
+    provider: LlmProviderPort | None,
+    *,
+    embedding_client: TextEmbeddingPort | None = None,
+) -> EvaluationScoringService:
     if provider is None:
         raise ValueError("scoring_llm_provider must be configured")
-    config = JustificationGraderConfig(
+    resolved_embedding_client = embedding_client or _create_scoring_embedding_client(settings)
+    config = EvaluationScoringConfig(
         provider=settings.llm.scoring_llm_provider,
         model=settings.llm.scoring_llm_model,
         temperature=settings.llm.scoring_llm_temperature,
         max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
         reasoning_effort=settings.llm.scoring_llm_reasoning_effort,
+        timeout_seconds=settings.llm.scoring_llm_timeout_seconds,
     )
-    return JustificationGrader(provider=provider, config=config)
+    return EvaluationScoringService(
+        llm_provider=provider,
+        embedding_client=resolved_embedding_client,
+        config=config,
+    )
+
+
+def _create_scoring_embedding_client(settings: Settings) -> _ScoringEmbeddingClient:
+    return create_scoring_embedding_client(
+        provider_name=settings.llm.scoring_llm_provider,
+        vertex_model=_SCORING_EMBEDDING_MODEL,
+        chutes_model=_SCORING_CHUTES_EMBEDDING_MODEL,
+        chutes_api_key=settings.llm.chutes_api_key_value,
+        scoring_timeout_seconds=settings.llm.scoring_llm_timeout_seconds,
+        vertex_project=settings.vertex.gcp_project_id,
+        vertex_location=settings.vertex.gcp_location,
+        vertex_maas_location=settings.vertex.vertex_maas_gcp_location,
+        vertex_service_account_b64=settings.vertex.gcp_sa_credential_b64_value,
+        vertex_timeout_seconds=settings.vertex.vertex_timeout_seconds,
+    )
 
 
 def _build_weight_service(
@@ -549,6 +591,7 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
     await _aclose(runtime.search_client)
     await _aclose(runtime.tool_llm_provider)
     await _aclose(runtime.scoring_llm_provider)
+    await _aclose(runtime.scoring_embedding_client)
 
 
 def _verify_request(

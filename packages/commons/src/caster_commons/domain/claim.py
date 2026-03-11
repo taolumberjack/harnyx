@@ -1,119 +1,80 @@
-"""Reference claim and rubric models shared across services."""
+"""Rubric and reference-answer models shared across content-review services."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated
 from uuid import UUID
 
+from pydantic import Field, model_validator
+from pydantic.dataclasses import dataclass
+
+from caster_commons.domain.shared_config import COMMONS_STRICT_DATACLASS_CONFIG
 from caster_commons.domain.verdict import VerdictOptions
-from caster_miner_sdk.criterion_evaluation import FeedSearchContext
+
+NonEmptyText = Annotated[str, Field(min_length=1)]
+NonNegativeInt = Annotated[int, Field(ge=0)]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, config=COMMONS_STRICT_DATACLASS_CONFIG)
 class Rubric:
-    """Evaluation rubric attached to each claim."""
+    """Evaluation rubric attached to each generated claim."""
 
-    title: str
-    description: str
+    title: NonEmptyText
+    description: NonEmptyText
     verdict_options: VerdictOptions
 
-    def __post_init__(self) -> None:
-        if not self.title.strip():
-            raise ValueError("rubric title must not be empty")
-        if not self.description.strip():
-            raise ValueError("rubric description must not be empty")
 
-
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, config=COMMONS_STRICT_DATACLASS_CONFIG)
 class Citation:
     """Reference citation metadata."""
 
-    url: str
-    note: str
-
-    def __post_init__(self) -> None:
-        if not self.url.strip():
-            raise ValueError("citation url must not be empty")
-        if not self.note.strip():
-            raise ValueError("citation note must not be empty")
+    url: NonEmptyText
+    note: NonEmptyText
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, config=COMMONS_STRICT_DATACLASS_CONFIG)
 class Span:
     """Indexed excerpt within the evaluated text."""
 
-    excerpt: str
-    start: int
-    end: int
+    excerpt: NonEmptyText
+    start: NonNegativeInt
+    end: NonNegativeInt
 
-    def __post_init__(self) -> None:
-        if not self.excerpt.strip():
-            raise ValueError("span excerpt must not be empty")
-        if self.start < 0:
-            raise ValueError("span start must be non-negative")
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> Span:
         if self.end < self.start:
             raise ValueError("span end must be greater than or equal to start")
+        return self
 
 
-@dataclass(frozen=True, slots=True)
-class ReferenceAnswer:
-    """Curated reference answer used for scoring."""
+@dataclass(frozen=True, slots=True, config=COMMONS_STRICT_DATACLASS_CONFIG)
+class FeedSearchContext:
+    """Feed provenance kept for content-review flows."""
 
-    verdict: int
-    justification: str
-    citations: tuple[Citation, ...] = ()
-    spans: tuple[Span, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not self.justification.strip():
-            raise ValueError("reference justification must not be empty")
+    feed_id: UUID
+    enqueue_seq: NonNegativeInt
 
 
-@dataclass(frozen=True, slots=True)
-class MinerTaskClaim:
-    """Canonical miner-task claim evaluated by the subnet."""
-
-    claim_id: UUID
-    text: str
-    rubric: Rubric
-    reference_answer: ReferenceAnswer
-    budget_usd: float = 0.05
-    context: FeedSearchContext | None = None
-
-    def __post_init__(self) -> None:
-        if not self.text.strip():
-            raise ValueError("claim text must not be empty")
-        if self.budget_usd < 0.0:
-            raise ValueError("claim budget_usd must be non-negative")
-        if self.context is not None and not isinstance(self.context, FeedSearchContext):
-            raise TypeError("claim context must be FeedSearchContext")
-        self.rubric.verdict_options.validate(self.reference_answer.verdict)
-
-
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, config=COMMONS_STRICT_DATACLASS_CONFIG)
 class GeneratedClaim:
     """Raw claim emitted by generators; reference answer filled later."""
 
     claim_id: UUID
-    text: str
+    text: NonEmptyText
     rubric: Rubric
     verdict: int
-    justification: str
+    justification: NonEmptyText
 
-    def __post_init__(self) -> None:
-        if not self.text.strip():
-            raise ValueError("generated claim text must not be empty")
+    @model_validator(mode="after")
+    def _validate_verdict(self) -> GeneratedClaim:
         self.rubric.verdict_options.validate(self.verdict)
-        if not self.justification.strip():
-            raise ValueError("generated justification must not be empty")
+        return self
 
 
 __all__ = [
-    "Rubric",
     "Citation",
-    "ReferenceAnswer",
-    "Span",
     "FeedSearchContext",
-    "MinerTaskClaim",
     "GeneratedClaim",
+    "Rubric",
+    "Span",
 ]

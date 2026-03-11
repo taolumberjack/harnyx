@@ -7,13 +7,13 @@ All Mermaid **sequence diagrams** live here (one document). For request/response
 
 ## Diagram style
 
-These diagrams are intentionally **linear** (no `alt` / `par` / `loop`) to keep them easy to read. Any “optional / repeated / concurrent” behavior is described in short notes next to the diagram.
+These diagrams are intentionally **linear** (no `alt` / `par` / `loop`) to keep them easy to read. Any optional or repeated behavior is described in short notes next to the diagram.
 
 ## Quick index
 
 - Subnet runtime (Platform ↔ Validator ↔ Miner)
   - [Miner script upload](#miner-script-upload)
-  - [Miner evaluation batch](#miner-evaluation-batch)
+  - [Miner-task batch](#miner-task-batch)
   - [Tool execution](#tool-execution)
 - Subnet ops (Platform ↔ Validator)
   - [Validator registration and weights](#validator-registration-and-weights)
@@ -23,8 +23,8 @@ These diagrams are intentionally **linear** (no `alt` / `par` / `loop`) to keep 
 | Domain | Flow | Goal | Actors | Auth / Context |
 |--------|------|------|--------|------|
 | Subnet runtime | Miner script upload | upload script artifact | Miner ↔ Platform | `Authorization: Bittensor ...` |
-| Subnet runtime | Miner evaluation batch | forward batch + run sandbox + poll progress | Platform ↔ Validator ↔ Sandbox | `Authorization: Bittensor ...` + `x-caster-token` + `x-caster-session-id` + `x-caster-host-container-url` headers |
-| Subnet runtime | Tool execution | agent invokes host tools | Sandbox agent ↔ Tool host | `x-caster-token` + `x-caster-session-id` headers |
+| Subnet runtime | Miner-task batch | forward batch + run sandbox + poll progress | Platform ↔ Validator ↔ Sandbox | `Authorization: Bittensor ...` + `x-caster-token` + `x-caster-session-id` + `x-caster-host-container-url` |
+| Subnet runtime | Tool execution | agent invokes host tools | Sandbox agent ↔ Tool host | `x-caster-token` + `x-caster-session-id` |
 | Subnet ops | Validator registration and weights | register API base URL; read weights | Validator ↔ Platform | `Authorization: Bittensor ...` |
 
 ---
@@ -58,14 +58,14 @@ sequenceDiagram
 
 ---
 
-### Miner evaluation batch
+### Miner-task batch
 
 | Overview | |
 |---|---|
-| **What’s happening** | Platform distributes a batch; validator fetches artifacts; validator runs sandbox entrypoint; platform polls progress + status. |
+| **What’s happening** | Platform distributes a batch of `tasks` + `artifacts`; validator fetches artifacts; validator runs `query`; platform polls progress + status. |
 | **Actors** | Platform ↔ Validator API ↔ Sandbox |
-| **Auth** | Platform↔Validator is Bittensor-signed; Validator↔Sandbox uses `x-caster-token` (auth) + `x-caster-session-id` (session context) + `x-caster-host-container-url` (tool host base URL) headers. |
-| **Happy path** | forward batch → fetch artifacts → run sandbox → poll progress/status |
+| **Auth** | Platform↔Validator is Bittensor-signed; Validator↔Sandbox uses `x-caster-token` + `x-caster-session-id` + `x-caster-host-container-url`. |
+| **Happy path** | forward batch → fetch artifacts → run `query` → poll progress/status |
 
 #### 1) Platform forwards a batch to validators
 
@@ -75,7 +75,7 @@ sequenceDiagram
   participant V as Validator API
 
   Note over P,V: Authorization: Bittensor ss58="...",sig="..."
-  P->>V: POST /validator/miner-task-batches/batch<br/>{ batch_id, entrypoint, cutoff_at_iso, created_at_iso, claims, candidates }
+  P->>V: POST /validator/miner-task-batches/batch<br/>{ batch_id, cutoff_at_iso, created_at_iso, tasks, artifacts }
   V-->>P: 200 { status:"accepted", batch_id, caller }
 
   Note over P,V: On error, validator returns 4xx/5xx.
@@ -95,10 +95,10 @@ sequenceDiagram
   V->>P: GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}
   P-->>V: 200 <application/octet-stream>
 
-  Note over V,P: Artifact fetch repeats once per candidate.
+  Note over V,P: Artifact fetch repeats once per candidate artifact.
 ```
 
-#### 3) Validator invokes sandbox entrypoint (agent run)
+#### 3) Validator invokes sandbox query entrypoint
 
 ```mermaid
 sequenceDiagram
@@ -107,13 +107,13 @@ sequenceDiagram
   participant VA as Validator API (tools)
 
   Note over V,S: Headers: x-caster-session-id + x-caster-token + x-caster-host-container-url
-  V->>S: POST /entry/{entrypoint_name}<br/>{ payload, context }
+  V->>S: POST /entry/query<br/>{ text: "..." }
 
   Note over S,VA: Headers: x-caster-session-id + x-caster-token
   S->>VA: POST /v1/tools/execute<br/>ToolExecuteRequestDTO (0+ times)
   VA-->>S: 200 ToolExecuteResponseDTO
 
-  S-->>V: 200 { ok:true, result:{...} }
+  S-->>V: 200 { ok:true, result:{ text: "..." } }
 ```
 
 #### 4) Platform polls validator for health + progress
@@ -125,12 +125,12 @@ sequenceDiagram
 
   Note over P,V: Authorization: Bittensor ss58="...",sig="..."
   P->>V: GET /validator/miner-task-batches/{batch_id}/progress
-  V-->>P: 200 { total, completed, remaining, miner_task_results:[...] }
+  V-->>P: 200 { total, completed, remaining, miner_task_runs:[...] }
 
   P->>V: GET /validator/status
   V-->>P: 200 { status, running, ... }
 
-  Note over P,V: These calls are polled periodically (may overlap in time).
+  Note over P,V: These calls are polled periodically.
 ```
 
 **Endpoints involved**
@@ -154,7 +154,7 @@ sequenceDiagram
 |---|---|
 | **What’s happening** | Sandboxed agent code invokes host-managed tools (search/LLM/etc.) over HTTP. |
 | **Actors** | Agent (in sandbox) ↔ Tool host (validator) |
-| **Auth** | `x-caster-token` (auth) + `x-caster-session-id` (session context) headers |
+| **Auth** | `x-caster-token` + `x-caster-session-id` |
 | **Happy path** | `POST /v1/tools/execute` returns `ToolExecuteResponseDTO` |
 
 ```mermaid

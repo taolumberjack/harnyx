@@ -59,12 +59,12 @@ def test_get_champion_weights_returns_weights() -> None:
     assert weights.final_top == (42, 7, None)
 
 
-def test_get_miner_task_batch_parses_claim_budget_usd() -> None:
+def test_get_miner_task_batch_parses_tasks_and_artifacts() -> None:
     batch_id = uuid4()
-    claim_id = uuid4()
+    task_id = uuid4()
     artifact_id = uuid4()
+    champion_artifact_id = uuid4()
     budget_usd = 0.123
-    feed_id = uuid4()
 
     def handler(request: httpx.Request) -> httpx.Response:
         _assert_signed(request, keypair)
@@ -72,36 +72,17 @@ def test_get_miner_task_batch_parses_claim_budget_usd() -> None:
         if request.method == "GET" and request.url.path == expected_path:
             payload = {
                 "batch_id": str(batch_id),
-                "entrypoint": "evaluate_criterion",
                 "cutoff_at": "2025-10-17T12:00:00Z",
                 "created_at": "2025-10-17T12:00:00Z",
-                "claims": [
+                "tasks": [
                     {
-                        "claim_id": str(claim_id),
-                        "text": "smoke",
-                        "rubric": {
-                            "title": "Accuracy",
-                            "description": "desc",
-                            "verdict_options": {
-                                "options": [
-                                    {"value": -1, "description": "Fail"},
-                                    {"value": 1, "description": "Pass"},
-                                ]
-                            },
-                        },
-                        "reference_answer": {
-                            "verdict": 1,
-                            "justification": "ok",
-                            "citations": [],
-                        },
+                        "task_id": str(task_id),
+                        "query": {"text": "smoke"},
+                        "reference_answer": {"text": "ok"},
                         "budget_usd": budget_usd,
-                        "context": {
-                            "feed_id": str(feed_id),
-                            "enqueue_seq": 5,
-                        },
                     },
                 ],
-                "candidates": [
+                "artifacts": [
                     {
                         "uid": 7,
                         "artifact_id": str(artifact_id),
@@ -109,9 +90,9 @@ def test_get_miner_task_batch_parses_claim_budget_usd() -> None:
                         "size_bytes": 1,
                     }
                 ],
-                "champion_uid": 7,
-                "status": "created",
-                "status_message": None,
+                "champion_artifact_id": str(champion_artifact_id),
+                "completed_at": "2025-10-17T12:05:00Z",
+                "failed_at": None,
             }
             return httpx.Response(status_code=200, json=payload)
         return httpx.Response(status_code=404)
@@ -126,8 +107,8 @@ def test_get_miner_task_batch_parses_claim_budget_usd() -> None:
     batch = client.get_miner_task_batch(batch_id)
 
     assert batch.batch_id == batch_id
-    assert batch.claims[0].claim_id == claim_id
-    assert batch.claims[0].budget_usd == pytest.approx(budget_usd)
-    assert batch.claims[0].context is not None
-    assert batch.claims[0].context.feed_id == feed_id
-    assert batch.claims[0].context.enqueue_seq == 5
+    assert batch.tasks[0].task_id == task_id
+    assert batch.tasks[0].budget_usd == pytest.approx(budget_usd)
+    assert batch.tasks[0].query.text == "smoke"
+    assert batch.tasks[0].reference_answer.text == "ok"
+    assert batch.artifacts[0].artifact_id == artifact_id

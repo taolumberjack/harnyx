@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
 from caster_commons.llm.provider import BaseLlmProvider
 from caster_commons.llm.schema import (
@@ -68,8 +69,6 @@ class ChutesLlmProvider(BaseLlmProvider):
     def _build_payload(self, request: AbstractLlmRequest) -> dict[str, Any]:
         if request.grounded:
             raise ValueError("grounded mode is not supported for chutes provider")
-        if request.output_mode != "text":
-            raise ValueError("chutes provider supports text output only")
         payload: dict[str, Any] = {
             "provider": request.provider or "chutes",
             "model": request.model,
@@ -84,6 +83,9 @@ class ChutesLlmProvider(BaseLlmProvider):
             "include": list(request.include) if request.include else None,
         }
         payload |= {k: v for k, v in optional_fields.items() if v is not None}
+        response_format = _build_response_format(request)
+        if response_format is not None:
+            payload["response_format"] = response_format
         if request.extra:
             payload.update(dict(request.extra))
         return payload
@@ -155,6 +157,9 @@ class ChutesLlmProvider(BaseLlmProvider):
         if isinstance(exc, httpx.HTTPStatusError):
             status = exc.response.status_code if exc.response else None
             retryable = status is not None and (status == 429 or status >= 500)
+            detail = _summarize_response(exc.response) if exc.response is not None else ""
+            if detail:
+                return retryable, f"http_{status}: {detail}"
             return retryable, f"http_{status}"
         if isinstance(exc, httpx.HTTPError):
             return True, exc.__class__.__name__
@@ -178,6 +183,31 @@ def _serialize_tool(spec: LlmTool) -> dict[str, Any]:
     if spec.config:
         tool_payload.update(dict(spec.config))
     return tool_payload
+
+
+def _build_response_format(request: AbstractLlmRequest) -> dict[str, Any] | None:
+    match request.output_mode:
+        case "text":
+            return None
+        case "json_object":
+            return {"type": "json_object"}
+        case "structured":
+            schema_type = request.output_schema
+            if schema_type is None:
+                raise ValueError("structured output requires output_schema")
+            return {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_type.__name__,
+                    "schema": _json_schema_from_model(schema_type),
+                },
+            }
+        case _:
+            raise ValueError(f"unsupported chutes output_mode: {request.output_mode!r}")
+
+
+def _json_schema_from_model(model: type[BaseModel]) -> dict[str, Any]:
+    return dict(model.model_json_schema())
 
 
 def _serialize_message(message: LlmMessage) -> dict[str, Any]:

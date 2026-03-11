@@ -28,31 +28,21 @@ Body: [MinerTaskBatchSpec](#model-minertaskbatchspec)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `candidates` |  |  | req | array[[ScriptArtifactSpec](#model-scriptartifactspec)] |
+| `artifacts` |  |  | req | array[[ScriptArtifactSpec](#model-scriptartifactspec)] |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `content_hash` |  | req | `string` |
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
-| `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `created_at` |  |  | req | `string` |
+| `cutoff_at` |  |  | req | `string` |
+| `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.05) |
-|  | `claim_id` |  | req | `string` (format: uuid) |
-|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  |  | `enqueue_seq` | req | `integer` |
-|  |  | `feed_id` | req | `string` (format: uuid) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |
-|  |  | `justification` | req | `string` |
-|  |  | `spans` | opt | array[[Span](#model-span)] (default: []) |
-|  |  | `verdict` | req | `integer` |
-|  | `rubric` |  | req | [Rubric](#model-rubric) |
-|  |  | `description` | req | `string` |
-|  |  | `title` | req | `string` |
-|  |  | `verdict_options` | req | [VerdictOptions](#model-verdictoptions) |
-|  | `text` |  | req | `string` |
-| `created_at_iso` |  |  | req | `string` |
-| `cutoff_at_iso` |  |  | req | `string` |
-| `entrypoint` |  |  | req | `string` |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
 
 **Responses**
 `200` Successful Response
@@ -102,37 +92,28 @@ Body: [ProgressResponse](#model-progressresponse)
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` |
 | `completed` |  |  | req | `integer` |
-| `miner_task_results` |  |  | req | array[[MinerTaskResultModel](#model-minertaskresultmodel)] |
+| `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
-|  | `criterion_evaluation` |  | req | [MinerTaskResultCriterionEvaluationModel](#model-minertaskresultcriterionevaluationmodel) |
+|  | `run` |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  |  | `artifact_id` | req | `string` |
-|  |  | `citations` | req | array[[MinerTaskResultCitationModel](#model-minertaskresultcitationmodel)] |
-|  |  | `claim_id` | req | `string` |
-|  |  | `criterion_evaluation_id` | req | `string` |
-|  |  | `justification` | req | `string` |
+|  |  | `query` | req | [Query](#model-query) |
+|  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `response` | opt | [Response](#model-response) (nullable) |
+|  |  | `task_id` | req | `string` |
 |  |  | `uid` | req | `integer` |
-|  |  | `verdict` | req | `integer` |
-|  | `score` |  | req | [MinerTaskResultScoreModel](#model-minertaskresultscoremodel) |
-|  |  | `error_code` | opt | `string` (nullable) |
-|  |  | `error_message` | opt | `string` (nullable) |
-|  |  | `failed_citation_ids` | req | array[`string`] |
-|  |  | `grader_rationale` | opt | `string` (nullable) |
-|  |  | `justification_pass` | req | `boolean` |
-|  |  | `support_score` | req | `number` |
-|  |  | `verdict_score` | req | `number` |
+|  | `score` |  | req | `number` |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
 |  |  | `issued_at` | req | `string` |
 |  |  | `session_id` | req | `string` |
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
-|  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
-|  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
-|  |  | `llm_cost` | opt | `number` (default: 0.0) |
-|  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
-|  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
+|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
 |  | `usage` |  | req | [UsageModel](#model-usagemodel) |
-|  |  | `by_provider` | req | `object` |
+|  |  | `by_provider` | opt | `object` |
 |  |  | `call_count` | req | `integer` |
 |  |  | `total_completion_tokens` | req | `integer` |
 |  |  | `total_prompt_tokens` | req | `integer` |
@@ -265,16 +246,20 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "batch_id": {
+      "minLength": 1,
       "title": "Batch Id",
       "type": "string"
     },
     "caller": {
+      "minLength": 1,
       "title": "Caller",
       "type": "string"
     },
     "status": {
+      "minLength": 1,
       "title": "Status",
       "type": "string"
     }
@@ -291,47 +276,32 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-citation"></a>
-### Model: Citation
+<a id="model-evaluationdetails"></a>
+### Model: EvaluationDetails
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `note` |  |  | req | `string` |
-| `url` |  |  | req | `string` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "note": {
-      "title": "Note",
-      "type": "string"
-    },
-    "url": {
-      "title": "Url",
-      "type": "string"
-    }
-  },
-  "required": [
-    "url",
-    "note"
-  ],
-  "title": "Citation",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-feedsearchcontext"></a>
-### Model: FeedSearchContext
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `enqueue_seq` |  |  | req | `integer` |
-| `feed_id` |  |  | req | `string` (format: uuid) |
+| `error` |  |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  | `code` |  | req | `string` |
+|  | `message` |  | req | `string` |
+| `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  | `comparison_score` |  | req | `number` |
+|  | `scoring_version` |  | req | `string` |
+|  | `similarity_score` |  | req | `number` |
+|  | `total_score` |  | req | `number` |
+| `total_tool_usage` |  |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  | `llm` |  | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  |  | `call_count` | opt | `integer` (default: 0) |
+|  |  | `completion_tokens` | opt | `integer` (default: 0) |
+|  |  | `cost` | opt | `number` (default: 0.0) |
+|  |  | `prompt_tokens` | opt | `integer` (default: 0) |
+|  |  | `providers` | opt | `object` |
+|  |  | `total_tokens` | opt | `integer` (default: 0) |
+|  | `llm_cost` |  | opt | `number` (default: 0.0) |
+|  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `call_count` | opt | `integer` (default: 0) |
+|  |  | `cost` | opt | `number` (default: 0.0) |
+|  | `search_tool_cost` |  | opt | `number` (default: 0.0) |
 
 <details>
 <summary>JSON schema</summary>
@@ -340,22 +310,68 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 {
   "additionalProperties": false,
   "properties": {
-    "enqueue_seq": {
-      "minimum": 0.0,
-      "title": "Enqueue Seq",
-      "type": "integer"
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/EvaluationError"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-    "feed_id": {
-      "format": "uuid",
-      "title": "Feed Id",
+    "score_breakdown": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ScoreBreakdown"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "total_tool_usage": {
+      "$ref": "#/components/schemas/ToolUsageSummary"
+    }
+  },
+  "title": "EvaluationDetails",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-evaluationerror"></a>
+### Model: EvaluationError
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `code` |  |  | req | `string` |
+| `message` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "minLength": 1,
+      "title": "Code",
+      "type": "string"
+    },
+    "message": {
+      "minLength": 1,
+      "title": "Message",
       "type": "string"
     }
   },
   "required": [
-    "feed_id",
-    "enqueue_seq"
+    "code",
+    "message"
   ],
-  "title": "FeedSearchContext",
+  "title": "EvaluationError",
   "type": "object"
 }
 ```
@@ -546,82 +562,122 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-minertaskbatchspec"></a>
-### Model: MinerTaskBatchSpec
+<a id="model-minertask"></a>
+### Model: MinerTask
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `candidates` |  |  | req | array[[ScriptArtifactSpec](#model-scriptartifactspec)] |
-|  | `artifact_id` |  | req | `string` (format: uuid) |
-|  | `content_hash` |  | req | `string` |
-|  | `size_bytes` |  | req | `integer` |
-|  | `uid` |  | req | `integer` |
-| `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.05) |
-|  | `claim_id` |  | req | `string` (format: uuid) |
-|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  |  | `enqueue_seq` | req | `integer` |
-|  |  | `feed_id` | req | `string` (format: uuid) |
-|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |
-|  |  | `justification` | req | `string` |
-|  |  | `spans` | opt | array[[Span](#model-span)] (default: []) |
-|  |  | `verdict` | req | `integer` |
-|  | `rubric` |  | req | [Rubric](#model-rubric) |
-|  |  | `description` | req | `string` |
-|  |  | `title` | req | `string` |
-|  |  | `verdict_options` | req | [VerdictOptions](#model-verdictoptions) |
+| `budget_usd` |  |  | opt | `number` (default: 0.05) |
+| `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
-| `created_at_iso` |  |  | req | `string` |
-| `cutoff_at_iso` |  |  | req | `string` |
-| `entrypoint` |  |  | req | `string` |
+| `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  | `text` |  | req | `string` |
+| `task_id` |  |  | req | `string` (format: uuid) |
 
 <details>
 <summary>JSON schema</summary>
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
+    "budget_usd": {
+      "default": 0.05,
+      "minimum": 0.0,
+      "title": "Budget Usd",
+      "type": "number"
+    },
+    "query": {
+      "$ref": "#/components/schemas/Query"
+    },
+    "reference_answer": {
+      "$ref": "#/components/schemas/ReferenceAnswer"
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "query",
+    "reference_answer"
+  ],
+  "title": "MinerTask",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskbatchspec"></a>
+### Model: MinerTaskBatchSpec
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifacts` |  |  | req | array[[ScriptArtifactSpec](#model-scriptartifactspec)] |
+|  | `artifact_id` |  | req | `string` (format: uuid) |
+|  | `content_hash` |  | req | `string` |
+|  | `size_bytes` |  | req | `integer` |
+|  | `uid` |  | req | `integer` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `created_at` |  |  | req | `string` |
+| `cutoff_at` |  |  | req | `string` |
+| `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
+|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Miner-task batch supplied by the platform.",
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/components/schemas/ScriptArtifactSpec"
+      },
+      "minItems": 1,
+      "title": "Artifacts",
+      "type": "array"
+    },
     "batch_id": {
       "format": "uuid",
       "title": "Batch Id",
       "type": "string"
     },
-    "candidates": {
+    "created_at": {
+      "minLength": 1,
+      "title": "Created At",
+      "type": "string"
+    },
+    "cutoff_at": {
+      "minLength": 1,
+      "title": "Cutoff At",
+      "type": "string"
+    },
+    "tasks": {
       "items": {
-        "$ref": "#/components/schemas/ScriptArtifactSpec"
+        "$ref": "#/components/schemas/MinerTask"
       },
-      "title": "Candidates",
+      "minItems": 1,
+      "title": "Tasks",
       "type": "array"
-    },
-    "claims": {
-      "items": {
-        "$ref": "#/components/schemas/MinerTaskClaim"
-      },
-      "title": "Claims",
-      "type": "array"
-    },
-    "created_at_iso": {
-      "title": "Created At Iso",
-      "type": "string"
-    },
-    "cutoff_at_iso": {
-      "title": "Cutoff At Iso",
-      "type": "string"
-    },
-    "entrypoint": {
-      "title": "Entrypoint",
-      "type": "string"
     }
   },
   "required": [
     "batch_id",
-    "entrypoint",
-    "cutoff_at_iso",
-    "created_at_iso",
-    "claims",
-    "candidates"
+    "cutoff_at",
+    "created_at",
+    "tasks",
+    "artifacts"
   ],
   "title": "MinerTaskBatchSpec",
   "type": "object"
@@ -630,269 +686,113 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-minertaskclaim"></a>
-### Model: MinerTaskClaim
+<a id="model-minertaskrunmodel"></a>
+### Model: MinerTaskRunModel
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `budget_usd` |  |  | opt | `number` (default: 0.05) |
-| `claim_id` |  |  | req | `string` (format: uuid) |
-| `context` |  |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  | `enqueue_seq` |  | req | `integer` |
-|  | `feed_id` |  | req | `string` (format: uuid) |
+| `artifact_id` |  |  | req | `string` |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  | `citations` |  | opt | array[[Citation](#model-citation)] (default: []) |
-|  |  | `note` | req | `string` |
-|  |  | `url` | req | `string` |
-|  | `justification` |  | req | `string` |
-|  | `spans` |  | opt | array[[Span](#model-span)] (default: []) |
-|  |  | `end` | req | `integer` |
-|  |  | `excerpt` | req | `string` |
-|  |  | `start` | req | `integer` |
-|  | `verdict` |  | req | `integer` |
-| `rubric` |  |  | req | [Rubric](#model-rubric) |
-|  | `description` |  | req | `string` |
-|  | `title` |  | req | `string` |
-|  | `verdict_options` |  | req | [VerdictOptions](#model-verdictoptions) |
-|  |  | `options` | req | array[[VerdictOption](#model-verdictoption)] |
-| `text` |  |  | req | `string` |
+|  | `text` |  | req | `string` |
+| `response` |  |  | opt | [Response](#model-response) (nullable) |
+|  | `text` |  | req | `string` |
+| `task_id` |  |  | req | `string` |
+| `uid` |  |  | req | `integer` |
 
 <details>
 <summary>JSON schema</summary>
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
-    "budget_usd": {
-      "default": 0.05,
-      "title": "Budget Usd",
-      "type": "number"
-    },
-    "claim_id": {
-      "format": "uuid",
-      "title": "Claim Id",
+    "artifact_id": {
+      "minLength": 1,
+      "title": "Artifact Id",
       "type": "string"
     },
-    "context": {
+    "query": {
+      "$ref": "#/components/schemas/Query"
+    },
+    "reference_answer": {
+      "$ref": "#/components/schemas/ReferenceAnswer"
+    },
+    "response": {
       "anyOf": [
         {
-          "$ref": "#/components/schemas/FeedSearchContext"
+          "$ref": "#/components/schemas/Response"
         },
         {
           "type": "null"
         }
       ]
     },
-    "reference_answer": {
-      "$ref": "#/components/schemas/ReferenceAnswer"
-    },
-    "rubric": {
-      "$ref": "#/components/schemas/Rubric"
-    },
-    "text": {
-      "title": "Text",
-      "type": "string"
-    }
-  },
-  "required": [
-    "claim_id",
-    "text",
-    "rubric",
-    "reference_answer"
-  ],
-  "title": "MinerTaskClaim",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-minertaskresultcitationmodel"></a>
-### Model: MinerTaskResultCitationModel
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `note` |  |  | opt | `string` (nullable) |
-| `receipt_id` |  |  | opt | `string` (nullable) |
-| `result_id` |  |  | opt | `string` (nullable) |
-| `url` |  |  | opt | `string` (nullable) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "note": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Note"
-    },
-    "receipt_id": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Receipt Id"
-    },
-    "result_id": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Result Id"
-    },
-    "url": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Url"
-    }
-  },
-  "title": "MinerTaskResultCitationModel",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-minertaskresultcriterionevaluationmodel"></a>
-### Model: MinerTaskResultCriterionEvaluationModel
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `artifact_id` |  |  | req | `string` |
-| `citations` |  |  | req | array[[MinerTaskResultCitationModel](#model-minertaskresultcitationmodel)] |
-|  | `note` |  | opt | `string` (nullable) |
-|  | `receipt_id` |  | opt | `string` (nullable) |
-|  | `result_id` |  | opt | `string` (nullable) |
-|  | `url` |  | opt | `string` (nullable) |
-| `claim_id` |  |  | req | `string` |
-| `criterion_evaluation_id` |  |  | req | `string` |
-| `justification` |  |  | req | `string` |
-| `uid` |  |  | req | `integer` |
-| `verdict` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "artifact_id": {
-      "title": "Artifact Id",
-      "type": "string"
-    },
-    "citations": {
-      "items": {
-        "$ref": "#/components/schemas/MinerTaskResultCitationModel"
-      },
-      "title": "Citations",
-      "type": "array"
-    },
-    "claim_id": {
-      "title": "Claim Id",
-      "type": "string"
-    },
-    "criterion_evaluation_id": {
-      "title": "Criterion Evaluation Id",
-      "type": "string"
-    },
-    "justification": {
-      "title": "Justification",
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
       "type": "string"
     },
     "uid": {
+      "minimum": 0.0,
       "title": "Uid",
-      "type": "integer"
-    },
-    "verdict": {
-      "title": "Verdict",
       "type": "integer"
     }
   },
   "required": [
-    "criterion_evaluation_id",
     "uid",
     "artifact_id",
-    "claim_id",
-    "verdict",
-    "justification",
-    "citations"
+    "task_id",
+    "query",
+    "reference_answer"
   ],
-  "title": "MinerTaskResultCriterionEvaluationModel",
+  "title": "MinerTaskRunModel",
   "type": "object"
 }
 ```
 
 </details>
 
-<a id="model-minertaskresultmodel"></a>
-### Model: MinerTaskResultModel
+<a id="model-minertaskrunsubmissionmodel"></a>
+### Model: MinerTaskRunSubmissionModel
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` |
-| `criterion_evaluation` |  |  | req | [MinerTaskResultCriterionEvaluationModel](#model-minertaskresultcriterionevaluationmodel) |
+| `run` |  |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  | `artifact_id` |  | req | `string` |
-|  | `citations` |  | req | array[[MinerTaskResultCitationModel](#model-minertaskresultcitationmodel)] |
-|  |  | `note` | opt | `string` (nullable) |
-|  |  | `receipt_id` | opt | `string` (nullable) |
-|  |  | `result_id` | opt | `string` (nullable) |
-|  |  | `url` | opt | `string` (nullable) |
-|  | `claim_id` |  | req | `string` |
-|  | `criterion_evaluation_id` |  | req | `string` |
-|  | `justification` |  | req | `string` |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `text` | req | `string` |
+|  | `response` |  | opt | [Response](#model-response) (nullable) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` |
 |  | `uid` |  | req | `integer` |
-|  | `verdict` |  | req | `integer` |
-| `score` |  |  | req | [MinerTaskResultScoreModel](#model-minertaskresultscoremodel) |
-|  | `error_code` |  | opt | `string` (nullable) |
-|  | `error_message` |  | opt | `string` (nullable) |
-|  | `failed_citation_ids` |  | req | array[`string`] |
-|  | `grader_rationale` |  | opt | `string` (nullable) |
-|  | `justification_pass` |  | req | `boolean` |
-|  | `support_score` |  | req | `number` |
-|  | `verdict_score` |  | req | `number` |
+| `score` |  |  | req | `number` |
 | `session` |  |  | req | [SessionModel](#model-sessionmodel) |
 |  | `expires_at` |  | req | `string` |
 |  | `issued_at` |  | req | `string` |
 |  | `session_id` |  | req | `string` |
 |  | `status` |  | req | `string` |
 |  | `uid` |  | req | `integer` |
-| `total_tool_usage` |  |  | req | [ToolUsageSummary](#model-toolusagesummary) |
-|  | `llm` |  | opt | [LlmUsageSummary](#model-llmusagesummary) |
-|  |  | `call_count` | opt | `integer` (default: 0) |
-|  |  | `completion_tokens` | opt | `integer` (default: 0) |
-|  |  | `cost` | opt | `number` (default: 0.0) |
-|  |  | `prompt_tokens` | opt | `integer` (default: 0) |
-|  |  | `providers` | opt | `object` |
-|  |  | `total_tokens` | opt | `integer` (default: 0) |
-|  | `llm_cost` |  | opt | `number` (default: 0.0) |
-|  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
-|  |  | `call_count` | opt | `integer` (default: 0) |
-|  |  | `cost` | opt | `number` (default: 0.0) |
-|  | `search_tool_cost` |  | opt | `number` (default: 0.0) |
+| `specifics` |  |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  | `error` |  | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `code` | req | `string` |
+|  |  | `message` | req | `string` |
+|  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `comparison_score` | req | `number` |
+|  |  | `scoring_version` | req | `string` |
+|  |  | `similarity_score` | req | `number` |
+|  |  | `total_score` | req | `number` |
+|  | `total_tool_usage` |  | opt | [ToolUsageSummary](#model-toolusagesummary) |
+|  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
+|  |  | `llm_cost` | opt | `number` (default: 0.0) |
+|  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
+|  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
 | `usage` |  |  | req | [UsageModel](#model-usagemodel) |
-|  | `by_provider` |  | req | `object` |
+|  | `by_provider` |  | opt | `object` |
 |  | `call_count` |  | req | `integer` |
 |  | `total_completion_tokens` |  | req | `integer` |
 |  | `total_prompt_tokens` |  | req | `integer` |
@@ -905,22 +805,27 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "batch_id": {
+      "minLength": 1,
       "title": "Batch Id",
       "type": "string"
     },
-    "criterion_evaluation": {
-      "$ref": "#/components/schemas/MinerTaskResultCriterionEvaluationModel"
+    "run": {
+      "$ref": "#/components/schemas/MinerTaskRunModel"
     },
     "score": {
-      "$ref": "#/components/schemas/MinerTaskResultScoreModel"
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Score",
+      "type": "number"
     },
     "session": {
       "$ref": "#/components/schemas/SessionModel"
     },
-    "total_tool_usage": {
-      "$ref": "#/components/schemas/ToolUsageSummary"
+    "specifics": {
+      "$ref": "#/components/schemas/EvaluationDetails"
     },
     "usage": {
       "$ref": "#/components/schemas/UsageModel"
@@ -932,98 +837,13 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   "required": [
     "batch_id",
     "validator",
-    "criterion_evaluation",
+    "run",
     "score",
     "usage",
     "session",
-    "total_tool_usage"
+    "specifics"
   ],
-  "title": "MinerTaskResultModel",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-minertaskresultscoremodel"></a>
-### Model: MinerTaskResultScoreModel
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `error_code` |  |  | opt | `string` (nullable) |
-| `error_message` |  |  | opt | `string` (nullable) |
-| `failed_citation_ids` |  |  | req | array[`string`] |
-| `grader_rationale` |  |  | opt | `string` (nullable) |
-| `justification_pass` |  |  | req | `boolean` |
-| `support_score` |  |  | req | `number` |
-| `verdict_score` |  |  | req | `number` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "error_code": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Error Code"
-    },
-    "error_message": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Error Message"
-    },
-    "failed_citation_ids": {
-      "items": {
-        "type": "string"
-      },
-      "title": "Failed Citation Ids",
-      "type": "array"
-    },
-    "grader_rationale": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Grader Rationale"
-    },
-    "justification_pass": {
-      "title": "Justification Pass",
-      "type": "boolean"
-    },
-    "support_score": {
-      "title": "Support Score",
-      "type": "number"
-    },
-    "verdict_score": {
-      "title": "Verdict Score",
-      "type": "number"
-    }
-  },
-  "required": [
-    "verdict_score",
-    "support_score",
-    "justification_pass",
-    "failed_citation_ids"
-  ],
-  "title": "MinerTaskResultScoreModel",
+  "title": "MinerTaskRunSubmissionModel",
   "type": "object"
 }
 ```
@@ -1037,37 +857,28 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` |
 | `completed` |  |  | req | `integer` |
-| `miner_task_results` |  |  | req | array[[MinerTaskResultModel](#model-minertaskresultmodel)] |
+| `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
-|  | `criterion_evaluation` |  | req | [MinerTaskResultCriterionEvaluationModel](#model-minertaskresultcriterionevaluationmodel) |
+|  | `run` |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
 |  |  | `artifact_id` | req | `string` |
-|  |  | `citations` | req | array[[MinerTaskResultCitationModel](#model-minertaskresultcitationmodel)] |
-|  |  | `claim_id` | req | `string` |
-|  |  | `criterion_evaluation_id` | req | `string` |
-|  |  | `justification` | req | `string` |
+|  |  | `query` | req | [Query](#model-query) |
+|  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `response` | opt | [Response](#model-response) (nullable) |
+|  |  | `task_id` | req | `string` |
 |  |  | `uid` | req | `integer` |
-|  |  | `verdict` | req | `integer` |
-|  | `score` |  | req | [MinerTaskResultScoreModel](#model-minertaskresultscoremodel) |
-|  |  | `error_code` | opt | `string` (nullable) |
-|  |  | `error_message` | opt | `string` (nullable) |
-|  |  | `failed_citation_ids` | req | array[`string`] |
-|  |  | `grader_rationale` | opt | `string` (nullable) |
-|  |  | `justification_pass` | req | `boolean` |
-|  |  | `support_score` | req | `number` |
-|  |  | `verdict_score` | req | `number` |
+|  | `score` |  | req | `number` |
 |  | `session` |  | req | [SessionModel](#model-sessionmodel) |
 |  |  | `expires_at` | req | `string` |
 |  |  | `issued_at` | req | `string` |
 |  |  | `session_id` | req | `string` |
 |  |  | `status` | req | `string` |
 |  |  | `uid` | req | `integer` |
-|  | `total_tool_usage` |  | req | [ToolUsageSummary](#model-toolusagesummary) |
-|  |  | `llm` | opt | [LlmUsageSummary](#model-llmusagesummary) |
-|  |  | `llm_cost` | opt | `number` (default: 0.0) |
-|  |  | `search_tool` | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
-|  |  | `search_tool_cost` | opt | `number` (default: 0.0) |
+|  | `specifics` |  | req | [EvaluationDetails](#model-evaluationdetails) |
+|  |  | `error` | opt | [EvaluationError](#model-evaluationerror) (nullable) |
+|  |  | `score_breakdown` | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
+|  |  | `total_tool_usage` | opt | [ToolUsageSummary](#model-toolusagesummary) |
 |  | `usage` |  | req | [UsageModel](#model-usagemodel) |
-|  |  | `by_provider` | req | `object` |
+|  |  | `by_provider` | opt | `object` |
 |  |  | `call_count` | req | `integer` |
 |  |  | `total_completion_tokens` | req | `integer` |
 |  |  | `total_prompt_tokens` | req | `integer` |
@@ -1082,27 +893,32 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "batch_id": {
+      "minLength": 1,
       "title": "Batch Id",
       "type": "string"
     },
     "completed": {
+      "minimum": 0.0,
       "title": "Completed",
       "type": "integer"
     },
-    "miner_task_results": {
+    "miner_task_runs": {
       "items": {
-        "$ref": "#/components/schemas/MinerTaskResultModel"
+        "$ref": "#/components/schemas/MinerTaskRunSubmissionModel"
       },
-      "title": "Miner Task Results",
+      "title": "Miner Task Runs",
       "type": "array"
     },
     "remaining": {
+      "minimum": 0.0,
       "title": "Remaining",
       "type": "integer"
     },
     "total": {
+      "minimum": 0.0,
       "title": "Total",
       "type": "integer"
     }
@@ -1112,9 +928,39 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "total",
     "completed",
     "remaining",
-    "miner_task_results"
+    "miner_task_runs"
   ],
   "title": "ProgressResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-query"></a>
+### Model: Query
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `text` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "Query",
   "type": "object"
 }
 ```
@@ -1126,50 +972,23 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `citations` |  |  | opt | array[[Citation](#model-citation)] (default: []) |
-|  | `note` |  | req | `string` |
-|  | `url` |  | req | `string` |
-| `justification` |  |  | req | `string` |
-| `spans` |  |  | opt | array[[Span](#model-span)] (default: []) |
-|  | `end` |  | req | `integer` |
-|  | `excerpt` |  | req | `string` |
-|  | `start` |  | req | `integer` |
-| `verdict` |  |  | req | `integer` |
+| `text` |  |  | req | `string` |
 
 <details>
 <summary>JSON schema</summary>
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
-    "citations": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/Citation"
-      },
-      "title": "Citations",
-      "type": "array"
-    },
-    "justification": {
-      "title": "Justification",
+    "text": {
+      "minLength": 1,
+      "title": "Text",
       "type": "string"
-    },
-    "spans": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/Span"
-      },
-      "title": "Spans",
-      "type": "array"
-    },
-    "verdict": {
-      "title": "Verdict",
-      "type": "integer"
     }
   },
   "required": [
-    "verdict",
-    "justification"
+    "text"
   ],
   "title": "ReferenceAnswer",
   "type": "object"
@@ -1178,42 +997,84 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-rubric"></a>
-### Model: Rubric
+<a id="model-response"></a>
+### Model: Response
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `description` |  |  | req | `string` |
-| `title` |  |  | req | `string` |
-| `verdict_options` |  |  | req | [VerdictOptions](#model-verdictoptions) |
-|  | `options` |  | req | array[[VerdictOption](#model-verdictoption)] |
-|  |  | `description` | req | `string` |
-|  |  | `value` | req | `integer` |
+| `text` |  |  | req | `string` |
 
 <details>
 <summary>JSON schema</summary>
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
-    "description": {
-      "title": "Description",
+    "text": {
+      "minLength": 1,
+      "title": "Text",
       "type": "string"
-    },
-    "title": {
-      "title": "Title",
-      "type": "string"
-    },
-    "verdict_options": {
-      "$ref": "#/components/schemas/VerdictOptions"
     }
   },
   "required": [
-    "title",
-    "description",
-    "verdict_options"
+    "text"
   ],
-  "title": "Rubric",
+  "title": "Response",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-scorebreakdown"></a>
+### Model: ScoreBreakdown
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `comparison_score` |  |  | req | `number` |
+| `scoring_version` |  |  | req | `string` |
+| `similarity_score` |  |  | req | `number` |
+| `total_score` |  |  | req | `number` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "comparison_score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Comparison Score",
+      "type": "number"
+    },
+    "scoring_version": {
+      "minLength": 1,
+      "title": "Scoring Version",
+      "type": "string"
+    },
+    "similarity_score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Similarity Score",
+      "type": "number"
+    },
+    "total_score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Total Score",
+      "type": "number"
+    }
+  },
+  "required": [
+    "comparison_score",
+    "similarity_score",
+    "total_score",
+    "scoring_version"
+  ],
+  "title": "ScoreBreakdown",
   "type": "object"
 }
 ```
@@ -1235,6 +1096,8 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
+  "description": "Script artifact metadata supplied by the platform.",
   "properties": {
     "artifact_id": {
       "format": "uuid",
@@ -1242,14 +1105,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "type": "string"
     },
     "content_hash": {
+      "minLength": 1,
       "title": "Content Hash",
       "type": "string"
     },
     "size_bytes": {
+      "minimum": 0.0,
       "title": "Size Bytes",
       "type": "integer"
     },
     "uid": {
+      "minimum": 0.0,
       "title": "Uid",
       "type": "integer"
     }
@@ -1315,24 +1181,30 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "expires_at": {
+      "minLength": 1,
       "title": "Expires At",
       "type": "string"
     },
     "issued_at": {
+      "minLength": 1,
       "title": "Issued At",
       "type": "string"
     },
     "session_id": {
+      "minLength": 1,
       "title": "Session Id",
       "type": "string"
     },
     "status": {
+      "minLength": 1,
       "title": "Status",
       "type": "string"
     },
     "uid": {
+      "minimum": 0.0,
       "title": "Uid",
       "type": "integer"
     }
@@ -1345,46 +1217,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "expires_at"
   ],
   "title": "SessionModel",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-span"></a>
-### Model: Span
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `end` |  |  | req | `integer` |
-| `excerpt` |  |  | req | `string` |
-| `start` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "end": {
-      "title": "End",
-      "type": "integer"
-    },
-    "excerpt": {
-      "title": "Excerpt",
-      "type": "string"
-    },
-    "start": {
-      "title": "Start",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "excerpt",
-    "start",
-    "end"
-  ],
-  "title": "Span",
   "type": "object"
 }
 ```
@@ -1773,7 +1605,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `by_provider` |  |  | req | `object` |
+| `by_provider` |  |  | opt | `object` |
 | `call_count` |  |  | req | `integer` |
 | `total_completion_tokens` |  |  | req | `integer` |
 | `total_prompt_tokens` |  |  | req | `integer` |
@@ -1784,6 +1616,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "by_provider": {
       "additionalProperties": {
@@ -1796,18 +1629,22 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "type": "object"
     },
     "call_count": {
+      "minimum": 0.0,
       "title": "Call Count",
       "type": "integer"
     },
     "total_completion_tokens": {
+      "minimum": 0.0,
       "title": "Total Completion Tokens",
       "type": "integer"
     },
     "total_prompt_tokens": {
+      "minimum": 0.0,
       "title": "Total Prompt Tokens",
       "type": "integer"
     },
     "total_tokens": {
+      "minimum": 0.0,
       "title": "Total Tokens",
       "type": "integer"
     }
@@ -1816,8 +1653,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "total_prompt_tokens",
     "total_completion_tokens",
     "total_tokens",
-    "call_count",
-    "by_provider"
+    "call_count"
   ],
   "title": "UsageModel",
   "type": "object"
@@ -1841,20 +1677,25 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "call_count": {
+      "minimum": 0.0,
       "title": "Call Count",
       "type": "integer"
     },
     "completion_tokens": {
+      "minimum": 0.0,
       "title": "Completion Tokens",
       "type": "integer"
     },
     "prompt_tokens": {
+      "minimum": 0.0,
       "title": "Prompt Tokens",
       "type": "integer"
     },
     "total_tokens": {
+      "minimum": 0.0,
       "title": "Total Tokens",
       "type": "integer"
     }
@@ -1934,8 +1775,10 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "uid": {
+      "minimum": 0.0,
       "title": "Uid",
       "type": "integer"
     }
@@ -1970,6 +1813,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "last_batch_id": {
       "anyOf": [
@@ -2039,6 +1883,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     },
     "queued_batches": {
       "default": 0,
+      "minimum": 0.0,
       "title": "Queued Batches",
       "type": "integer"
     },
@@ -2048,6 +1893,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "type": "boolean"
     },
     "status": {
+      "minLength": 1,
       "title": "Status",
       "type": "string"
     }
@@ -2056,73 +1902,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "status"
   ],
   "title": "ValidatorStatusResponse",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-verdictoption"></a>
-### Model: VerdictOption
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `description` |  |  | req | `string` |
-| `value` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "description": {
-      "title": "Description",
-      "type": "string"
-    },
-    "value": {
-      "title": "Value",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "value",
-    "description"
-  ],
-  "title": "VerdictOption",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-verdictoptions"></a>
-### Model: VerdictOptions
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `options` |  |  | req | array[[VerdictOption](#model-verdictoption)] |
-|  | `description` |  | req | `string` |
-|  | `value` |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "options": {
-      "items": {
-        "$ref": "#/components/schemas/VerdictOption"
-      },
-      "title": "Options",
-      "type": "array"
-    }
-  },
-  "required": [
-    "options"
-  ],
-  "title": "VerdictOptions",
   "type": "object"
 }
 ```

@@ -11,6 +11,7 @@ import httpx
 from google.genai import types
 from pydantic import BaseModel
 
+from caster_commons.llm.provider_types import normalize_reasoning_effort
 from caster_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -104,19 +105,20 @@ def resolve_thinking_config(
     *, model: str, reasoning_effort: str | None,
 ) -> types.ThinkingConfig | None:
     include_thoughts = True
-    if reasoning_effort is None:
+    normalized_effort = normalize_reasoning_effort(reasoning_effort)
+    if normalized_effort is None:
         return None
 
-    effort_raw = reasoning_effort.strip()
-
     try:
+        effort_value = int(normalized_effort)
         return types.ThinkingConfig(
-            thinking_budget=int(effort_raw),
+            thinking_budget=effort_value,
             include_thoughts=include_thoughts,
         )
     except ValueError:
+        # Named reasoning levels intentionally fall through to the enum lookup below.
         return types.ThinkingConfig(
-            thinking_level=types.ThinkingLevel[effort_raw.upper()],
+            thinking_level=types.ThinkingLevel[normalized_effort.upper()],
             include_thoughts=include_thoughts,
         )
 

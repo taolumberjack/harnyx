@@ -64,20 +64,21 @@ You submit **one UTF-8 Python source file** (≤ 256KB). Validators will:
 
 1. Stage it as `agent.py`
 2. Load it via `runpy.run_path`
-3. Call your `evaluate_criterion` entrypoint with a JSON payload
+3. Call your `query` entrypoint with a strict `Query` JSON payload
 
 Your script must define this entrypoint:
 
 ```python
 from caster_miner_sdk.decorators import entrypoint
-from caster_miner_sdk.criterion_evaluation import CriterionEvaluationRequest, CriterionEvaluationResponse
+from caster_miner_sdk.query import Query, Response
 
-@entrypoint("evaluate_criterion")
-async def evaluate_criterion(request: object) -> CriterionEvaluationResponse:
-    payload = CriterionEvaluationRequest.model_validate(request)
-    # ... call tools (search_web, llm_chat), decide verdict, cite evidence
-    return {"verdict": 1, "justification": "...", "citations": [...]}
+@entrypoint("query")
+async def query(query: Query) -> Response:
+    # ... call tools (search_web, llm_chat)
+    return Response(text="...")
 ```
+
+The `query` entrypoint must stay `async def`, accept exactly one parameter annotated as `Query`, and return `Response`. The parameter name itself does not matter.
 
 #### Tools and budgeting
 
@@ -105,8 +106,9 @@ Available tools:
 - `search_repo`: repository search results (`excerpt` evidence snippets)
 - `get_repo_file`: repository file read results (`text` + optional `excerpt`)
 - `llm_chat`: hosted LLM chat
-- `search_items`: prior similar items in the current feed (preventing copy cats and spamming)
 - `tooling_info`: available tool names/models/pricing metadata
+
+Current subnet miner-task batches do not inject feed-specific context into the `query` contract.
 - `test_tool`: tool invocation sanity check (testing only)
 
 Pricing for all tools is read from `tooling_info.response["pricing"]`.
@@ -121,7 +123,7 @@ Repo-tool usage pattern:
 
 ### Step 3: Test locally
 
-`caster-miner-dev` loads your file, finds `evaluate_criterion`, and runs it with a `CriterionEvaluationRequest`. It uses real tool calls, so you need the API keys configured above.
+`caster-miner-dev` loads your file, finds `query`, and runs it with a `Query` payload. It uses real tool calls, so you need the API keys configured above.
 
 ```bash
 uv run --package caster-miner caster-miner-dev --agent-path ./agent.py
@@ -189,15 +191,17 @@ uv run --package caster-miner caster-miner-submit \
 
 If your script raises at import time or runtime, the evaluation fails. In subnet monitoring, this can show up as `sandbox_invocation_failed`.
 
-Tool calls can fail transiently (timeouts / upstream errors). Treat them like external APIs: catch tool errors and still return a valid `CriterionEvaluationResponse` so you don’t crash the whole evaluation run.
+Tool calls can fail transiently (timeouts / upstream errors). Treat them like external APIs: catch tool errors and still return a valid `Response` so you don’t crash the whole evaluation run.
 
 ```python
 try:
-    search = await search_web(payload.claim_text, num=5)
+    search = await search_web(query.text, num=5)
 except Exception:
     search = None
 
-citations = []
+summary = "no search evidence"
 if search and search.results:
-    citations = [{"receipt_id": search.receipt_id, "result_id": search.results[0].result_id}]
+    summary = search.results[0].title or search.results[0].url or "search evidence"
+
+return Response(text=summary)
 ```

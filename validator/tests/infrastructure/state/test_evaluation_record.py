@@ -1,107 +1,108 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
-from caster_commons.domain.session import LlmUsageTotals, Session, SessionUsage
-from caster_commons.domain.verdict import VerdictOption, VerdictOptions
-from caster_validator.application.dto.evaluation import (
-    EvaluationOutcome,
-    MinerTaskResult,
-    TokenUsageSummary,
+import pytest
+
+from caster_commons.domain.miner_task import (
+    EvaluationDetails,
+    MinerTask,
+    Query,
+    ReferenceAnswer,
+    Response,
+    ScoreBreakdown,
 )
-from caster_validator.application.services.evaluation_scoring import EvaluationScore
-from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvaluation
+from caster_commons.domain.session import Session, SessionUsage
+from caster_commons.domain.tool_usage import ToolUsageSummary
+from caster_validator.application.dto.evaluation import MinerTaskRunSubmission, TokenUsageSummary
+from caster_validator.domain.evaluation import MinerTaskRun
 from caster_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
 
-BINARY_VERDICT_OPTIONS = VerdictOptions(
-    options=(
-        VerdictOption(value=-1, description="Fail"),
-        VerdictOption(value=1, description="Pass"),
+
+def _make_submission(
+    *,
+    batch_id: UUID | None = None,
+    artifact_id: UUID | None = None,
+    task_id: UUID | None = None,
+    score: float = 1.0,
+) -> MinerTaskRunSubmission:
+    task = MinerTask(
+        task_id=task_id or uuid4(),
+        query=Query(text="Claim text"),
+        reference_answer=ReferenceAnswer(text="Reference text"),
     )
-)
-
-
-def test_in_memory_store_records_miner_task_results() -> None:
-    store = InMemoryEvaluationRecordStore()
-
-    claim = MinerTaskClaim(
-        claim_id=uuid4(),
-        text="Claim text",
-        rubric=Rubric(
-            title="Accuracy",
-            description="Assess accuracy.",
-            verdict_options=BINARY_VERDICT_OPTIONS,
-        ),
-        reference_answer=ReferenceAnswer(verdict=1, justification="ref", citations=()),
-    )
-
-    evaluation = MinerCriterionEvaluation(
-        criterion_evaluation_id=uuid4(),
+    run = MinerTaskRun(
         session_id=uuid4(),
         uid=7,
-        artifact_id=uuid4(),
-        claim_id=claim.claim_id,
-        rubric=claim.rubric,
-        miner_answer=MinerAnswer(verdict=1, justification="ok", citations=()),
+        artifact_id=artifact_id or uuid4(),
+        task_id=task.task_id,
+        response=Response(text="ok"),
+        details=EvaluationDetails(
+            score_breakdown=ScoreBreakdown(
+                comparison_score=score,
+                similarity_score=score,
+                total_score=score,
+                scoring_version="v1",
+            ),
+            total_tool_usage=ToolUsageSummary.zero(),
+        ),
         completed_at=datetime.now(UTC),
-    )
-    outcome = EvaluationOutcome(
-        criterion_evaluation=evaluation,
-        score=EvaluationScore(
-            verdict_score=1.0,
-            support_score=1.0,
-            justification_pass=True,
-            failed_citation_ids=(),
-            grader_rationale="pass",
-        ),
-        tool_receipts=(),
-        usage=TokenUsageSummary.from_totals(
-            {
-                "search": {
-                    "web": LlmUsageTotals(
-                        prompt_tokens=2,
-                        completion_tokens=3,
-                        total_tokens=5,
-                        call_count=1,
-                    ),
-                },
-            },
-        ),
     )
 
     issued_at = datetime.now(UTC)
     session = Session(
-        session_id=evaluation.session_id,
-        uid=evaluation.uid,
-        claim_id=claim.claim_id,
+        session_id=run.session_id,
+        uid=run.uid,
+        task_id=task.task_id,
         issued_at=issued_at,
         expires_at=issued_at + timedelta(minutes=5),
         budget_usd=0.1,
-        usage=SessionUsage(
-            llm_usage_totals={
-                "search": {
-                    "web": LlmUsageTotals(
-                        prompt_tokens=2,
-                        completion_tokens=3,
-                        total_tokens=5,
-                        call_count=1,
-                    ),
-                },
-            },
-            total_cost_usd=0.0,
-        ),
+        usage=SessionUsage(total_cost_usd=0.0),
     )
 
-    result = MinerTaskResult(
-        batch_id=uuid4(),
+    return MinerTaskRunSubmission(
+        batch_id=batch_id or uuid4(),
         validator_uid=4,
-        outcome=outcome,
+        run=run,
+        score=score,
+        usage=TokenUsageSummary.empty(),
         session=session,
     )
 
-    store.record(result)
+
+def test_in_memory_store_records_miner_task_run_submissions() -> None:
+    store = InMemoryEvaluationRecordStore()
+    submission = _make_submission()
+
+    store.record(submission)
 
     records = store.records()
-    assert records == (result,)
+    assert records == (submission,)
+
+
+def test_in_memory_store_duplicate_identical_pair_is_a_noop() -> None:
+    store = InMemoryEvaluationRecordStore()
+    submission = _make_submission()
+
+    store.record(submission)
+    store.record(submission)
+
+    assert store.records() == (submission,)
+
+
+def test_in_memory_store_rejects_conflicting_duplicate_pair() -> None:
+    store = InMemoryEvaluationRecordStore()
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    task_id = uuid4()
+    submission = _make_submission(batch_id=batch_id, artifact_id=artifact_id, task_id=task_id, score=1.0)
+    conflicting = _make_submission(batch_id=batch_id, artifact_id=artifact_id, task_id=task_id, score=0.0)
+
+    store.record(submission)
+
+    with pytest.raises(
+        RuntimeError,
+        match="batch already recorded a different result for artifact/task pair",
+    ):
+        store.record(conflicting)

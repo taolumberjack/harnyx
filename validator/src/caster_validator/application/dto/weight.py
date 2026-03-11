@@ -6,20 +6,20 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
-from caster_validator.application.dto.evaluation import ScoredEvaluation, TokenUsageSummary
+from caster_validator.application.dto.evaluation import MinerTaskRunSubmission, TokenUsageSummary
 
 
 @dataclass(frozen=True)
 class WeightUpdateRequest:
-    """Payload describing a batch of scored miner criterion evaluations."""
+    """Payload describing a batch of recorded miner-task runs."""
 
     run_id: UUID
-    evaluations: Sequence[ScoredEvaluation]
+    runs: Sequence[MinerTaskRunSubmission]
 
 
 @dataclass(frozen=True)
 class WeightUpdateResult:
-    """Normalized weight vector derived from scored miner criterion evaluations."""
+    """Normalized weight vector derived from miner-task runs."""
 
     run_id: UUID
     weights: Mapping[int, float]

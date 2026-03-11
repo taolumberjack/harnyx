@@ -30,7 +30,7 @@ class SessionManager:
         session = Session(
             session_id=request.session_id,
             uid=request.uid,
-            claim_id=request.claim_id,
+            task_id=request.task_id,
             issued_at=request.issued_at,
             expires_at=request.expires_at,
             budget_usd=request.budget_usd,

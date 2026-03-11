@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 
 from caster_commons.clients import CHUTES
+from caster_commons.llm.provider_types import normalize_reasoning_effort
 from caster_commons.llm.providers.vertex.codec import build_choices, normalize_messages, resolve_thinking_config
 from caster_commons.llm.providers.vertex.provider import VertexLlmProvider
 from caster_commons.llm.schema import (
@@ -306,6 +307,20 @@ def test_vertex_codec_fails_fast_on_unknown_request_role() -> None:
 def test_vertex_resolve_thinking_config_returns_none_when_effort_is_null() -> None:
     config = resolve_thinking_config(model="gemini-2.5-pro", reasoning_effort=None)
     assert config is None
+
+
+def test_vertex_resolve_thinking_config_returns_none_when_effort_is_zero() -> None:
+    config = resolve_thinking_config(model="gemini-2.5-pro", reasoning_effort="0")
+    assert config is None
+
+
+def test_normalize_reasoning_effort_rejects_non_positive_budgets() -> None:
+    assert normalize_reasoning_effort(None) is None
+    assert normalize_reasoning_effort("  ") is None
+    assert normalize_reasoning_effort("0") is None
+    assert normalize_reasoning_effort("-1") is None
+    assert normalize_reasoning_effort("high") == "high"
+    assert normalize_reasoning_effort(" 256 ") == "256"
 
 
 def test_vertex_resolve_thinking_config_sets_level_with_include_thoughts() -> None:

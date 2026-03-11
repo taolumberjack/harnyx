@@ -27,7 +27,7 @@ All Mermaid sequence diagrams live in [flows.md](flows.md), grouped by domain:
 
 - Subnet runtime (Platform ↔ Validator ↔ Miner)
   - [flows.md#miner-script-upload](flows.md#miner-script-upload)
-  - [flows.md#miner-evaluation-batch](flows.md#miner-evaluation-batch)
+  - [flows.md#miner-task-batch](flows.md#miner-task-batch)
 - Subnet ops (Platform ↔ Validator)
   - [flows.md#validator-registration-and-weights](flows.md#validator-registration-and-weights)
 

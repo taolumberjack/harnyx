@@ -1,4 +1,4 @@
-"""In-memory tracker for per-batch evaluation progress."""
+"""In-memory tracker for per-batch miner-task progress."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from typing import TypedDict
 from uuid import UUID
 
-from caster_validator.application.dto.evaluation import MinerTaskResult
+from caster_commons.domain.miner_task import MinerTask
+from caster_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
 
 
 class RunProgressSnapshot(TypedDict):
@@ -14,24 +15,49 @@ class RunProgressSnapshot(TypedDict):
     total: int
     completed: int
     remaining: int
-    miner_task_results: tuple[MinerTaskResult, ...]
+    tasks: tuple[MinerTask, ...]
+    miner_task_runs: tuple[MinerTaskRunSubmission, ...]
 
 
 @dataclass(slots=True)
 class InMemoryRunProgress:
+    batches_by_id: dict[UUID, MinerTaskBatchSpec] = field(default_factory=dict)
     expected_by_batch: dict[UUID, int] = field(default_factory=dict)
-    results_by_batch: dict[UUID, list[MinerTaskResult]] = field(default_factory=dict)
+    tasks_by_batch: dict[UUID, tuple[MinerTask, ...]] = field(default_factory=dict)
+    results_by_batch: dict[
+        UUID,
+        dict[tuple[UUID, UUID], MinerTaskRunSubmission],
+    ] = field(default_factory=dict)
 
-    def register(self, batch_id: UUID, *, candidate_count: int, claims_count: int) -> None:
-        total = candidate_count * claims_count
-        self.expected_by_batch[batch_id] = total
+    def register(self, batch: MinerTaskBatchSpec) -> None:
+        existing = self.batches_by_id.get(batch.batch_id)
+        if existing is not None:
+            if existing != batch:
+                raise RuntimeError("batch_id already exists with different contents")
+            return
 
-    def record(self, result: MinerTaskResult) -> None:
-        bucket = self.results_by_batch.setdefault(result.batch_id, [])
-        bucket.append(result)
+        self.batches_by_id[batch.batch_id] = batch
+        self.expected_by_batch[batch.batch_id] = len(batch.tasks) * len(batch.artifacts)
+        self.tasks_by_batch[batch.batch_id] = batch.tasks
+
+    def record(self, result: MinerTaskRunSubmission) -> None:
+        pair = (result.run.artifact_id, result.run.task_id)
+        bucket = self.results_by_batch.setdefault(result.batch_id, {})
+        existing = bucket.get(pair)
+        if existing is not None:
+            if existing != result:
+                raise RuntimeError(
+                    "batch already recorded a different result for artifact/task pair"
+                )
+            return
+        bucket[pair] = result
+
+    def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
+        bucket = self.results_by_batch.get(batch_id, {})
+        return frozenset(bucket)
 
     def snapshot(self, batch_id: UUID) -> RunProgressSnapshot:
-        results = tuple(self.results_by_batch.get(batch_id, ()))
+        results = tuple(self.results_by_batch.get(batch_id, {}).values())
         total = int(self.expected_by_batch.get(batch_id, 0))
         completed = len(results)
         remaining = max(0, total - completed)
@@ -40,7 +66,8 @@ class InMemoryRunProgress:
             "total": total,
             "completed": completed,
             "remaining": remaining,
-            "miner_task_results": results if total > 0 and completed >= total else (),
+            "tasks": self.tasks_by_batch.get(batch_id, ()),
+            "miner_task_runs": results,
         }
 
 

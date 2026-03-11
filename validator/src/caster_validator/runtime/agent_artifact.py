@@ -18,7 +18,7 @@ logger = logging.getLogger("caster_validator.agent_artifact")
 def resolve_platform_agent_specs(
     *,
     batch_id: UUID,
-    candidates: tuple[ScriptArtifactSpec, ...],
+    artifacts: tuple[ScriptArtifactSpec, ...],
     platform_client: PlatformPort,
     state_dir: Path,
     container_root: str,
@@ -26,11 +26,11 @@ def resolve_platform_agent_specs(
     """Resolve agent artifacts from platform-provided specs."""
 
     specs: dict[UUID, AgentArtifact] = {}
-    artifact_ids = [candidate.artifact_id for candidate in candidates]
+    artifact_ids = [artifact.artifact_id for artifact in artifacts]
     if len(set(artifact_ids)) != len(artifact_ids):
-        raise ValueError("batch candidates must be unique by artifact_id")
+        raise ValueError("batch artifacts must be unique by artifact_id")
 
-    for spec in candidates:
+    for spec in artifacts:
         try:
             data = platform_client.fetch_artifact(batch_id, spec.artifact_id)
         except Exception as exc:
@@ -120,7 +120,7 @@ def create_platform_agent_resolver(
     ) -> dict[UUID, AgentArtifact]:
         return resolve_platform_agent_specs(
             batch_id=batch_id,
-            candidates=batch.candidates,
+            artifacts=batch.artifacts,
             platform_client=platform_client,
             state_dir=state_dir,
             container_root=container_root,

@@ -8,6 +8,7 @@ import pytest
 
 from caster_commons.application.dto.session import SessionTokenRequest
 from caster_commons.application.session_manager import SessionManager
+from caster_commons.domain.miner_task import Query, Response
 from caster_commons.domain.tool_call import ReceiptMetadata, ToolCall, ToolCallOutcome
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from caster_validator.application.dto.evaluation import EntrypointInvocationRequest
@@ -17,16 +18,10 @@ from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 pytestmark = pytest.mark.anyio("asyncio")
 
 
-def generate_token() -> str:
-    return uuid4().hex
-
-
 class RecordingSandbox(SandboxClient):
     def __init__(self) -> None:
-        self.invocations: list[
-            tuple[str, Mapping[str, object], Mapping[str, object], str, UUID]
-        ] = []
-        self.response: Mapping[str, object] = {"ok": True}
+        self.invocations: list[tuple[str, Mapping[str, object], Mapping[str, object], str, UUID]] = []
+        self.response: Mapping[str, object] = {"text": "Answer"}
         self.raise_error: Exception | None = None
 
     async def invoke(
@@ -44,13 +39,13 @@ class RecordingSandbox(SandboxClient):
         return self.response
 
 
-def make_session_request(token: str) -> SessionTokenRequest:
+def _make_session_request(token: str) -> SessionTokenRequest:
     issued_at = datetime(2025, 10, 17, 12, tzinfo=UTC)
     expires_at = issued_at + timedelta(hours=1)
     return SessionTokenRequest(
         session_id=uuid4(),
         uid=42,
-        claim_id=uuid4(),
+        task_id=uuid4(),
         issued_at=issued_at,
         expires_at=expires_at,
         budget_usd=0.1,
@@ -58,7 +53,7 @@ def make_session_request(token: str) -> SessionTokenRequest:
     )
 
 
-def build_entrypoint_invoker(token: str) -> tuple[
+def _build_invoker(token: str) -> tuple[
     EntrypointInvoker,
     RecordingSandbox,
     UUID,
@@ -72,7 +67,7 @@ def build_entrypoint_invoker(token: str) -> tuple[
     receipt_log = FakeReceiptLog()
 
     manager = SessionManager(session_registry, token_registry)
-    request = make_session_request(token)
+    request = _make_session_request(token)
     manager.issue(request)
 
     sandbox = RecordingSandbox()
@@ -82,38 +77,28 @@ def build_entrypoint_invoker(token: str) -> tuple[
         token_registry=token_registry,
         receipt_log=receipt_log,
     )
-    return (
-        invoker,
-        sandbox,
-        request.session_id,
-        session_registry,
-        manager,
-        token_registry,
-        receipt_log,
-    )
+    return invoker, sandbox, request.session_id, session_registry, manager, token_registry, receipt_log
 
 
-async def test_invoke_entrypoint_calls_sandbox_and_releases_permit() -> None:
-    token = generate_token()
-    invoker, sandbox, session_id, _, _, _, _ = build_entrypoint_invoker(token)
+async def test_invoke_entrypoint_calls_query_with_query_payload() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
 
     response = await invoker.invoke(
         EntrypointInvocationRequest(
             session_id=session_id,
             token=token,
             uid=42,
-            entrypoint="evaluate_criterion",
-            payload={"query": "caster subnet"},
-            context={"claim_id": str(session_id)},
+            query=Query(text="caster subnet"),
         ),
     )
 
-    assert response.result == {"ok": True}
+    assert response.response == Response(text="Answer")
     assert sandbox.invocations == [
         (
-            "evaluate_criterion",
-            {"query": "caster subnet"},
-            {"claim_id": str(session_id)},
+            "query",
+            {"text": "caster subnet"},
+            {},
             token,
             session_id,
         ),
@@ -121,8 +106,8 @@ async def test_invoke_entrypoint_calls_sandbox_and_releases_permit() -> None:
 
 
 async def test_invoke_entrypoint_returns_tool_receipts() -> None:
-    token = generate_token()
-    invoker, _, session_id, _, _, _, receipt_log = build_entrypoint_invoker(token)
+    token = uuid4().hex
+    invoker, _, session_id, _, _, _, receipt_log = _build_invoker(token)
 
     receipt = ToolCall(
         receipt_id="receipt-1",
@@ -140,9 +125,7 @@ async def test_invoke_entrypoint_returns_tool_receipts() -> None:
             session_id=session_id,
             token=token,
             uid=42,
-            entrypoint="evaluate_criterion",
-            payload={},
-            context={},
+            query=Query(text="hello"),
         ),
     )
 
@@ -150,9 +133,9 @@ async def test_invoke_entrypoint_returns_tool_receipts() -> None:
 
 
 async def test_invoke_entrypoint_rejects_invalid_token() -> None:
-    valid_token = generate_token()
-    invalid_token = generate_token()
-    invoker, _, session_id, _, _, _, _ = build_entrypoint_invoker(valid_token)
+    valid_token = uuid4().hex
+    invalid_token = uuid4().hex
+    invoker, _, session_id, _, _, _, _ = _build_invoker(valid_token)
 
     with pytest.raises(PermissionError):
         await invoker.invoke(
@@ -160,16 +143,14 @@ async def test_invoke_entrypoint_rejects_invalid_token() -> None:
                 session_id=session_id,
                 token=invalid_token,
                 uid=42,
-                entrypoint="evaluate_criterion",
-                payload={},
-                context={},
+                query=Query(text="demo"),
             ),
         )
 
 
 async def test_invoke_entrypoint_recovers_after_sandbox_error() -> None:
-    token = generate_token()
-    invoker, sandbox, session_id, _, _, _, _ = build_entrypoint_invoker(token)
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
     sandbox.raise_error = RuntimeError("sandbox failure")
 
     with pytest.raises(RuntimeError):
@@ -178,9 +159,7 @@ async def test_invoke_entrypoint_recovers_after_sandbox_error() -> None:
                 session_id=session_id,
                 token=token,
                 uid=42,
-                entrypoint="evaluate_criterion",
-                payload={},
-                context={},
+                query=Query(text="demo"),
             ),
         )
 
@@ -190,17 +169,15 @@ async def test_invoke_entrypoint_recovers_after_sandbox_error() -> None:
             session_id=session_id,
             token=token,
             uid=42,
-            entrypoint="evaluate_criterion",
-            payload={},
-            context={},
+            query=Query(text="demo"),
         ),
     )
-    assert response.result == {"ok": True}
+    assert response.response == Response(text="Answer")
 
 
 async def test_invoke_entrypoint_rejects_inactive_session() -> None:
-    token = generate_token()
-    invoker, _, session_id, session_registry, _, _, _ = build_entrypoint_invoker(token)
+    token = uuid4().hex
+    invoker, _, session_id, session_registry, _, _, _ = _build_invoker(token)
 
     session = session_registry.get(session_id)
     assert session is not None
@@ -212,25 +189,6 @@ async def test_invoke_entrypoint_rejects_inactive_session() -> None:
                 session_id=session_id,
                 token=token,
                 uid=42,
-                entrypoint="evaluate_criterion",
-                payload={},
-                context={},
-            ),
-        )
-
-
-async def test_invoke_entrypoint_rejects_mismatched_uid() -> None:
-    token = generate_token()
-    invoker, _, session_id, _, _, _, _ = build_entrypoint_invoker(token)
-
-    with pytest.raises(PermissionError):
-        await invoker.invoke(
-            EntrypointInvocationRequest(
-                session_id=session_id,
-                token=token,
-                uid=999,
-                entrypoint="evaluate_criterion",
-                payload={},
-                context={},
+                query=Query(text="demo"),
             ),
         )

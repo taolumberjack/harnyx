@@ -80,7 +80,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
         SessionTokenRequest(
             session_id=session_id,
             uid=uid,
-            claim_id=uuid4(),
+            task_id=uuid4(),
             issued_at=now,
             expires_at=now + timedelta(minutes=session_ttl_minutes),
             budget_usd=0.05,

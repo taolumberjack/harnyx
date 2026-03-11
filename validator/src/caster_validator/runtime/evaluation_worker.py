@@ -7,6 +7,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
+from caster_validator.application.accept_batch import AcceptEvaluationBatch
 from caster_validator.application.services.evaluation_batch import EvaluationBatchConfig, MinerTaskBatchService
 from caster_validator.application.status import StatusProvider
 from caster_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
@@ -25,14 +26,14 @@ EVALUATION_CONFIG = EvaluationBatchConfig()
 def estimate_cycle_duration_seconds(
     *,
     uid_count: int,
-    claim_count: int,
+    task_count: int,
     http_timeout_floor: float = 30.0,
     bootstrap_padding_seconds: float = 2.0,
     sandbox_startup_delay_seconds: float = 2.0,
     sandbox_wait_for_healthz: bool = True,
 ) -> float:
     """Return a conservative duration estimate for a full evaluation cycle."""
-    if uid_count <= 0 or claim_count <= 0:
+    if uid_count <= 0 or task_count <= 0:
         return 0.0
 
     startup = max(0.0, sandbox_startup_delay_seconds)
@@ -42,7 +43,7 @@ def estimate_cycle_duration_seconds(
 
     per_evaluation = http_timeout_floor
 
-    return uid_count * startup + uid_count * claim_count * per_evaluation
+    return uid_count * startup + uid_count * task_count * per_evaluation
 
 
 class EvaluationWorker:
@@ -61,10 +62,12 @@ class EvaluationWorker:
         batch_service: MinerTaskBatchService,
         batch_inbox: InMemoryBatchInbox,
         status_provider: StatusProvider | None = None,
+        batch_tracker: AcceptEvaluationBatch | None = None,
     ) -> None:
         self._batch_service = batch_service
         self._inbox = batch_inbox
         self._status = status_provider
+        self._batch_tracker = batch_tracker
         self._stop = threading.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -98,12 +101,18 @@ class EvaluationWorker:
             if batch is None:
                 continue
 
+            if self._batch_tracker is not None:
+                self._batch_tracker.mark_processing(batch.batch_id)
             if self._status is not None:
                 self._status.state.queued_batches = len(self._inbox)
 
             try:
                 await self._batch_service.process_async(batch)
+                if self._batch_tracker is not None:
+                    self._batch_tracker.mark_completed(batch.batch_id)
             except Exception as exc:
+                if self._batch_tracker is not None:
+                    self._batch_tracker.mark_retryable_or_completed(batch.batch_id)
                 logger.exception(
                     "batch processing failed",
                     extra={"batch_id": str(batch.batch_id)},
@@ -118,12 +127,14 @@ def create_evaluation_worker(
     batch_service: MinerTaskBatchService,
     batch_inbox: InMemoryBatchInbox,
     status_provider: StatusProvider | None = None,
+    batch_tracker: AcceptEvaluationBatch | None = None,
 ) -> EvaluationWorker:
     """Factory function to create an EvaluationWorker with injected dependencies."""
     return EvaluationWorker(
         batch_service=batch_service,
         batch_inbox=batch_inbox,
         status_provider=status_provider,
+        batch_tracker=batch_tracker,
     )
 
 
@@ -143,16 +154,19 @@ def create_evaluation_worker_from_context(context: RuntimeContext) -> Evaluation
         sandbox_manager=context.sandbox_manager,
         session_manager=context.session_manager,
         evaluation_records=context.evaluation_records,
+        receipt_log=context.receipt_log,
         orchestrator_factory=context.create_evaluation_orchestrator,
         sandbox_options_factory=context.build_sandbox_options,
         agent_resolver=agent_resolver,
         status_provider=context.status_provider,
         progress=context.progress_tracker,
     )
+    batch_tracker = context.control_deps_provider().accept_batch
     return EvaluationWorker(
         batch_service=batch_service,
         batch_inbox=context.batch_inbox,
         status_provider=context.status_provider,
+        batch_tracker=batch_tracker,
     )
 
 

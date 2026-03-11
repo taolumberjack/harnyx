@@ -8,19 +8,56 @@ from caster_miner_sdk.decorators import (
     entrypoint_exists,
     get_entrypoint,
 )
+from caster_miner_sdk.query import Query, Response
 
 pytestmark = pytest.mark.anyio("asyncio")
+
 
 async def test_entrypoint_registration_and_lookup() -> None:
     clear_entrypoints()
 
-    @entrypoint("evaluate_criterion")
-    async def agent(request: dict[str, str]) -> dict[str, str]:
-        return {"echo": request["message"]}
+    @entrypoint("query")
+    async def query(query: Query) -> Response:
+        return Response(text=query.text)
 
-    assert entrypoint_exists("evaluate_criterion")
-    handler = get_entrypoint("evaluate_criterion")
-    assert await handler({"message": "hello"}) == {"echo": "hello"}
+    assert entrypoint_exists("query")
+    handler = get_entrypoint("query")
+    assert await handler({"text": "hello"}) == Response(text="hello")
+
+
+async def test_query_entrypoint_allows_domain_named_parameter() -> None:
+    clear_entrypoints()
+
+    @entrypoint("query")
+    async def query(request: Query) -> Response:
+        return Response(text=request.text)
+
+    handler = get_entrypoint("query")
+    assert await handler({"text": "hello"}) == Response(text="hello")
+
+
+async def test_query_entrypoint_rejects_wrong_parameter_type() -> None:
+    clear_entrypoints()
+
+    with pytest.raises(
+        TypeError,
+        match="query entrypoint parameter must be annotated as caster_miner_sdk.query.Query",
+    ):
+        @entrypoint("query")
+        async def query(request: str) -> Response:
+            return Response(text=request)
+
+
+async def test_query_entrypoint_rejects_wrong_return_type() -> None:
+    clear_entrypoints()
+
+    with pytest.raises(
+        TypeError,
+        match="query entrypoint return type must be caster_miner_sdk.query.Response",
+    ):
+        @entrypoint("query")
+        async def query(request: Query) -> str:
+            return request.text
 
 
 async def test_duplicate_entrypoint_raises() -> None:

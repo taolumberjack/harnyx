@@ -13,7 +13,7 @@ def test_estimate_cycle_duration_includes_bootstrap_and_evaluations() -> None:
 
     estimate = estimate_cycle_duration_seconds(
         uid_count=2,
-        claim_count=3,
+        task_count=3,
         sandbox_startup_delay_seconds=sandbox_startup,
         sandbox_wait_for_healthz=sandbox_healthz,
         bootstrap_padding_seconds=bootstrap_padding,
@@ -27,5 +27,5 @@ def test_estimate_cycle_duration_includes_bootstrap_and_evaluations() -> None:
 
 
 def test_estimate_cycle_duration_handles_empty_inputs() -> None:
-    assert estimate_cycle_duration_seconds(uid_count=0, claim_count=5) == 0.0
-    assert estimate_cycle_duration_seconds(uid_count=4, claim_count=0) == 0.0
+    assert estimate_cycle_duration_seconds(uid_count=0, task_count=5) == 0.0
+    assert estimate_cycle_duration_seconds(uid_count=4, task_count=0) == 0.0

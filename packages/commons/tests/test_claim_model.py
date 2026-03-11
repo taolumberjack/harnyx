@@ -3,12 +3,10 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
 
-from caster_commons.domain.claim import FeedSearchContext, MinerTaskClaim, ReferenceAnswer, Rubric
+from caster_commons.domain.claim import FeedSearchContext, GeneratedClaim, Rubric, Span
 from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 
-_CLAIM_ADAPTER = TypeAdapter(MinerTaskClaim)
 _BINARY_VERDICT_OPTIONS = VerdictOptions(
     options=(
         VerdictOption(value=-1, description="Fail"),
@@ -17,66 +15,47 @@ _BINARY_VERDICT_OPTIONS = VerdictOptions(
 )
 
 
-def _claim_kwargs() -> dict[str, object]:
-    return {
-        "claim_id": uuid4(),
-        "text": "example claim",
-        "rubric": Rubric(
-            title="Accuracy",
-            description="Check facts.",
-            verdict_options=_BINARY_VERDICT_OPTIONS,
-        ),
-        "reference_answer": ReferenceAnswer(verdict=1, justification="reference", citations=()),
-        "budget_usd": 0.1,
-    }
+def _rubric() -> Rubric:
+    return Rubric(
+        title="Accuracy",
+        description="Check facts.",
+        verdict_options=_BINARY_VERDICT_OPTIONS,
+    )
 
 
-def test_claim_accepts_context_object() -> None:
+def test_feed_search_context_accepts_positive_enqueue_seq() -> None:
     context = FeedSearchContext(feed_id=uuid4(), enqueue_seq=4)
 
-    claim = MinerTaskClaim(**_claim_kwargs(), context=context)
-
-    assert claim.context == context
+    assert context.enqueue_seq == 4
 
 
-def test_claim_rejects_context_with_wrong_type() -> None:
-    with pytest.raises(TypeError, match="claim context must be FeedSearchContext"):
-        MinerTaskClaim(**_claim_kwargs(), context={"feed_id": str(uuid4()), "enqueue_seq": 1})
+def test_feed_search_context_rejects_negative_enqueue_seq() -> None:
+    with pytest.raises(ValueError):
+        FeedSearchContext(feed_id=uuid4(), enqueue_seq=-1)
 
 
-def test_claim_adapter_parses_context_from_dict() -> None:
-    raw = {
-        "claim_id": str(uuid4()),
-        "text": "example claim",
-        "rubric": {
-            "title": "Accuracy",
-            "description": "Check facts.",
-            "verdict_options": {"options": [{"value": -1, "description": "Fail"}, {"value": 1, "description": "Pass"}]},
-        },
-        "reference_answer": {"verdict": 1, "justification": "reference", "citations": []},
-        "budget_usd": 0.1,
-        "context": {"feed_id": str(uuid4()), "enqueue_seq": 3},
-    }
+def test_generated_claim_validates_verdict_against_rubric() -> None:
+    claim = GeneratedClaim(
+        claim_id=uuid4(),
+        text="example claim",
+        rubric=_rubric(),
+        verdict=1,
+        justification="supported",
+    )
 
-    claim = _CLAIM_ADAPTER.validate_python(raw)
-
-    assert claim.context is not None
-    assert claim.context.enqueue_seq == 3
+    assert claim.verdict == 1
 
 
-def test_claim_adapter_rejects_negative_context_enqueue_seq() -> None:
-    raw = {
-        "claim_id": str(uuid4()),
-        "text": "example claim",
-        "rubric": {
-            "title": "Accuracy",
-            "description": "Check facts.",
-            "verdict_options": {"options": [{"value": -1, "description": "Fail"}, {"value": 1, "description": "Pass"}]},
-        },
-        "reference_answer": {"verdict": 1, "justification": "reference", "citations": []},
-        "budget_usd": 0.1,
-        "context": {"feed_id": str(uuid4()), "enqueue_seq": -1},
-    }
+def test_generated_claim_rejects_unknown_verdict() -> None:
+    with pytest.raises(ValueError):
+        GeneratedClaim(
+            claim_id=uuid4(),
+            text="example claim",
+            rubric=_rubric(),
+            verdict=2,
+            justification="unsupported",
+        )
 
-    with pytest.raises(ValidationError):
-        _CLAIM_ADAPTER.validate_python(raw)
+def test_span_rejects_end_before_start() -> None:
+    with pytest.raises(ValueError):
+        Span(excerpt="bad", start=3, end=2)

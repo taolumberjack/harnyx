@@ -19,7 +19,13 @@ from opentelemetry.trace import SpanKind
 from opentelemetry.util.types import AttributeValue
 
 from caster_commons.config.external_client import ExternalClientRetrySettings
-from caster_commons.llm.provider_types import LlmProviderName
+from caster_commons.llm.provider_types import (
+    CHUTES_PROVIDER,
+    VERTEX_MAAS_PROVIDER,
+    VERTEX_PROVIDER,
+    LlmProviderName,
+    normalize_reasoning_effort,
+)
 from caster_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from caster_commons.llm.schema import (
     AbstractLlmRequest,
@@ -45,9 +51,9 @@ from caster_commons.observability.langfuse import (
 )
 
 ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
-    "chutes",
-    "vertex",
-    "vertex-maas",
+    CHUTES_PROVIDER,
+    VERTEX_PROVIDER,
+    VERTEX_MAAS_PROVIDER,
 )
 
 
@@ -580,9 +586,9 @@ def _is_vertex_include_thoughts_request(
     model: str,
     reasoning_effort: str | None,
 ) -> bool:
-    if reasoning_effort is None:
+    if normalize_reasoning_effort(reasoning_effort) is None:
         return False
-    if not provider_label.startswith("vertex"):
+    if not provider_label.startswith(VERTEX_PROVIDER):
         return False
 
     # Must stay aligned with Vertex thinking_config support behavior.

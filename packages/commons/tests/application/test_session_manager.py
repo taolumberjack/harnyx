@@ -39,7 +39,7 @@ def make_request(token: str | None = None, *, budget_usd: float = 0.1) -> Sessio
     return SessionTokenRequest(
         session_id=uuid4(),
         uid=7,
-        claim_id=uuid4(),
+        task_id=uuid4(),
         issued_at=issued_at,
         expires_at=expires_at,
         budget_usd=budget_usd,

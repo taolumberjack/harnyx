@@ -1,41 +1,38 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+from caster_commons.application.ports.receipt_log import ReceiptLogPort
 from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.claim import FeedSearchContext, MinerTaskClaim, ReferenceAnswer, Rubric
-from caster_commons.domain.session import LlmUsageTotals
-from caster_commons.domain.verdict import VerdictOption, VerdictOptions
+from caster_commons.domain.miner_task import (
+    EvaluationDetails,
+    EvaluationError,
+    MinerTask,
+    Query,
+    ReferenceAnswer,
+    Response,
+    ScoreBreakdown,
+)
+from caster_commons.domain.tool_usage import ToolUsageSummary
 from caster_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from caster_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from caster_validator.application.dto.evaluation import (
-    EvaluationOutcome,
-    EvaluationRequest,
-    MinerTaskResult,
+    MinerTaskRunSubmission,
     ScriptArtifactSpec,
+    TaskRunOutcome,
     TokenUsageSummary,
 )
 from caster_validator.application.invoke_entrypoint import SandboxInvocationError
 from caster_validator.application.ports.subtensor import ValidatorNodeInfo
-from caster_validator.application.providers.claims import StaticClaimsProvider
 from caster_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
-from caster_validator.application.services.evaluation_runner import EvaluationRunner
-from caster_validator.application.services.evaluation_scoring import EvaluationScore
-from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvaluation
+from caster_validator.domain.evaluation import MinerTaskRun
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
-
-BINARY_VERDICT_OPTIONS = VerdictOptions(
-    options=(
-        VerdictOption(value=-1, description="Fail"),
-        VerdictOption(value=1, description="Pass"),
-    )
-)
 
 
 class DummySandboxManager(SandboxManager):
@@ -53,305 +50,386 @@ class DummySandboxManager(SandboxManager):
 
 class DummyEvaluationRecordStore:
     def __init__(self) -> None:
-        self.miner_task_results: list[MinerTaskResult] = []
+        self.records_by_batch: list[MinerTaskRunSubmission] = []
 
-    def record(self, result: MinerTaskResult) -> None:
-        self.miner_task_results.append(result)
+    def record(self, result: MinerTaskRunSubmission) -> None:
+        self.records_by_batch.append(result)
 
 
-def _sample_claim(text: str) -> MinerTaskClaim:
-    return MinerTaskClaim(
-        claim_id=uuid4(),
-        text=text,
-        rubric=Rubric(
-            title="Accuracy",
-            description="Check facts.",
-            verdict_options=BINARY_VERDICT_OPTIONS,
-        ),
-        reference_answer=ReferenceAnswer(verdict=1, justification="ref", citations=()),
+class DummyReceiptLog(ReceiptLogPort):
+    def __init__(self) -> None:
+        self._records: dict[str, object] = {}
+
+    def record(self, receipt: object) -> None:
+        self._records[str(len(self._records))] = receipt
+
+    def lookup(self, receipt_id: str) -> object | None:
+        return self._records.get(receipt_id)
+
+    def values(self):
+        return tuple(self._records.values())
+
+    def for_session(self, session_id):
+        return ()
+
+    def clear_session(self, session_id) -> None:
+        return None
+
+
+class DummyProgressRecorder:
+    def __init__(self, recorded: frozenset[tuple[UUID, UUID]] = frozenset()) -> None:
+        self._recorded = set(recorded)
+
+    def register(self, _batch) -> None:
+        return None
+
+    def record(self, result: MinerTaskRunSubmission) -> None:
+        self._recorded.add((result.run.artifact_id, result.run.task_id))
+
+    def recorded_pairs(self, _batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
+        return frozenset(self._recorded)
+
+
+def _task(text: str, *, budget_usd: float = 0.05) -> MinerTask:
+    return MinerTask(
+        task_id=uuid4(),
+        query=Query(text=text),
+        reference_answer=ReferenceAnswer(text=f"reference {text}"),
+        budget_usd=budget_usd,
     )
 
 
-async def test_scheduler_runs_all_claims_for_each_uid() -> None:
-    claims = (_sample_claim("one"), _sample_claim("two"))
-    claims_provider = StaticClaimsProvider(claims)
+async def test_scheduler_runs_all_tasks_for_each_artifact() -> None:
+    tasks = (_task("one"), _task("two"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     sandbox_manager = DummySandboxManager()
     evaluation_records = DummyEvaluationRecordStore()
     session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
 
-    recorded_requests: list[EvaluationRequest] = []
+    recorded_requests: list[tuple[int, MinerTask]] = []
 
     def orchestrator_factory(_client: object):
         class StubOrchestrator:
-            async def evaluate(self, request: EvaluationRequest):
-                recorded_requests.append(request)
-                evaluation = MinerCriterionEvaluation(
-                    criterion_evaluation_id=request.criterion_evaluation_id,
+            async def evaluate(self, request):
+                recorded_requests.append((request.uid, request.task))
+                details = EvaluationDetails(
+                    score_breakdown=ScoreBreakdown(
+                        comparison_score=1.0,
+                        similarity_score=0.5,
+                        total_score=0.75,
+                        scoring_version="v1",
+                    ),
+                    total_tool_usage=ToolUsageSummary.zero(),
+                )
+                run = MinerTaskRun(
                     session_id=request.session_id,
                     uid=request.uid,
                     artifact_id=request.artifact_id,
-                    claim_id=request.claim.claim_id,
-                    rubric=request.claim.rubric,
-                    miner_answer=MinerAnswer(verdict=1, justification="ok", citations=()),
+                    task_id=request.task.task_id,
+                    response=Response(text=f"answer {request.task.query.text}"),
+                    details=details,
                     completed_at=datetime(2025, 10, 27, tzinfo=UTC),
                 )
-                return EvaluationOutcome(
-                    criterion_evaluation=evaluation,
-                    score=EvaluationScore(
-                        verdict_score=0.5,
-                        support_score=0.5,
-                        justification_pass=True,
-                        failed_citation_ids=(),
-                        grader_rationale="ok",
-                    ),
-                    tool_receipts=(),
-                    usage=TokenUsageSummary.from_totals(
-                        {
-                            "search": {
-                                "web": LlmUsageTotals(
-                                    prompt_tokens=10,
-                                    completion_tokens=12,
-                                    total_tokens=22,
-                                    call_count=1,
-                                ),
-                            },
-                        },
-                    ),
-                )
+                return TaskRunOutcome(run=run, usage=TokenUsageSummary.empty())
 
         return StubOrchestrator()
 
-    config = SchedulerConfig(
-        entrypoint="evaluate_criterion",
-        token_secret_bytes=8,
-        session_ttl=timedelta(minutes=5),
-    )
-
     scheduler = EvaluationScheduler(
-        claims_provider=claims_provider,
+        tasks=tasks,
         subtensor_client=subtensor,
         sandbox_manager=sandbox_manager,
         session_manager=session_manager,
         evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
         orchestrator_factory=orchestrator_factory,
-        sandbox_options_factory=lambda candidate: {"uid": candidate.uid, "artifact_id": candidate.artifact_id},
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=config,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
     )
 
-    batch_id = uuid4()
-    candidates = (
+    artifacts = (
         ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0),
         ScriptArtifactSpec(uid=5, artifact_id=uuid4(), content_hash="b", size_bytes=0),
     )
-    result = await scheduler.run(batch_id=batch_id, requested_candidates=candidates)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
     assert len(sandbox_manager.starts) == 2
     assert len(sandbox_manager.stops) == 2
-    assert len(recorded_requests) == len(claims) * 2
-    assert len(result.evaluations) == len(recorded_requests)
-    assert result.claims == claims
-    assert result.candidate_uids == (3, 5)
-    assert len(evaluation_records.miner_task_results) == len(result.evaluations)
-    assert all(record.batch_id == batch_id for record in evaluation_records.miner_task_results)
+    assert len(recorded_requests) == len(tasks) * 2
+    assert len(result.runs) == len(recorded_requests)
+    assert result.tasks == tasks
+    assert len(evaluation_records.records_by_batch) == len(result.runs)
 
 
-async def test_scheduler_accepts_candidate_filter() -> None:
-    claims_provider = StaticClaimsProvider((_sample_claim("only"),))
+async def test_scheduler_records_failure_when_sandbox_invocation_errors() -> None:
+    task = _task("unstable")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     sandbox_manager = DummySandboxManager()
     evaluation_records = DummyEvaluationRecordStore()
     session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
-
-    def orchestrator_factory(_client: object):
-        class Stub:
-            async def evaluate(self, request: EvaluationRequest):
-                evaluation = MinerCriterionEvaluation(
-                    criterion_evaluation_id=request.criterion_evaluation_id,
-                    session_id=request.session_id,
-                    uid=request.uid,
-                    artifact_id=request.artifact_id,
-                    claim_id=request.claim.claim_id,
-                    rubric=request.claim.rubric,
-                    miner_answer=MinerAnswer(verdict=1, justification="ok", citations=()),
-                    completed_at=datetime(2025, 10, 27, tzinfo=UTC),
-                )
-                return EvaluationOutcome(
-                    criterion_evaluation=evaluation,
-                    score=EvaluationScore(
-                        verdict_score=0.5,
-                        support_score=0.5,
-                        justification_pass=True,
-                        failed_citation_ids=(),
-                        grader_rationale="ok",
-                    ),
-                    tool_receipts=(),
-                    usage=TokenUsageSummary.from_totals(
-                        {
-                            "search": {
-                                "web": LlmUsageTotals(
-                                    prompt_tokens=8,
-                                    completion_tokens=9,
-                                    total_tokens=17,
-                                    call_count=1,
-                                ),
-                            },
-                        },
-                    ),
-                )
-
-        return Stub()
-
-    config = SchedulerConfig(
-        entrypoint="evaluate_criterion",
-        token_secret_bytes=8,
-        session_ttl=timedelta(minutes=5),
-    )
-
-    scheduler = EvaluationScheduler(
-        claims_provider=claims_provider,
-        subtensor_client=subtensor,
-        sandbox_manager=sandbox_manager,
-        session_manager=session_manager,
-        evaluation_records=evaluation_records,
-        orchestrator_factory=orchestrator_factory,
-        sandbox_options_factory=lambda candidate: {"uid": candidate.uid, "artifact_id": candidate.artifact_id},
-        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=config,
-    )
-
-    requested_candidate = ScriptArtifactSpec(uid=11, artifact_id=uuid4(), content_hash="b", size_bytes=0)
-    result = await scheduler.run(batch_id=uuid4(), requested_candidates=(requested_candidate,))
-
-    assert result.candidate_uids == (11,)
-    assert len(sandbox_manager.starts) == 1
-    assert len(evaluation_records.miner_task_results) == len(result.evaluations)
-
-
-async def test_scheduler_skips_miner_when_sandbox_invocation_errors() -> None:
-    claim = _sample_claim("unstable")
-    claims_provider = StaticClaimsProvider((claim,))
-    subtensor = FakeSubtensorClient()
-    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    sandbox_manager = DummySandboxManager()
-    evaluation_records = DummyEvaluationRecordStore()
-    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
 
     def orchestrator_factory(_client: object):
         class FailingOrchestrator:
-            async def evaluate(self, request: EvaluationRequest):
+            async def evaluate(self, request):
                 raise SandboxInvocationError("upstream tool failure")
 
         return FailingOrchestrator()
 
-    config = SchedulerConfig(
-        entrypoint="evaluate_criterion",
-        token_secret_bytes=8,
-        session_ttl=timedelta(minutes=5),
-    )
-
     scheduler = EvaluationScheduler(
-        claims_provider=claims_provider,
+        tasks=(task,),
         subtensor_client=subtensor,
         sandbox_manager=sandbox_manager,
         session_manager=session_manager,
         evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
         orchestrator_factory=orchestrator_factory,
-        sandbox_options_factory=lambda candidate: {"uid": candidate.uid, "artifact_id": candidate.artifact_id},
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=config,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
     )
 
-    candidates = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
-    result = await scheduler.run(batch_id=uuid4(), requested_candidates=candidates)
+    artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert result.evaluations == ()
-    assert len(evaluation_records.miner_task_results) == 1
-    assert len(sandbox_manager.starts) == 1
-    assert len(sandbox_manager.stops) == 1
+    assert len(result.runs) == 1
+    assert result.runs[0].score == 0.0
+    assert result.runs[0].run.details.error == EvaluationError(
+        code="sandbox_invocation_failed",
+        message="upstream tool failure",
+    )
 
 
-async def test_evaluation_runner_issues_session_with_claim_budget() -> None:
+async def test_scheduler_records_failure_when_scoring_errors() -> None:
+    tasks = (_task("first"), _task("second"))
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    class FailingThenSuccessfulOrchestrator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("embedding client unavailable")
+            details = EvaluationDetails(
+                score_breakdown=ScoreBreakdown(
+                    comparison_score=1.0,
+                    similarity_score=0.5,
+                    total_score=0.75,
+                    scoring_version="v1",
+                ),
+                total_tool_usage=ToolUsageSummary.zero(),
+            )
+            run = MinerTaskRun(
+                session_id=request.session_id,
+                uid=request.uid,
+                artifact_id=request.artifact_id,
+                task_id=request.task.task_id,
+                response=Response(text=f"answer {request.task.query.text}"),
+                details=details,
+                completed_at=datetime(2025, 10, 27, tzinfo=UTC),
+            )
+            return TaskRunOutcome(run=run, usage=TokenUsageSummary.empty())
+
+    orchestrator = FailingThenSuccessfulOrchestrator()
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=lambda _client: orchestrator,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert len(result.runs) == 2
+    assert len(evaluation_records.records_by_batch) == 2
+    assert result.runs[0].score == 0.0
+    assert result.runs[0].run.details.error == EvaluationError(
+        code="task_run_failed",
+        message="embedding client unavailable",
+    )
+    assert result.runs[1].score == pytest.approx(0.75)
+    assert result.runs[1].run.response == Response(text="answer second")
+
+
+async def test_evaluation_runner_issues_session_with_task_budget() -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
     evaluation_records = DummyEvaluationRecordStore()
-    config = SchedulerConfig(
-        entrypoint="evaluate_criterion",
-        token_secret_bytes=8,
-        session_ttl=timedelta(minutes=5),
-    )
-    runner = EvaluationRunner(
+    receipt_log = DummyReceiptLog()
+    scheduler = EvaluationScheduler(
+        tasks=(),
         subtensor_client=subtensor,
+        sandbox_manager=DummySandboxManager(),
         session_manager=session_manager,
         evaluation_records=evaluation_records,
-        config=config,
+        receipt_log=receipt_log,
+        orchestrator_factory=lambda client: client,
+        sandbox_options_factory=lambda artifact: artifact,
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        progress=None,
-    )
-
-    claim = MinerTaskClaim(
-        claim_id=uuid4(),
-        text="budgeted",
-        rubric=Rubric(
-            title="Accuracy",
-            description="Check facts.",
-            verdict_options=BINARY_VERDICT_OPTIONS,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
         ),
-        reference_answer=ReferenceAnswer(verdict=1, justification="ref", citations=()),
-        budget_usd=0.123,
     )
 
-    issued = runner._issue_session(uid=3, claim=claim)
+    task = _task("budgeted", budget_usd=0.123)
+    issued = scheduler._runner._issue_session(uid=3, task=task)
 
-    assert issued.session.claim_id == claim.claim_id
+    assert issued.session.task_id == task.task_id
     assert issued.session.budget_usd == pytest.approx(0.123)
 
 
-async def test_evaluation_runner_request_includes_feed_search_context_when_present() -> None:
+async def test_scheduler_runs_only_remaining_pairs() -> None:
+    tasks = (_task("one"), _task("two"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
-    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    sandbox_manager = DummySandboxManager()
     evaluation_records = DummyEvaluationRecordStore()
-    config = SchedulerConfig(
-        entrypoint="evaluate_criterion",
-        token_secret_bytes=8,
-        session_ttl=timedelta(minutes=5),
-    )
-    runner = EvaluationRunner(
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    progress = DummyProgressRecorder(recorded=frozenset({(artifact.artifact_id, tasks[0].task_id)}))
+    recorded_requests: list[tuple[int, MinerTask]] = []
+
+    def orchestrator_factory(_client: object):
+        class StubOrchestrator:
+            async def evaluate(self, request):
+                recorded_requests.append((request.uid, request.task))
+                details = EvaluationDetails(
+                    score_breakdown=ScoreBreakdown(
+                        comparison_score=1.0,
+                        similarity_score=0.5,
+                        total_score=0.75,
+                        scoring_version="v1",
+                    ),
+                    total_tool_usage=ToolUsageSummary.zero(),
+                )
+                run = MinerTaskRun(
+                    session_id=request.session_id,
+                    uid=request.uid,
+                    artifact_id=request.artifact_id,
+                    task_id=request.task.task_id,
+                    response=Response(text=f"answer {request.task.query.text}"),
+                    details=details,
+                    completed_at=datetime(2025, 10, 27, tzinfo=UTC),
+                )
+                return TaskRunOutcome(run=run, usage=TokenUsageSummary.empty())
+
+        return StubOrchestrator()
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
         subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
         session_manager=session_manager,
         evaluation_records=evaluation_records,
-        config=config,
+        receipt_log=receipt_log,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=lambda current_artifact: {"uid": current_artifact.uid},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        progress=None,
-    )
-
-    context = FeedSearchContext(feed_id=uuid4(), enqueue_seq=6)
-    claim = MinerTaskClaim(
-        claim_id=uuid4(),
-        text="context claim",
-        rubric=Rubric(
-            title="Accuracy",
-            description="Check facts.",
-            verdict_options=BINARY_VERDICT_OPTIONS,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
         ),
-        reference_answer=ReferenceAnswer(verdict=1, justification="ref", citations=()),
-        context=context,
+        progress=progress,
     )
 
-    request = runner._build_request(
-        session_id=uuid4(),
-        token=uuid4().hex,
-        uid=3,
-        artifact_id=uuid4(),
-        claim=claim,
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=(artifact,))
+
+    assert len(sandbox_manager.starts) == 1
+    assert [(uid, task.task_id) for uid, task in recorded_requests] == [(artifact.uid, tasks[1].task_id)]
+    assert len(result.runs) == 1
+    assert result.runs[0].run.task_id == tasks[1].task_id
+
+
+async def test_scheduler_skips_artifact_when_all_pairs_are_already_recorded() -> None:
+    tasks = (_task("one"), _task("two"))
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    second_artifact = ScriptArtifactSpec(uid=5, artifact_id=uuid4(), content_hash="b", size_bytes=0)
+    progress = DummyProgressRecorder(
+        recorded=frozenset((first_artifact.artifact_id, task.task_id) for task in tasks)
+    )
+    recorded_requests: list[tuple[int, UUID]] = []
+
+    def orchestrator_factory(_client: object):
+        class StubOrchestrator:
+            async def evaluate(self, request):
+                recorded_requests.append((request.uid, request.artifact_id))
+                details = EvaluationDetails(
+                    score_breakdown=ScoreBreakdown(
+                        comparison_score=1.0,
+                        similarity_score=0.5,
+                        total_score=0.75,
+                        scoring_version="v1",
+                    ),
+                    total_tool_usage=ToolUsageSummary.zero(),
+                )
+                run = MinerTaskRun(
+                    session_id=request.session_id,
+                    uid=request.uid,
+                    artifact_id=request.artifact_id,
+                    task_id=request.task.task_id,
+                    response=Response(text=f"answer {request.task.query.text}"),
+                    details=details,
+                    completed_at=datetime(2025, 10, 27, tzinfo=UTC),
+                )
+                return TaskRunOutcome(run=run, usage=TokenUsageSummary.empty())
+
+        return StubOrchestrator()
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=lambda current_artifact: {"uid": current_artifact.uid},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+        progress=progress,
     )
 
-    assert request.payload["context"] == {
-        "feed_id": str(context.feed_id),
-        "enqueue_seq": context.enqueue_seq,
-    }
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=(first_artifact, second_artifact))
+
+    assert len(sandbox_manager.starts) == 1
+    assert all(uid == second_artifact.uid for uid, _artifact_id in recorded_requests)
+    assert len(result.runs) == len(tasks)

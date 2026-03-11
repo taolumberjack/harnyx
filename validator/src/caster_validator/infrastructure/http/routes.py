@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
 from caster_commons.bittensor import VerificationError
+from caster_commons.domain.miner_task import MinerTask
 from caster_commons.domain.session import Session
 from caster_commons.errors import ConcurrencyLimitError
 from caster_commons.protocol_headers import CASTER_SESSION_ID_HEADER
@@ -25,19 +26,15 @@ from caster_commons.tools.http_serialization import serialize_tool_execute_respo
 from caster_commons.tools.token_semaphore import TokenSemaphore
 from caster_validator.application.accept_batch import AcceptEvaluationBatch
 from caster_validator.application.dto.evaluation import (
-    MinerTaskBatchSpec,
-    MinerTaskResult,
+    MinerTaskRunSubmission,
     TokenUsageSummary,
 )
-from caster_validator.application.services.evaluation_scoring import EvaluationScore
 from caster_validator.application.status import StatusProvider
-from caster_validator.domain.evaluation import MinerAnswer, MinerCriterionEvaluation
 from caster_validator.infrastructure.http.schemas import (
     BatchAcceptResponse,
-    MinerTaskResultCitationModel,
-    MinerTaskResultCriterionEvaluationModel,
-    MinerTaskResultModel,
-    MinerTaskResultScoreModel,
+    MinerTaskBatchRequestModel,
+    MinerTaskRunModel,
+    MinerTaskRunSubmissionModel,
     ProgressResponse,
     SessionModel,
     UsageModel,
@@ -61,7 +58,6 @@ class ValidatorControlDeps:
     accept_batch: AcceptEvaluationBatch
     status_provider: StatusProvider
     auth: Callable[[Request, bytes], str]
-
     progress_tracker: ProgressTracker
 
 
@@ -137,16 +133,17 @@ def add_control_routes(
         description="Accept a miner task batch and start processing it.",
     )
     async def accept_batch(
-        payload: MinerTaskBatchSpec,
+        payload: MinerTaskBatchRequestModel,
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
         caller: str = Security(require_bittensor_caller),
     ) -> BatchAcceptResponse:
+        batch = payload.to_domain()
         try:
-            deps.accept_batch.execute(payload)
+            deps.accept_batch.execute(batch)
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        return BatchAcceptResponse(status="accepted", batch_id=str(payload.batch_id), caller=caller)
+        return BatchAcceptResponse(status="accepted", batch_id=str(batch.batch_id), caller=caller)
 
     @app.get(
         "/validator/miner-task-batches/{batch_id}/progress",
@@ -159,13 +156,14 @@ def add_control_routes(
         _caller: str = Security(require_bittensor_caller),
     ) -> ProgressResponse:
         snapshot = deps.progress_tracker.snapshot(batch_id)
-        results = [_serialize_result(c) for c in snapshot["miner_task_results"]]
+        tasks_by_id = {task.task_id: task for task in snapshot["tasks"]}
+        runs = [_serialize_run(result, tasks_by_id) for result in snapshot["miner_task_runs"]]
         return ProgressResponse(
             batch_id=str(batch_id),
             total=snapshot["total"],
             completed=snapshot["completed"],
             remaining=snapshot["remaining"],
-            miner_task_results=results,
+            miner_task_runs=runs,
         )
 
     @app.get(
@@ -179,9 +177,6 @@ def add_control_routes(
     ) -> ValidatorStatusResponse:
         snapshot = deps.status_provider.snapshot()
         return ValidatorStatusResponse(**snapshot)
-
-
-# --- Helpers ---
 
 
 async def _execute_with_semaphore_async(invocation: ToolInvocationRequest, deps: ToolRouteDeps) -> Any:
@@ -222,64 +217,28 @@ def _public_error_message(exc: Exception) -> str:
     return "tool execution failed"
 
 
-def _serialize_result(result: MinerTaskResult) -> MinerTaskResultModel:
-    evaluation = result.outcome.criterion_evaluation
-    answer = evaluation.miner_answer
-    return MinerTaskResultModel(
-        batch_id=str(result.batch_id),
-        validator=ValidatorModel(uid=result.validator_uid),
-        criterion_evaluation=_serialize_evaluation_block(evaluation, answer),
-        score=_serialize_score_block(
-            result.outcome.score,
-            error_code=result.error_code,
-            error_message=result.error_message,
+def _serialize_run(
+    submission: MinerTaskRunSubmission,
+    tasks_by_id: dict[UUID, MinerTask],
+) -> MinerTaskRunSubmissionModel:
+    task = tasks_by_id.get(submission.run.task_id)
+    if task is None:
+        raise RuntimeError(f"task {submission.run.task_id} missing from progress snapshot")
+    return MinerTaskRunSubmissionModel(
+        batch_id=str(submission.batch_id),
+        validator=ValidatorModel(uid=submission.validator_uid),
+        run=MinerTaskRunModel(
+            uid=submission.run.uid,
+            artifact_id=str(submission.run.artifact_id),
+            task_id=str(submission.run.task_id),
+            query=task.query,
+            reference_answer=task.reference_answer,
+            response=submission.run.response,
         ),
-        usage=_serialize_usage_block(result.outcome.usage),
-        session=_serialize_session_block(result.session),
-        total_tool_usage=result.outcome.total_tool_usage,
-    )
-
-
-def _serialize_evaluation_block(
-    evaluation: MinerCriterionEvaluation, answer: MinerAnswer
-) -> MinerTaskResultCriterionEvaluationModel:
-    return MinerTaskResultCriterionEvaluationModel(
-        criterion_evaluation_id=str(evaluation.criterion_evaluation_id),
-        uid=evaluation.uid,
-        artifact_id=str(evaluation.artifact_id),
-        claim_id=str(evaluation.claim_id),
-        verdict=answer.verdict,
-        justification=answer.justification,
-        citations=_serialize_citations(answer),
-    )
-
-
-def _serialize_citations(answer: MinerAnswer) -> list[MinerTaskResultCitationModel]:
-    return [
-        MinerTaskResultCitationModel(
-            url=citation.url,
-            note=citation.note,
-            receipt_id=citation.receipt_id,
-            result_id=citation.result_id,
-        )
-        for citation in answer.citations
-    ]
-
-
-def _serialize_score_block(
-    score: EvaluationScore,
-    *,
-    error_code: str | None,
-    error_message: str | None,
-) -> MinerTaskResultScoreModel:
-    return MinerTaskResultScoreModel(
-        verdict_score=score.verdict_score,
-        support_score=score.support_score,
-        justification_pass=score.justification_pass,
-        failed_citation_ids=list(score.failed_citation_ids),
-        grader_rationale=score.grader_rationale,
-        error_code=error_code,
-        error_message=error_message,
+        score=submission.score,
+        usage=_serialize_usage_block(submission.usage),
+        session=_serialize_session_block(submission.session),
+        specifics=submission.run.details,
     )
 
 

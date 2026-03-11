@@ -7,30 +7,20 @@ import pytest
 
 from caster_commons.application.dto.session import SessionTokenRequest
 from caster_commons.application.session_manager import SessionManager
-from caster_commons.domain.claim import MinerTaskClaim, ReferenceAnswer, Rubric
+from caster_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response, ScoreBreakdown
 from caster_commons.domain.session import LlmUsageTotals
-from caster_commons.domain.verdict import VerdictOption, VerdictOptions
 from caster_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from caster_commons.llm.pricing import ALLOWED_TOOL_MODELS
 from caster_commons.tools.dto import ToolInvocationRequest
 from caster_commons.tools.executor import ToolExecutor
 from caster_commons.tools.usage_tracker import UsageTracker
-from caster_validator.application.dto.evaluation import EvaluationRequest
-from caster_validator.application.evaluate_criterion import EvaluationOrchestrator
+from caster_validator.application.dto.evaluation import MinerTaskRunRequest
+from caster_validator.application.evaluate_task_run import TaskRunOrchestrator
 from caster_validator.application.invoke_entrypoint import EntrypointInvoker
-from caster_validator.application.services.evaluation_scoring import EvaluationScoringService
-from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry, StubGrader
+from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 pytestmark = pytest.mark.anyio("asyncio")
 
 TEST_SESSION_TOKEN = uuid4().hex
-
-BINARY_VERDICT_OPTIONS = VerdictOptions(
-    options=(
-        VerdictOption(value=-1, description="Fail"),
-        VerdictOption(value=1, description="Pass"),
-    )
-)
 
 
 class StubSandboxClient:
@@ -80,17 +70,34 @@ class EchoToolInvoker:
         }
 
 
-async def test_application_use_cases_cooperate_for_single_evaluation() -> None:
+class StubScoringService:
+    async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+        assert task.query.text == "Caster Subnet demo"
+        assert response.text == "A direct answer"
+        return ScoreBreakdown(
+            comparison_score=1.0,
+            similarity_score=1.0,
+            total_score=1.0,
+            scoring_version="v1",
+        )
+
+
+async def test_application_use_cases_cooperate_for_single_task_run() -> None:
     session_registry = FakeSessionRegistry()
     receipt_log = FakeReceiptLog()
     token_registry = InMemoryTokenRegistry()
 
     session_manager = SessionManager(session_registry, token_registry)
 
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Caster Subnet demo"),
+        reference_answer=ReferenceAnswer(text="A direct answer"),
+    )
     session_request = SessionTokenRequest(
         session_id=uuid4(),
         uid=7,
-        claim_id=uuid4(),
+        task_id=task.task_id,
         issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
         expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
         budget_usd=0.5,
@@ -110,7 +117,7 @@ async def test_application_use_cases_cooperate_for_single_evaluation() -> None:
         clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
     )
 
-    tool_result = await executor.execute(
+    await executor.execute(
         ToolInvocationRequest(
             session_id=session_request.session_id,
             token=TEST_SESSION_TOKEN,
@@ -123,36 +130,25 @@ async def test_application_use_cases_cooperate_for_single_evaluation() -> None:
     session = session_registry.get(session_request.session_id)
     assert session is not None
     session_registry.update(
-                session.with_usage(
-                    session.usage.update(
-                        llm_usage_totals={
-                            "chutes": {
-                                ALLOWED_TOOL_MODELS[0]: LlmUsageTotals(
-                                    prompt_tokens=10,
-                                    completion_tokens=15,
-                                    total_tokens=25,
-                                    call_count=1,
-                                ),
-                            },
-                        },
-                        llm_tokens_last_call=25,
-                    ),
-                ),
+        session.with_usage(
+            session.usage.update(
+                llm_usage_totals={
+                    "chutes": {
+                        "openai/gpt-oss-20b": LlmUsageTotals(
+                            prompt_tokens=10,
+                            completion_tokens=15,
+                            total_tokens=25,
+                            call_count=1,
+                        ),
+                    },
+                },
+                llm_tokens_last_call=25,
+            ),
+        ),
     )
 
     sandbox = StubSandboxClient()
-    sandbox.set_response(
-        {
-            "verdict": 1,
-            "justification": "looks good",
-            "citations": [
-                {
-                    "receipt_id": tool_result.receipt.receipt_id,
-                    "result_id": tool_result.receipt.metadata.results[0].result_id,
-                },
-            ],
-        },
-    )
+    sandbox.set_response({"text": "A direct answer"})
 
     invoker = EntrypointInvoker(
         session_registry=session_registry,
@@ -161,37 +157,34 @@ async def test_application_use_cases_cooperate_for_single_evaluation() -> None:
         receipt_log=receipt_log,
     )
 
-    orchestrator = EvaluationOrchestrator(
+    orchestrator = TaskRunOrchestrator(
         entrypoint_invoker=invoker,
         receipt_log=receipt_log,
-        scoring_service=EvaluationScoringService(receipt_log, grader=StubGrader()),
+        scoring_service=StubScoringService(),
         session_registry=session_registry,
         clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
     )
 
-    claim = MinerTaskClaim(
-        claim_id=session_request.claim_id,
-        text="Caster Subnet demo",
-        rubric=Rubric(
-            title="Accuracy",
-            description="Check accuracy",
-            verdict_options=BINARY_VERDICT_OPTIONS,
-        ),
-        reference_answer=ReferenceAnswer(verdict=1, justification="ref", citations=()),
-    )
-
-    evaluation_outcome = await orchestrator.evaluate(
-        EvaluationRequest(
+    outcome = await orchestrator.evaluate(
+        MinerTaskRunRequest(
             session_id=session_request.session_id,
             token=TEST_SESSION_TOKEN,
             uid=7,
             artifact_id=uuid4(),
-            entrypoint="evaluate_criterion",
-            payload={"query": "caster subnet"},
-            context={"claim": claim.text},
-            claim=claim,
-            criterion_evaluation_id=uuid4(),
+            task=task,
         ),
     )
 
-    assert evaluation_outcome.score.total == 1.0
+    assert outcome.run.response == Response(text="A direct answer")
+    assert outcome.run.details.score_breakdown is not None
+    assert outcome.run.details.score_breakdown.total_score == pytest.approx(1.0)
+    assert outcome.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.0025)
+    assert sandbox.requests == [
+        (
+            "query",
+            {"text": "Caster Subnet demo"},
+            {},
+            TEST_SESSION_TOKEN,
+            session_request.session_id,
+        ),
+    ]

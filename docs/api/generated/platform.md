@@ -146,7 +146,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 <a id="endpoint-post-v1-miner-task-batches-batch"></a>
 #### POST /v1/miner-task-batches/batch
 
-Create a miner task batch (claims + candidate artifacts).
+Create a miner-task batch (tasks + artifacts).
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
@@ -157,16 +157,13 @@ Body: [CreateBatchRequest](#model-createbatchrequest)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | opt | `string` (format: uuid; nullable) |
-| `champion_uid` |  |  | opt | `integer` (nullable) |
-| `override_miner_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
-|  | `claims` |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+| `champion_artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
+| `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
+|  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
 |  |  | `budget_usd` | opt | `number` (default: 0.05) |
-|  |  | `claim_id` | req | `string` (format: uuid) |
-|  |  | `context` | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `rubric` | req | [Rubric](#model-rubric) |
-|  |  | `text` | req | `string` |
-|  | `entrypoint` |  | req | `string` |
+|  |  | `task_id` | req | `string` (format: uuid) |
 
 **Responses**
 `200` Successful Response
@@ -175,33 +172,24 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `candidates` |  |  | req | array[[ScriptArtifactModel](#model-scriptartifactmodel)] |
+| `artifacts` |  |  | req | array[[ScriptArtifactModel](#model-scriptartifactmodel)] |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `content_hash` |  | req | `string` |
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
-| `champion_uid` |  |  | req | `integer` (nullable) |
-| `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
-|  | `budget_usd` |  | req | `number` |
-|  | `claim_id` |  | req | `string` (format: uuid) |
-|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  |  | `enqueue_seq` | req | `integer` |
-|  |  | `feed_id` | req | `string` (format: uuid) |
-|  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
-|  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
-|  |  | `justification` | req | `string` |
-|  |  | `verdict` | req | `integer` |
-|  | `rubric` |  | req | [RubricModel](#model-rubricmodel) |
-|  |  | `description` | req | `string` |
-|  |  | `title` | req | `string` |
-|  |  | `verdict_options` | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
-|  | `text` |  | req | `string` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `champion_artifact_id` |  |  | req | `string` (format: uuid; nullable) |
+| `completed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `created_at` |  |  | req | `string` (format: date-time) |
 | `cutoff_at` |  |  | req | `string` (format: date-time) |
-| `entrypoint` |  |  | req | `string` |
-| `status` |  |  | req | `string` |
-| `status_message` |  |  | opt | `string` (nullable) |
+| `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
+| `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
+|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -220,7 +208,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 <a id="endpoint-get-v1-miner-task-batches-batch-batch_id"></a>
 ##### GET /v1/miner-task-batches/batch/{batch_id}
 
-Fetch a previously created miner task batch.
+Fetch a previously created miner-task batch.
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
@@ -236,33 +224,24 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `candidates` |  |  | req | array[[ScriptArtifactModel](#model-scriptartifactmodel)] |
+| `artifacts` |  |  | req | array[[ScriptArtifactModel](#model-scriptartifactmodel)] |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `content_hash` |  | req | `string` |
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
-| `champion_uid` |  |  | req | `integer` (nullable) |
-| `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
-|  | `budget_usd` |  | req | `number` |
-|  | `claim_id` |  | req | `string` (format: uuid) |
-|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  |  | `enqueue_seq` | req | `integer` |
-|  |  | `feed_id` | req | `string` (format: uuid) |
-|  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
-|  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
-|  |  | `justification` | req | `string` |
-|  |  | `verdict` | req | `integer` |
-|  | `rubric` |  | req | [RubricModel](#model-rubricmodel) |
-|  |  | `description` | req | `string` |
-|  |  | `title` | req | `string` |
-|  |  | `verdict_options` | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
-|  | `text` |  | req | `string` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `champion_artifact_id` |  |  | req | `string` (format: uuid; nullable) |
+| `completed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `created_at` |  |  | req | `string` (format: date-time) |
 | `cutoff_at` |  |  | req | `string` (format: date-time) |
-| `entrypoint` |  |  | req | `string` |
-| `status` |  |  | req | `string` |
-| `status_message` |  |  | opt | `string` (nullable) |
+| `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
+| `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
+|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -299,11 +278,12 @@ Body: [ProgressSnapshotResponse](#model-progresssnapshotresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `artifact_count` |  |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
-| `candidate_count` |  |  | req | `integer` |
 | `created_at` |  |  | req | `string` (format: date-time) |
 | `cutoff_at` |  |  | req | `string` (format: date-time) |
 | `status` |  |  | req | `string` |
+| `task_count` |  |  | req | `integer` |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -326,7 +306,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 <a id="endpoint-get-v1-miner-task-batches-batch_id-artifacts-artifact_id"></a>
 ###### GET /v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}
 
-Download a stored script artifact for a batch candidate.
+Download a stored script artifact for a batch.
 
 **Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
 
@@ -752,40 +732,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-citation"></a>
-### Model: Citation
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `note` |  |  | req | `string` |
-| `url` |  |  | req | `string` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "note": {
-      "title": "Note",
-      "type": "string"
-    },
-    "url": {
-      "title": "Url",
-      "type": "string"
-    }
-  },
-  "required": [
-    "url",
-    "note"
-  ],
-  "title": "Citation",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-citationmodel"></a>
 ### Model: CitationModel
 
@@ -826,16 +772,13 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | opt | `string` (format: uuid; nullable) |
-| `champion_uid` |  |  | opt | `integer` (nullable) |
-| `override_miner_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
-|  | `claims` |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+| `champion_artifact_id` |  |  | opt | `string` (format: uuid; nullable) |
+| `override_task_dataset` |  |  | opt | [OverrideMinerTaskDatasetModel](#model-overrideminertaskdatasetmodel) (nullable) |
+|  | `tasks` |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
 |  |  | `budget_usd` | opt | `number` (default: 0.05) |
-|  |  | `claim_id` | req | `string` (format: uuid) |
-|  |  | `context` | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
+|  |  | `query` | req | [Query](#model-query) |
 |  |  | `reference_answer` | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `rubric` | req | [Rubric](#model-rubric) |
-|  |  | `text` | req | `string` |
-|  | `entrypoint` |  | req | `string` |
+|  |  | `task_id` | req | `string` (format: uuid) |
 
 <details>
 <summary>JSON schema</summary>
@@ -855,18 +798,19 @@ Body: [WeightsResponse](#model-weightsresponse)
       ],
       "title": "Batch Id"
     },
-    "champion_uid": {
+    "champion_artifact_id": {
       "anyOf": [
         {
-          "type": "integer"
+          "format": "uuid",
+          "type": "string"
         },
         {
           "type": "null"
         }
       ],
-      "title": "Champion Uid"
+      "title": "Champion Artifact Id"
     },
-    "override_miner_task_dataset": {
+    "override_task_dataset": {
       "anyOf": [
         {
           "$ref": "#/components/schemas/OverrideMinerTaskDatasetModel"
@@ -1085,43 +1029,6 @@ Body: [WeightsResponse](#model-weightsresponse)
     "rubric_score"
   ],
   "title": "ExternalEvalResultModel",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-feedsearchcontext"></a>
-### Model: FeedSearchContext
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `enqueue_seq` |  |  | req | `integer` |
-| `feed_id` |  |  | req | `string` (format: uuid) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "enqueue_seq": {
-      "minimum": 0.0,
-      "title": "Enqueue Seq",
-      "type": "integer"
-    },
-    "feed_id": {
-      "format": "uuid",
-      "title": "Feed Id",
-      "type": "string"
-    }
-  },
-  "required": [
-    "feed_id",
-    "enqueue_seq"
-  ],
-  "title": "FeedSearchContext",
   "type": "object"
 }
 ```
@@ -1627,38 +1534,78 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-minertask"></a>
+### Model: MinerTask
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `budget_usd` |  |  | opt | `number` (default: 0.05) |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `text` |  | req | `string` |
+| `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  | `text` |  | req | `string` |
+| `task_id` |  |  | req | `string` (format: uuid) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "budget_usd": {
+      "default": 0.05,
+      "minimum": 0.0,
+      "title": "Budget Usd",
+      "type": "number"
+    },
+    "query": {
+      "$ref": "#/components/schemas/Query"
+    },
+    "reference_answer": {
+      "$ref": "#/components/schemas/ReferenceAnswer"
+    },
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "query",
+    "reference_answer"
+  ],
+  "title": "MinerTask",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-minertaskbatchmodel"></a>
 ### Model: MinerTaskBatchModel
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `candidates` |  |  | req | array[[ScriptArtifactModel](#model-scriptartifactmodel)] |
+| `artifacts` |  |  | req | array[[ScriptArtifactModel](#model-scriptartifactmodel)] |
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `content_hash` |  | req | `string` |
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
-| `champion_uid` |  |  | req | `integer` (nullable) |
-| `claims` |  |  | req | array[[MinerTaskClaimModel](#model-minertaskclaimmodel)] |
-|  | `budget_usd` |  | req | `number` |
-|  | `claim_id` |  | req | `string` (format: uuid) |
-|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  |  | `enqueue_seq` | req | `integer` |
-|  |  | `feed_id` | req | `string` (format: uuid) |
-|  | `reference_answer` |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
-|  |  | `citations` | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
-|  |  | `justification` | req | `string` |
-|  |  | `verdict` | req | `integer` |
-|  | `rubric` |  | req | [RubricModel](#model-rubricmodel) |
-|  |  | `description` | req | `string` |
-|  |  | `title` | req | `string` |
-|  |  | `verdict_options` | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
-|  | `text` |  | req | `string` |
+| `batch_id` |  |  | req | `string` (format: uuid) |
+| `champion_artifact_id` |  |  | req | `string` (format: uuid; nullable) |
+| `completed_at` |  |  | opt | `string` (format: date-time; nullable) |
 | `created_at` |  |  | req | `string` (format: date-time) |
 | `cutoff_at` |  |  | req | `string` (format: date-time) |
-| `entrypoint` |  |  | req | `string` |
-| `status` |  |  | req | `string` |
-| `status_message` |  |  | opt | `string` (nullable) |
+| `failed_at` |  |  | opt | `string` (format: date-time; nullable) |
+| `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
+|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
 
 <details>
 <summary>JSON schema</summary>
@@ -1666,35 +1613,41 @@ Body: [WeightsResponse](#model-weightsresponse)
 ```json
 {
   "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/components/schemas/ScriptArtifactModel"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
     "batch_id": {
       "format": "uuid",
       "title": "Batch Id",
       "type": "string"
     },
-    "candidates": {
-      "items": {
-        "$ref": "#/components/schemas/ScriptArtifactModel"
-      },
-      "title": "Candidates",
-      "type": "array"
-    },
-    "champion_uid": {
+    "champion_artifact_id": {
       "anyOf": [
         {
-          "type": "integer"
+          "format": "uuid",
+          "type": "string"
         },
         {
           "type": "null"
         }
       ],
-      "title": "Champion Uid"
+      "title": "Champion Artifact Id"
     },
-    "claims": {
-      "items": {
-        "$ref": "#/components/schemas/MinerTaskClaimModel"
-      },
-      "title": "Claims",
-      "type": "array"
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Completed At"
     },
     "created_at": {
       "format": "date-time",
@@ -1706,35 +1659,33 @@ Body: [WeightsResponse](#model-weightsresponse)
       "title": "Cutoff At",
       "type": "string"
     },
-    "entrypoint": {
-      "title": "Entrypoint",
-      "type": "string"
-    },
-    "status": {
-      "title": "Status",
-      "type": "string"
-    },
-    "status_message": {
+    "failed_at": {
       "anyOf": [
         {
+          "format": "date-time",
           "type": "string"
         },
         {
           "type": "null"
         }
       ],
-      "title": "Status Message"
+      "title": "Failed At"
+    },
+    "tasks": {
+      "items": {
+        "$ref": "#/components/schemas/MinerTask"
+      },
+      "title": "Tasks",
+      "type": "array"
     }
   },
   "required": [
     "batch_id",
-    "entrypoint",
     "cutoff_at",
     "created_at",
-    "claims",
-    "candidates",
-    "champion_uid",
-    "status"
+    "tasks",
+    "artifacts",
+    "champion_artifact_id"
   ],
   "title": "MinerTaskBatchModel",
   "type": "object"
@@ -1743,151 +1694,49 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-minertaskclaim"></a>
-### Model: MinerTaskClaim
+<a id="model-minertaskinputmodel"></a>
+### Model: MinerTaskInputModel
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `budget_usd` |  |  | opt | `number` (default: 0.05) |
-| `claim_id` |  |  | req | `string` (format: uuid) |
-| `context` |  |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  | `enqueue_seq` |  | req | `integer` |
-|  | `feed_id` |  | req | `string` (format: uuid) |
+| `query` |  |  | req | [Query](#model-query) |
+|  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  | `citations` |  | opt | array[[Citation](#model-citation)] (default: []) |
-|  |  | `note` | req | `string` |
-|  |  | `url` | req | `string` |
-|  | `justification` |  | req | `string` |
-|  | `spans` |  | opt | array[[Span](#model-span)] (default: []) |
-|  |  | `end` | req | `integer` |
-|  |  | `excerpt` | req | `string` |
-|  |  | `start` | req | `integer` |
-|  | `verdict` |  | req | `integer` |
-| `rubric` |  |  | req | [Rubric](#model-rubric) |
-|  | `description` |  | req | `string` |
-|  | `title` |  | req | `string` |
-|  | `verdict_options` |  | req | [VerdictOptions](#model-verdictoptions) |
-|  |  | `options` | req | array[[VerdictOption](#model-verdictoption)] |
-| `text` |  |  | req | `string` |
+|  | `text` |  | req | `string` |
+| `task_id` |  |  | req | `string` (format: uuid) |
 
 <details>
 <summary>JSON schema</summary>
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "budget_usd": {
       "default": 0.05,
+      "minimum": 0.0,
       "title": "Budget Usd",
       "type": "number"
     },
-    "claim_id": {
-      "format": "uuid",
-      "title": "Claim Id",
-      "type": "string"
-    },
-    "context": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/FeedSearchContext"
-        },
-        {
-          "type": "null"
-        }
-      ]
+    "query": {
+      "$ref": "#/components/schemas/Query"
     },
     "reference_answer": {
       "$ref": "#/components/schemas/ReferenceAnswer"
     },
-    "rubric": {
-      "$ref": "#/components/schemas/Rubric"
-    },
-    "text": {
-      "title": "Text",
+    "task_id": {
+      "format": "uuid",
+      "title": "Task Id",
       "type": "string"
     }
   },
   "required": [
-    "claim_id",
-    "text",
-    "rubric",
+    "task_id",
+    "query",
     "reference_answer"
   ],
-  "title": "MinerTaskClaim",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-minertaskclaimmodel"></a>
-### Model: MinerTaskClaimModel
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `budget_usd` |  |  | req | `number` |
-| `claim_id` |  |  | req | `string` (format: uuid) |
-| `context` |  |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  | `enqueue_seq` |  | req | `integer` |
-|  | `feed_id` |  | req | `string` (format: uuid) |
-| `reference_answer` |  |  | req | [ReferenceAnswerModel](#model-referenceanswermodel) |
-|  | `citations` |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
-|  |  | `note` | req | `string` |
-|  |  | `url` | req | `string` |
-|  | `justification` |  | req | `string` |
-|  | `verdict` |  | req | `integer` |
-| `rubric` |  |  | req | [RubricModel](#model-rubricmodel) |
-|  | `description` |  | req | `string` |
-|  | `title` |  | req | `string` |
-|  | `verdict_options` |  | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
-|  |  | `description` | req | `string` |
-|  |  | `value` | req | `integer` |
-| `text` |  |  | req | `string` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "budget_usd": {
-      "title": "Budget Usd",
-      "type": "number"
-    },
-    "claim_id": {
-      "format": "uuid",
-      "title": "Claim Id",
-      "type": "string"
-    },
-    "context": {
-      "anyOf": [
-        {
-          "$ref": "#/components/schemas/FeedSearchContext"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "reference_answer": {
-      "$ref": "#/components/schemas/ReferenceAnswerModel"
-    },
-    "rubric": {
-      "$ref": "#/components/schemas/RubricModel"
-    },
-    "text": {
-      "title": "Text",
-      "type": "string"
-    }
-  },
-  "required": [
-    "claim_id",
-    "text",
-    "rubric",
-    "reference_answer",
-    "budget_usd"
-  ],
-  "title": "MinerTaskClaimModel",
+  "title": "MinerTaskInputModel",
   "type": "object"
 }
 ```
@@ -1899,23 +1748,13 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `claims` |  |  | req | array[[MinerTaskClaim](#model-minertaskclaim)] |
+| `tasks` |  |  | req | array[[MinerTaskInputModel](#model-minertaskinputmodel)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.05) |
-|  | `claim_id` |  | req | `string` (format: uuid) |
-|  | `context` |  | opt | [FeedSearchContext](#model-feedsearchcontext) (nullable) |
-|  |  | `enqueue_seq` | req | `integer` |
-|  |  | `feed_id` | req | `string` (format: uuid) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `citations` | opt | array[[Citation](#model-citation)] (default: []) |
-|  |  | `justification` | req | `string` |
-|  |  | `spans` | opt | array[[Span](#model-span)] (default: []) |
-|  |  | `verdict` | req | `integer` |
-|  | `rubric` |  | req | [Rubric](#model-rubric) |
-|  |  | `description` | req | `string` |
-|  |  | `title` | req | `string` |
-|  |  | `verdict_options` | req | [VerdictOptions](#model-verdictoptions) |
-|  | `text` |  | req | `string` |
-| `entrypoint` |  |  | req | `string` |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` (format: uuid) |
 
 <details>
 <summary>JSON schema</summary>
@@ -1924,22 +1763,17 @@ Body: [WeightsResponse](#model-weightsresponse)
 {
   "additionalProperties": false,
   "properties": {
-    "claims": {
+    "tasks": {
       "items": {
-        "$ref": "#/components/schemas/MinerTaskClaim"
+        "$ref": "#/components/schemas/MinerTaskInputModel"
       },
-      "title": "Claims",
+      "minItems": 1,
+      "title": "Tasks",
       "type": "array"
-    },
-    "entrypoint": {
-      "minLength": 1,
-      "title": "Entrypoint",
-      "type": "string"
     }
   },
   "required": [
-    "entrypoint",
-    "claims"
+    "tasks"
   ],
   "title": "OverrideMinerTaskDatasetModel",
   "type": "object"
@@ -1953,11 +1787,12 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `artifact_count` |  |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
-| `candidate_count` |  |  | req | `integer` |
 | `created_at` |  |  | req | `string` (format: date-time) |
 | `cutoff_at` |  |  | req | `string` (format: date-time) |
 | `status` |  |  | req | `string` |
+| `task_count` |  |  | req | `integer` |
 
 <details>
 <summary>JSON schema</summary>
@@ -1965,14 +1800,14 @@ Body: [WeightsResponse](#model-weightsresponse)
 ```json
 {
   "properties": {
+    "artifact_count": {
+      "title": "Artifact Count",
+      "type": "integer"
+    },
     "batch_id": {
       "format": "uuid",
       "title": "Batch Id",
       "type": "string"
-    },
-    "candidate_count": {
-      "title": "Candidate Count",
-      "type": "integer"
     },
     "created_at": {
       "format": "date-time",
@@ -1987,6 +1822,10 @@ Body: [WeightsResponse](#model-weightsresponse)
     "status": {
       "title": "Status",
       "type": "string"
+    },
+    "task_count": {
+      "title": "Task Count",
+      "type": "integer"
     }
   },
   "required": [
@@ -1994,9 +1833,40 @@ Body: [WeightsResponse](#model-weightsresponse)
     "status",
     "created_at",
     "cutoff_at",
-    "candidate_count"
+    "artifact_count",
+    "task_count"
   ],
   "title": "ProgressSnapshotResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-query"></a>
+### Model: Query
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `text` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "text": {
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "Query",
   "type": "object"
 }
 ```
@@ -2008,97 +1878,25 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `citations` |  |  | opt | array[[Citation](#model-citation)] (default: []) |
-|  | `note` |  | req | `string` |
-|  | `url` |  | req | `string` |
-| `justification` |  |  | req | `string` |
-| `spans` |  |  | opt | array[[Span](#model-span)] (default: []) |
-|  | `end` |  | req | `integer` |
-|  | `excerpt` |  | req | `string` |
-|  | `start` |  | req | `integer` |
-| `verdict` |  |  | req | `integer` |
+| `text` |  |  | req | `string` |
 
 <details>
 <summary>JSON schema</summary>
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
-    "citations": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/Citation"
-      },
-      "title": "Citations",
-      "type": "array"
-    },
-    "justification": {
-      "title": "Justification",
+    "text": {
+      "minLength": 1,
+      "title": "Text",
       "type": "string"
-    },
-    "spans": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/Span"
-      },
-      "title": "Spans",
-      "type": "array"
-    },
-    "verdict": {
-      "title": "Verdict",
-      "type": "integer"
     }
   },
   "required": [
-    "verdict",
-    "justification"
+    "text"
   ],
   "title": "ReferenceAnswer",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-referenceanswermodel"></a>
-### Model: ReferenceAnswerModel
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `citations` |  |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
-|  | `note` |  | req | `string` |
-|  | `url` |  | req | `string` |
-| `justification` |  |  | req | `string` |
-| `verdict` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "citations": {
-      "default": [],
-      "items": {
-        "$ref": "#/components/schemas/CitationModel"
-      },
-      "title": "Citations",
-      "type": "array"
-    },
-    "justification": {
-      "title": "Justification",
-      "type": "string"
-    },
-    "verdict": {
-      "title": "Verdict",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "verdict",
-    "justification"
-  ],
-  "title": "ReferenceAnswerModel",
   "type": "object"
 }
 ```
@@ -2163,93 +1961,6 @@ Body: [WeightsResponse](#model-weightsresponse)
     "commit_sha"
   ],
   "title": "RepoSearchEnsureIndexRequestModel",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-rubric"></a>
-### Model: Rubric
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `description` |  |  | req | `string` |
-| `title` |  |  | req | `string` |
-| `verdict_options` |  |  | req | [VerdictOptions](#model-verdictoptions) |
-|  | `options` |  | req | array[[VerdictOption](#model-verdictoption)] |
-|  |  | `description` | req | `string` |
-|  |  | `value` | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "description": {
-      "title": "Description",
-      "type": "string"
-    },
-    "title": {
-      "title": "Title",
-      "type": "string"
-    },
-    "verdict_options": {
-      "$ref": "#/components/schemas/VerdictOptions"
-    }
-  },
-  "required": [
-    "title",
-    "description",
-    "verdict_options"
-  ],
-  "title": "Rubric",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-rubricmodel"></a>
-### Model: RubricModel
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `description` |  |  | req | `string` |
-| `title` |  |  | req | `string` |
-| `verdict_options` |  |  | req | array[[VerdictOptionModel](#model-verdictoptionmodel)] |
-|  | `description` |  | req | `string` |
-|  | `value` |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "description": {
-      "title": "Description",
-      "type": "string"
-    },
-    "title": {
-      "title": "Title",
-      "type": "string"
-    },
-    "verdict_options": {
-      "items": {
-        "$ref": "#/components/schemas/VerdictOptionModel"
-      },
-      "title": "Verdict Options",
-      "type": "array"
-    }
-  },
-  "required": [
-    "title",
-    "description",
-    "verdict_options"
-  ],
-  "title": "RubricModel",
   "type": "object"
 }
 ```
@@ -2471,46 +2182,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-span"></a>
-### Model: Span
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `end` |  |  | req | `integer` |
-| `excerpt` |  |  | req | `string` |
-| `start` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "end": {
-      "title": "End",
-      "type": "integer"
-    },
-    "excerpt": {
-      "title": "Excerpt",
-      "type": "string"
-    },
-    "start": {
-      "title": "Start",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "excerpt",
-    "start",
-    "end"
-  ],
-  "title": "Span",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-spanmodel"></a>
 ### Model: SpanModel
 
@@ -2715,40 +2386,6 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
-<a id="model-verdictoption"></a>
-### Model: VerdictOption
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `description` |  |  | req | `string` |
-| `value` |  |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "description": {
-      "title": "Description",
-      "type": "string"
-    },
-    "value": {
-      "title": "Value",
-      "type": "integer"
-    }
-  },
-  "required": [
-    "value",
-    "description"
-  ],
-  "title": "VerdictOption",
-  "type": "object"
-}
-```
-
-</details>
-
 <a id="model-verdictoptionmodel"></a>
 ### Model: VerdictOptionModel
 
@@ -2777,39 +2414,6 @@ Body: [WeightsResponse](#model-weightsresponse)
     "description"
   ],
   "title": "VerdictOptionModel",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-verdictoptions"></a>
-### Model: VerdictOptions
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `options` |  |  | req | array[[VerdictOption](#model-verdictoption)] |
-|  | `description` |  | req | `string` |
-|  | `value` |  | req | `integer` |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "properties": {
-    "options": {
-      "items": {
-        "$ref": "#/components/schemas/VerdictOption"
-      },
-      "title": "Options",
-      "type": "array"
-    }
-  },
-  "required": [
-    "options"
-  ],
-  "title": "VerdictOptions",
   "type": "object"
 }
 ```
