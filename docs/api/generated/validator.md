@@ -24,25 +24,25 @@ Accept a miner task batch and start processing it.
 
 **Request**
 Content-Type: `application/json`
-Body: [MinerTaskBatchSpec](#model-minertaskbatchspec)
+Body: [MinerTaskBatchRequestModel](#model-minertaskbatchrequestmodel)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `artifacts` |  |  | req | array[[ScriptArtifactSpec](#model-scriptartifactspec)] |
-|  | `artifact_id` |  | req | `string` (format: uuid) |
+| `artifacts` |  |  | req | array[[ScriptArtifactRequestModel](#model-scriptartifactrequestmodel)] |
+|  | `artifact_id` |  | req | `string` |
 |  | `content_hash` |  | req | `string` |
 |  | `size_bytes` |  | req | `integer` |
 |  | `uid` |  | req | `integer` |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `created_at` |  |  | req | `string` |
-| `cutoff_at` |  |  | req | `string` |
-| `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
+| `batch_id` |  |  | req | `string` |
+| `created_at_iso` |  |  | req | `string` |
+| `cutoff_at_iso` |  |  | req | `string` |
+| `tasks` |  |  | req | array[[MinerTaskRequestModel](#model-minertaskrequestmodel)] |
 |  | `budget_usd` |  | opt | `number` (default: 0.05) |
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  |  | `text` | req | `string` |
-|  | `task_id` |  | req | `string` (format: uuid) |
+|  | `task_id` |  | req | `string` |
 
 **Responses**
 `200` Successful Response
@@ -562,8 +562,82 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-minertask"></a>
-### Model: MinerTask
+<a id="model-minertaskbatchrequestmodel"></a>
+### Model: MinerTaskBatchRequestModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `artifacts` |  |  | req | array[[ScriptArtifactRequestModel](#model-scriptartifactrequestmodel)] |
+|  | `artifact_id` |  | req | `string` |
+|  | `content_hash` |  | req | `string` |
+|  | `size_bytes` |  | req | `integer` |
+|  | `uid` |  | req | `integer` |
+| `batch_id` |  |  | req | `string` |
+| `created_at_iso` |  |  | req | `string` |
+| `cutoff_at_iso` |  |  | req | `string` |
+| `tasks` |  |  | req | array[[MinerTaskRequestModel](#model-minertaskrequestmodel)] |
+|  | `budget_usd` |  | opt | `number` (default: 0.05) |
+|  | `query` |  | req | [Query](#model-query) |
+|  |  | `text` | req | `string` |
+|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `text` | req | `string` |
+|  | `task_id` |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/components/schemas/ScriptArtifactRequestModel"
+      },
+      "minItems": 1,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "batch_id": {
+      "minLength": 1,
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "created_at_iso": {
+      "minLength": 1,
+      "title": "Created At Iso",
+      "type": "string"
+    },
+    "cutoff_at_iso": {
+      "minLength": 1,
+      "title": "Cutoff At Iso",
+      "type": "string"
+    },
+    "tasks": {
+      "items": {
+        "$ref": "#/components/schemas/MinerTaskRequestModel"
+      },
+      "minItems": 1,
+      "title": "Tasks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "batch_id",
+    "cutoff_at_iso",
+    "created_at_iso",
+    "tasks",
+    "artifacts"
+  ],
+  "title": "MinerTaskBatchRequestModel",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minertaskrequestmodel"></a>
+### Model: MinerTaskRequestModel
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
@@ -572,7 +646,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
 |  | `text` |  | req | `string` |
-| `task_id` |  |  | req | `string` (format: uuid) |
+| `task_id` |  |  | req | `string` |
 
 <details>
 <summary>JSON schema</summary>
@@ -594,7 +668,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "$ref": "#/components/schemas/ReferenceAnswer"
     },
     "task_id": {
-      "format": "uuid",
+      "minLength": 1,
       "title": "Task Id",
       "type": "string"
     }
@@ -604,82 +678,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "query",
     "reference_answer"
   ],
-  "title": "MinerTask",
-  "type": "object"
-}
-```
-
-</details>
-
-<a id="model-minertaskbatchspec"></a>
-### Model: MinerTaskBatchSpec
-
-| 1st level | 2nd level | 3rd level | Req | Notes |
-| --- | --- | --- | --- | --- |
-| `artifacts` |  |  | req | array[[ScriptArtifactSpec](#model-scriptartifactspec)] |
-|  | `artifact_id` |  | req | `string` (format: uuid) |
-|  | `content_hash` |  | req | `string` |
-|  | `size_bytes` |  | req | `integer` |
-|  | `uid` |  | req | `integer` |
-| `batch_id` |  |  | req | `string` (format: uuid) |
-| `created_at` |  |  | req | `string` |
-| `cutoff_at` |  |  | req | `string` |
-| `tasks` |  |  | req | array[[MinerTask](#model-minertask)] |
-|  | `budget_usd` |  | opt | `number` (default: 0.05) |
-|  | `query` |  | req | [Query](#model-query) |
-|  |  | `text` | req | `string` |
-|  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
-|  |  | `text` | req | `string` |
-|  | `task_id` |  | req | `string` (format: uuid) |
-
-<details>
-<summary>JSON schema</summary>
-
-```json
-{
-  "additionalProperties": false,
-  "description": "Miner-task batch supplied by the platform.",
-  "properties": {
-    "artifacts": {
-      "items": {
-        "$ref": "#/components/schemas/ScriptArtifactSpec"
-      },
-      "minItems": 1,
-      "title": "Artifacts",
-      "type": "array"
-    },
-    "batch_id": {
-      "format": "uuid",
-      "title": "Batch Id",
-      "type": "string"
-    },
-    "created_at": {
-      "minLength": 1,
-      "title": "Created At",
-      "type": "string"
-    },
-    "cutoff_at": {
-      "minLength": 1,
-      "title": "Cutoff At",
-      "type": "string"
-    },
-    "tasks": {
-      "items": {
-        "$ref": "#/components/schemas/MinerTask"
-      },
-      "minItems": 1,
-      "title": "Tasks",
-      "type": "array"
-    }
-  },
-  "required": [
-    "batch_id",
-    "cutoff_at",
-    "created_at",
-    "tasks",
-    "artifacts"
-  ],
-  "title": "MinerTaskBatchSpec",
+  "title": "MinerTaskRequestModel",
   "type": "object"
 }
 ```
@@ -1081,12 +1080,12 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
-<a id="model-scriptartifactspec"></a>
-### Model: ScriptArtifactSpec
+<a id="model-scriptartifactrequestmodel"></a>
+### Model: ScriptArtifactRequestModel
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `artifact_id` |  |  | req | `string` (format: uuid) |
+| `artifact_id` |  |  | req | `string` |
 | `content_hash` |  |  | req | `string` |
 | `size_bytes` |  |  | req | `integer` |
 | `uid` |  |  | req | `integer` |
@@ -1097,10 +1096,9 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 ```json
 {
   "additionalProperties": false,
-  "description": "Script artifact metadata supplied by the platform.",
   "properties": {
     "artifact_id": {
-      "format": "uuid",
+      "minLength": 1,
       "title": "Artifact Id",
       "type": "string"
     },
@@ -1126,7 +1124,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "content_hash",
     "size_bytes"
   ],
-  "title": "ScriptArtifactSpec",
+  "title": "ScriptArtifactRequestModel",
   "type": "object"
 }
 ```
