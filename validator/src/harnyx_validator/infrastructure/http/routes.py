@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
@@ -53,17 +53,28 @@ class ToolRouteDeps:
     session_manager: SessionManager
 
 
+ControlRouteAuth = Callable[[str, str, bytes, str | None], Awaitable[str]]
+
+
 @dataclass(frozen=True)
 class ValidatorControlDeps:
     accept_batch: AcceptEvaluationBatch
     status_provider: StatusProvider
-    auth: Callable[[Request, bytes], str]
+    auth: ControlRouteAuth
     progress_tracker: ProgressTracker
 
 
 class ProgressTracker(Protocol):
     def snapshot(self, batch_id: UUID) -> RunProgressSnapshot:
         ...
+
+
+def _path_with_query(request: Request) -> str:
+    path = request.url.path or "/"
+    query = request.url.query
+    if query:
+        return f"{path}?{query}"
+    return path
 
 
 def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDeps]) -> None:
@@ -144,8 +155,15 @@ def add_control_routes(
         _auth_header: str | None = Security(bittensor_header),
     ) -> str:
         body = await request.body()
+        path_qs = _path_with_query(request)
+        authorization_header = request.headers.get("authorization")
         try:
-            return deps.auth(request, body)
+            return await deps.auth(
+                request.method,
+                path_qs,
+                body,
+                authorization_header,
+            )
         except VerificationError as exc:
             status_code = 403 if exc.code == "caller_not_allowed" else 401
             raise HTTPException(status_code=status_code, detail=exc.message) from exc

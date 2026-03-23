@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from harnyx_commons.domain.miner_task import (
@@ -30,7 +30,7 @@ from harnyx_validator.application.dto.evaluation import (
 )
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
-from harnyx_validator.infrastructure.http.routes import ValidatorControlDeps, add_control_routes
+from harnyx_validator.infrastructure.http.routes import ControlRouteAuth, ValidatorControlDeps, add_control_routes
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress, RunProgressSnapshot
 
@@ -80,6 +80,7 @@ class DemoControlDependencyProvider:
         self,
         *,
         snapshot: RunProgressSnapshot,
+        auth: ControlRouteAuth | None = None,
         lifecycle: str | None = "processing",
         error_code: str | None = None,
     ) -> None:
@@ -87,7 +88,7 @@ class DemoControlDependencyProvider:
         self._deps = ValidatorControlDeps(
             accept_batch=self.accept_batch,
             status_provider=StubStatusProvider(),
-            auth=_allow_all_auth,
+            auth=_allow_all_auth if auth is None else auth,
             progress_tracker=FakeProgressTracker(snapshot=snapshot),
         )
 
@@ -116,8 +117,48 @@ class RealAcceptBatchDependencyProvider:
         return self._deps
 
 
-def _allow_all_auth(_: Request, __: bytes) -> str:
+async def _allow_all_auth(_: str, __: str, ___: bytes, ____: str | None) -> str:
     return "caller"
+
+
+def test_status_endpoint_awaits_auth_with_request_primitives() -> None:
+    batch_id = uuid4()
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+    }
+    auth_calls: list[tuple[str, str, bytes, str | None]] = []
+
+    async def _record_auth(
+        method: str,
+        path_qs: str,
+        body: bytes,
+        authorization_header: str | None,
+    ) -> str:
+        auth_calls.append((method, path_qs, body, authorization_header))
+        return "caller"
+
+    provider = DemoControlDependencyProvider(snapshot=snapshot, auth=_record_auth)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(
+        "/validator/status?verbose=1",
+        headers={"Authorization": "Bittensor ss58=\"5demo\",sig=\"00\""},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert auth_calls == [(
+        "GET",
+        "/validator/status?verbose=1",
+        b"",
+        'Bittensor ss58="5demo",sig="00"',
+    )]
 
 
 def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSubmission]:

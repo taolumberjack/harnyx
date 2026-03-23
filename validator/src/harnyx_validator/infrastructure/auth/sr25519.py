@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from threading import Lock
 
 import bittensor as bt
 
@@ -23,15 +24,17 @@ class BittensorSr25519InboundVerifier:
     owner_coldkey_ss58: str
     owner_cache_ttl_seconds: float = 300.0
     _owner_cache: dict[str, tuple[float, str]] = field(default_factory=dict)
+    _owner_cache_lock: Lock = field(default_factory=Lock)
 
     def _resolve_owner_coldkey(self, hotkey_ss58: str) -> str | None:
         now = time.monotonic()
-        cached = self._owner_cache.get(hotkey_ss58)
-        if cached is not None:
-            expires_at, owner = cached
-            if now <= expires_at:
-                return owner
-            del self._owner_cache[hotkey_ss58]
+        with self._owner_cache_lock:
+            cached = self._owner_cache.get(hotkey_ss58)
+            if cached is not None:
+                expires_at, owner = cached
+                if now <= expires_at:
+                    return owner
+                self._owner_cache.pop(hotkey_ss58, None)
 
         subtensor = bt.Subtensor(network=self.network)
         try:
@@ -46,9 +49,11 @@ class BittensorSr25519InboundVerifier:
             return None
 
         resolved = str(owner)
-        if len(self._owner_cache) >= 1024:
-            self._owner_cache.clear()
-        self._owner_cache[hotkey_ss58] = (now + self.owner_cache_ttl_seconds, resolved)
+        expires_at = time.monotonic() + self.owner_cache_ttl_seconds
+        with self._owner_cache_lock:
+            if len(self._owner_cache) >= 1024:
+                self._owner_cache.clear()
+            self._owner_cache[hotkey_ss58] = (expires_at, resolved)
         return resolved
 
     def verify(

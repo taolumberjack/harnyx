@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -38,6 +39,9 @@ class HttpFeedSearchToolProvider:
         signature = self.hotkey.sign(canonical)
         return f'Bittensor ss58="{self.hotkey.ss58_address}",sig="{signature.hex()}"'
 
+    async def _signed_header_async(self, method: str, path_qs: str, body: bytes) -> str:
+        return await asyncio.to_thread(self._signed_header, method, path_qs, body)
+
     async def search_items(
         self,
         *,
@@ -55,7 +59,7 @@ class HttpFeedSearchToolProvider:
         }
         body = json.dumps(body_obj, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         headers = {
-            "Authorization": self._signed_header("POST", path, body),
+            "Authorization": await self._signed_header_async("POST", path, body),
             "Content-Type": "application/json",
             "Accept": "application/json",
         }

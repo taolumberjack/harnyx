@@ -7,7 +7,9 @@ import bittensor as bt
 import httpx
 import pytest
 
+import harnyx_validator.infrastructure.tools.feed_search_provider as feed_search_provider_module
 from harnyx_commons.bittensor import build_canonical_request
+from harnyx_validator.infrastructure.tools.feed_search_provider import HttpFeedSearchToolProvider
 from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
 
 _HEADER_PATTERN = re.compile(
@@ -112,3 +114,45 @@ def test_get_miner_task_batch_parses_tasks_and_artifacts() -> None:
     assert batch.tasks[0].query.text == "smoke"
     assert batch.tasks[0].reference_answer.text == "ok"
     assert batch.artifacts[0].artifact_id == artifact_id
+
+
+@pytest.mark.anyio
+async def test_feed_search_provider_offloads_signed_header_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    to_thread_calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    async def _record_to_thread(func: object, /, *args: object, **kwargs: object) -> object:
+        to_thread_calls.append((func, args, kwargs))
+        return func(*args, **kwargs)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        _assert_signed(request, keypair)
+        assert request.method == "POST"
+        assert request.url.path == "/v1/feeds/search"
+        return httpx.Response(status_code=200, json={"items": []})
+
+    monkeypatch.setattr(feed_search_provider_module.asyncio, "to_thread", _record_to_thread)
+    keypair = _keypair()
+    provider = HttpFeedSearchToolProvider(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(handler),
+    )
+
+    payload = await provider.search_items(
+        feed_id=uuid4(),
+        enqueue_seq=1,
+        search_queries=("demo",),
+        num_hit=2,
+    )
+
+    assert payload == {"items": []}
+    assert len(to_thread_calls) == 1
+    called_func, called_args, called_kwargs = to_thread_calls[0]
+    assert getattr(called_func, "__self__", None) is provider
+    assert getattr(called_func, "__func__", None) is HttpFeedSearchToolProvider._signed_header
+    assert called_args[0] == "POST"
+    assert called_args[1] == "/v1/feeds/search"
+    assert called_args[2]
+    assert called_kwargs == {}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,7 +10,6 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 import bittensor as bt
-from fastapi import Request
 
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.clients import CHUTES, DESEARCH, PLATFORM
@@ -398,11 +398,26 @@ def _make_control_provider(
     inbound_auth: BittensorSr25519InboundVerifier,
     progress_tracker: InMemoryRunProgress,
 ) -> Callable[[], ValidatorControlDeps]:
+    async def auth(
+        method: str,
+        path_qs: str,
+        body: bytes,
+        authorization_header: str | None,
+    ) -> str:
+        return await asyncio.to_thread(
+            _verify_request,
+            inbound_auth,
+            method=method,
+            path_qs=path_qs,
+            body=body,
+            authorization_header=authorization_header,
+        )
+
     def provider() -> ValidatorControlDeps:
         return ValidatorControlDeps(
             accept_batch=accept_batch,
             status_provider=status_provider,
-            auth=lambda request, body: _verify_request(inbound_auth, request, body),
+            auth=auth,
             progress_tracker=progress_tracker,
         )
 
@@ -597,15 +612,14 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
 
 def _verify_request(
     verifier: BittensorSr25519InboundVerifier,
-    request: Request,
+    *,
+    method: str,
+    path_qs: str,
     body: bytes,
+    authorization_header: str | None,
 ) -> str:
-    path = request.url.path or "/"
-    query = request.url.query
-    path_qs = f"{path}?{query}" if query else path
-    authorization_header = request.headers.get("authorization")
     return verifier.verify(
-        method=request.method,
+        method=method,
         path_qs=path_qs,
         body=body or b"",
         authorization_header=authorization_header,
