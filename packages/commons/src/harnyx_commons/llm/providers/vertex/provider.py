@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from anthropic import AnthropicVertex
+from anthropic import AsyncAnthropicVertex
 from google import genai
 from google.genai import errors, types
 
@@ -72,14 +71,15 @@ class VertexLlmProvider(BaseLlmProvider):
             api_version=_API_VERSION,
             timeout=int(http_timeout) if http_timeout is not None else None,
         )
-        self._client = genai.Client(
+        self._genai_client = genai.Client(
             vertexai=True,
             project=project,
             location=location,
             credentials=self._credentials,
             http_options=http_options,
         )
-        self._anthropic_client = AnthropicVertex(
+        self._genai_async_client = self._genai_client.aio
+        self._anthropic_client = AsyncAnthropicVertex(
             project_id=project,
             region=location,
             credentials=self._credentials,
@@ -90,21 +90,22 @@ class VertexLlmProvider(BaseLlmProvider):
         if is_claude_model(request.model):
             return await self._call_with_retry(
                 request,
-                call_coro=lambda: asyncio.to_thread(self._call_claude_anthropic, request),
+                call_coro=lambda: self._call_claude_anthropic(request),
                 verifier=self._verify_response,
                 classify_exception=self._classify_anthropic_exception,
             )
 
         return await self._call_with_retry(
             request,
-            call_coro=lambda: asyncio.to_thread(self._call_vertex_with_request, request),
+            call_coro=lambda: self._call_vertex_with_request(request),
             verifier=self._verify_response,
             classify_exception=self._classify_exception,
         )
 
     async def aclose(self) -> None:
-        self._client.close()
-        self._anthropic_client.close()
+        await self._genai_async_client.aclose()
+        self._genai_client.close()
+        await self._anthropic_client.close()
         cleanup_credentials_file(self._credentials_file, self._logger)
 
     def _tools_for(self, request: AbstractLlmRequest) -> tuple[list[Any] | None, types.ToolConfig | None]:
@@ -169,13 +170,13 @@ class VertexLlmProvider(BaseLlmProvider):
 
         return types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
 
-    def _call_vertex(
+    async def _call_vertex(
         self,
         request: AbstractLlmRequest,
         contents: list[Any],
         generation_config: types.GenerateContentConfig | None,
     ) -> LlmResponse:
-        response = self._client.models.generate_content(
+        response = await self._genai_async_client.models.generate_content(
             model=request.model,
             contents=contents,
             config=generation_config,
@@ -197,7 +198,7 @@ class VertexLlmProvider(BaseLlmProvider):
             finish_reason=primary_finish_reason,
         )
 
-    def _call_vertex_with_request(self, request: AbstractLlmRequest) -> LlmResponse:
+    async def _call_vertex_with_request(self, request: AbstractLlmRequest) -> LlmResponse:
         system_instruction, contents = normalize_messages(request.messages)
         tools, tool_config = self._tools_for(request)
         generation_config = self._build_generation_config(
@@ -206,9 +207,9 @@ class VertexLlmProvider(BaseLlmProvider):
             tools,
             tool_config,
         )
-        return self._call_vertex(request, contents, generation_config)
+        return await self._call_vertex(request, contents, generation_config)
 
-    def _call_claude_anthropic(self, request: AbstractLlmRequest) -> LlmResponse:
+    async def _call_claude_anthropic(self, request: AbstractLlmRequest) -> LlmResponse:
         system_content, messages = _anthropic_messages_from_request(request)
         model = normalize_claude_model(request.model)
 
@@ -252,7 +253,7 @@ class VertexLlmProvider(BaseLlmProvider):
 
         kwargs = base_kwargs | {k: v for k, v in optional_kwargs.items() if v is not None}
 
-        response = self._anthropic_client.messages.create(timeout=request.timeout_seconds or 900, **kwargs)
+        response = await self._anthropic_client.messages.create(timeout=request.timeout_seconds or 900, **kwargs)
         llm_response = build_anthropic_response(response)
 
         metadata = dict(llm_response.metadata or {})

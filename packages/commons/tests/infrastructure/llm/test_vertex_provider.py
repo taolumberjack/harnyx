@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -70,29 +71,69 @@ class FakeResponse:
         return {"text": self.text}
 
 
+@pytest.fixture(autouse=True)
+def anthropic_clients(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    created: list[Any] = []
+
+    class _FailingMessages:
+        async def create(self, **kwargs: Any) -> Any:
+            raise AssertionError(f"unexpected AsyncAnthropicVertex.messages.create call: {kwargs!r}")
+
+    class _FakeAsyncAnthropicVertex:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.messages = _FailingMessages()
+            self.closed = False
+            created.append(self)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(
+        "harnyx_commons.llm.providers.vertex.provider.AsyncAnthropicVertex",
+        _FakeAsyncAnthropicVertex,
+    )
+    return created
+
+
+def _patch_google_client(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: dict[str, Any],
+    *,
+    response_factory: Callable[[], Any] = FakeResponse,
+) -> None:
+    class _FakeAsyncModels:
+        async def generate_content(self, *, model: str, contents: Any, config: Any) -> Any:
+            latest = {
+                "model": model,
+                "contents": contents,
+                "config": config,
+            }
+            captured["model_call"] = latest
+            return response_factory()
+
+    class _FakeAsyncClient:
+        def __init__(self) -> None:
+            self.models = _FakeAsyncModels()
+
+        async def aclose(self) -> None:
+            captured["google_async_closed"] = True
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["client_kwargs"] = kwargs
+            self.aio = _FakeAsyncClient()
+
+        def close(self) -> None:
+            captured["google_sync_closed"] = True
+
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", _FakeClient)
+
+
 async def test_vertex_provider_invokes_generative_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {}
-
-    class FakeClient:
-        def __init__(self, **kwargs: Any) -> None:
-            captured["client_kwargs"] = kwargs
-            self.models = self._Models()
-
-        class _Models:
-            def __init__(self) -> None:
-                self.latest: dict[str, Any] = {}
-
-            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
-                self.latest = {
-                    "model": model,
-                    "contents": contents,
-                    "config": config,
-                }
-                captured["model_call"] = self.latest
-                return FakeResponse()
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    _patch_google_client(monkeypatch, captured)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -196,15 +237,11 @@ async def test_vertex_provider_raw_response_metadata_is_json_safe(monkeypatch: p
                 ],
             }
 
-    class FakeClient:
-        def __init__(self, **kwargs: Any) -> None:
-            self.models = self._Models()
-
-        class _Models:
-            def generate_content(self, *, model: str, contents: Any, config: Any) -> _RawResponseWithThoughtSignature:
-                return _RawResponseWithThoughtSignature()
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    _patch_google_client(
+        monkeypatch,
+        {},
+        response_factory=_RawResponseWithThoughtSignature,
+    )
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -244,19 +281,7 @@ async def test_vertex_provider_raw_response_metadata_is_json_safe(monkeypatch: p
 async def test_vertex_provider_normalizes_assistant_and_tool_roles(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {}
-
-    class FakeClient:
-        def __init__(self, **kwargs: Any) -> None:
-            self.models = self._Models()
-
-        class _Models:
-            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
-                captured["model"] = model
-                captured["contents"] = contents
-                captured["config"] = config
-                return FakeResponse()
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    _patch_google_client(monkeypatch, captured)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -288,7 +313,7 @@ async def test_vertex_provider_normalizes_assistant_and_tool_roles(monkeypatch: 
 
     await provider.invoke(request)
 
-    contents = captured["contents"]
+    contents = captured["model_call"]["contents"]
     assert [entry.role for entry in contents] == ["user", "model", "user"]
 
 
@@ -398,17 +423,7 @@ def test_vertex_codec_build_choices_preserves_signature_only_text_as_output() ->
 async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {"vertex_calls": 0, "anthropic_calls": 0}
-
-    class FakeClient:
-        def __init__(self, **kwargs: Any) -> None:
-            self.models = self._Models()
-
-        class _Models:
-            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
-                captured["vertex_calls"] += 1
-                return FakeResponse()
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    _patch_google_client(monkeypatch, captured)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -416,7 +431,7 @@ async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: py
         timeout=CHUTES.timeout_seconds,
     )
 
-    def fake_call_claude(request: Any) -> LlmResponse:
+    async def fake_call_claude(request: Any) -> LlmResponse:
         captured["anthropic_calls"] += 1
         captured["anthropic_model"] = request.model
         return LlmResponse(
@@ -455,7 +470,29 @@ async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: py
     assert response.raw_text == "ok"
 
     assert captured["anthropic_calls"] == 1
-    assert captured["vertex_calls"] == 0
+    assert "model_call" not in captured
+
+
+async def test_vertex_provider_aclose_closes_owned_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    anthropic_clients: list[Any],
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+        timeout=30.0,
+    )
+
+    await provider.aclose()
+
+    assert captured["google_async_closed"] is True
+    assert captured["google_sync_closed"] is True
+    assert len(anthropic_clients) == 1
+    assert anthropic_clients[0].closed is True
 
 
 def test_vertex_provider_writes_base64_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -489,11 +526,21 @@ def test_vertex_provider_writes_base64_credentials(monkeypatch: pytest.MonkeyPat
     class FakeClient:
         def __init__(self, **kwargs: Any) -> None:
             captured["client_kwargs"] = kwargs
-            self.models = self._Models()
+            self.aio = self._AsyncClient()
 
-        class _Models:
-            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
-                return FakeResponse()
+        def close(self) -> None:
+            captured["google_sync_closed"] = True
+
+        class _AsyncClient:
+            def __init__(self) -> None:
+                self.models = self._Models()
+
+            async def aclose(self) -> None:
+                return None
+
+            class _Models:
+                async def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
+                    return FakeResponse()
 
     monkeypatch.setattr("harnyx_commons.llm.providers.vertex.credentials.ServiceAccountCredentials", FakeCredentials)
     monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
@@ -518,18 +565,7 @@ def test_vertex_provider_writes_base64_credentials(monkeypatch: pytest.MonkeyPat
 async def test_vertex_provider_injects_google_search_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {}
-
-    class FakeClient:
-        def __init__(self, **kwargs: Any) -> None:
-            self.models = self._Models()
-
-        class _Models:
-            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
-                captured["model"] = model
-                captured["config"] = config
-                return FakeResponse()
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    _patch_google_client(monkeypatch, captured)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -552,7 +588,7 @@ async def test_vertex_provider_injects_google_search_tool(monkeypatch: pytest.Mo
 
     await provider.invoke(request)
 
-    config = captured["config"]
+    config = captured["model_call"]["config"]
     response_mime_type = config.response_mime_type
     assert response_mime_type is None
     assert config.tools
@@ -564,18 +600,7 @@ async def test_vertex_provider_injects_google_search_tool(monkeypatch: pytest.Mo
 async def test_vertex_provider_includes_provider_native_grounded_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {}
-
-    class FakeClient:
-        def __init__(self, **kwargs: Any) -> None:
-            self.models = self._Models()
-
-        class _Models:
-            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
-                captured["model"] = model
-                captured["config"] = config
-                return FakeResponse()
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    _patch_google_client(monkeypatch, captured)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -617,7 +642,7 @@ async def test_vertex_provider_includes_provider_native_grounded_tools(monkeypat
 
     await provider.invoke(request)
 
-    config = captured["config"]
+    config = captured["model_call"]["config"]
     assert config.tools
     assert len(config.tools) == 2
     assert config.tools[0].google_search is not None
@@ -633,19 +658,7 @@ async def test_vertex_provider_includes_provider_native_grounded_tools(monkeypat
 async def test_vertex_serializes_input_tool_result_as_function_response(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {}
-
-    class FakeClient:
-        def __init__(self, **kwargs: Any) -> None:
-            self.models = self._Models()
-
-        class _Models:
-            def generate_content(self, *, model: str, contents: Any, config: Any) -> FakeResponse:
-                captured["model"] = model
-                captured["contents"] = contents
-                captured["config"] = config
-                return FakeResponse()
-
-    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.genai.Client", FakeClient)
+    _patch_google_client(monkeypatch, captured)
 
     provider = VertexLlmProvider(
         project="demo-project",
@@ -675,7 +688,7 @@ async def test_vertex_serializes_input_tool_result_as_function_response(monkeypa
 
     await provider.invoke(request)
 
-    contents = captured["contents"]
+    contents = captured["model_call"]["contents"]
     assert contents
     part = contents[0].parts[0]
     function_response = part.function_response
