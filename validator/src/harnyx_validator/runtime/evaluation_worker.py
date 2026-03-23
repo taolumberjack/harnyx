@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.services.evaluation_batch import EvaluationBatchConfig, MinerTaskBatchService
+from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailedError
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
@@ -111,16 +112,27 @@ class EvaluationWorker:
                 await self._batch_service.process_async(batch)
                 if self._batch_tracker is not None:
                     self._batch_tracker.mark_completed(batch.batch_id)
+            except ValidatorBatchFailedError as exc:
+                capture_exception(exc)
+                if self._batch_tracker is not None:
+                    self._batch_tracker.mark_failed(batch.batch_id, error_code=exc.error_code)
+                logger.exception(
+                    "batch processing failed",
+                    extra={"batch_id": str(batch.batch_id), "error_code": exc.error_code},
+                )
+                if self._status is not None:
+                    self._status.state.last_error = exc.error_code
+                    self._status.state.running = False
             except Exception as exc:
                 capture_exception(exc)
                 if self._batch_tracker is not None:
-                    self._batch_tracker.mark_completed_if_recorded(batch.batch_id)
+                    self._batch_tracker.mark_failed(batch.batch_id, error_code="unexpected_batch_failure")
                 logger.exception(
                     "batch processing raised unexpectedly after service-owned recovery boundary",
                     extra={"batch_id": str(batch.batch_id)},
                 )
                 if self._status is not None:
-                    self._status.state.last_error = str(exc)
+                    self._status.state.last_error = "unexpected_batch_failure"
                     self._status.state.running = False
 
 

@@ -141,12 +141,13 @@ async def test_evaluation_worker_does_not_retry_incomplete_batch_after_service_b
         await worker.stop(timeout=1.0)
 
     assert len(fake_service.processed) == 1
-    assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
+    assert accept_batch.lifecycle_for(batch.batch_id) == "failed"
+    assert status.state.last_error == "unexpected_batch_failure"
     assert len(inbox) == 0
 
 
 @pytest.mark.anyio
-async def test_evaluation_worker_marks_batch_completed_when_pairs_are_already_recorded() -> None:
+async def test_evaluation_worker_marks_batch_failed_when_unexpected_error_happens_after_progress() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
     progress = ProgressSpy()
@@ -172,7 +173,8 @@ async def test_evaluation_worker_marks_batch_completed_when_pairs_are_already_re
     accept_batch.execute(batch)
 
     assert len(inbox) == 0
-    assert status.state.last_error == "worker boom"
+    assert accept_batch.lifecycle_for(batch.batch_id) == "failed"
+    assert status.state.last_error == "unexpected_batch_failure"
 
 
 @pytest.mark.anyio

@@ -23,7 +23,7 @@ from harnyx_commons.protocol_headers import (
     HOST_CONTAINER_URL_HEADER,
     SESSION_ID_HEADER,
 )
-from harnyx_commons.sandbox.client import SandboxClient
+from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
 
@@ -96,8 +96,13 @@ class HttpSandboxClient(SandboxClient):
                     "session_id": str(session_id),
                 },
             )
-            raise RuntimeError(
-                f"sandbox entrypoint request timed out: entrypoint={entrypoint} session_id={session_id}",
+            raise _sandbox_invoke_error(
+                status_code=504,
+                detail={"exception": "TimeoutException", "error": str(exc)},
+                message=(
+                    f"sandbox entrypoint request timed out: "
+                    f"entrypoint={entrypoint} session_id={session_id}"
+                ),
             ) from exc
         except httpx.RequestError as exc:  # pragma: no cover - network errors
             logger.error(
@@ -111,11 +116,17 @@ class HttpSandboxClient(SandboxClient):
                     "session_id": str(session_id),
                 },
             )
-            raise RuntimeError(
-                f"sandbox entrypoint request failed: entrypoint={entrypoint} session_id={session_id} error={exc}",
+            raise _sandbox_invoke_error(
+                status_code=0,
+                detail={"exception": exc.__class__.__name__, "error": str(exc)},
+                message=(
+                    f"sandbox entrypoint request failed: "
+                    f"entrypoint={entrypoint} session_id={session_id} error={exc}"
+                ),
             ) from exc
         except httpx.HTTPStatusError as exc:
-            detail = _summarize_response(exc.response)
+            detail_payload = _unwrap_response_detail(_response_json_or_text(exc.response))
+            detail = _parse_sandbox_response_detail(detail_payload)
             status = exc.response.status_code
             logger.error(
                 (
@@ -134,8 +145,12 @@ class HttpSandboxClient(SandboxClient):
                     "session_id": str(session_id),
                 },
             )
-            raise RuntimeError(
-                f"sandbox entrypoint request failed with status {status}: {detail}",
+            raise SandboxInvokeError(
+                f"sandbox entrypoint request failed with status {status}: {detail.raw}",
+                status_code=status,
+                detail_code=detail.code,
+                detail_exception=detail.exception,
+                detail_error=detail.error,
             ) from exc
         body = response.json()
         return _parse_sandbox_invoke_result(body)
@@ -160,20 +175,17 @@ class HttpSandboxClient(SandboxClient):
 
 
 def _summarize_response(response: httpx.Response) -> str:
-    try:
-        data = response.json()
-    except ValueError:
-        data = response.text
-    summary_payload = _parse_sandbox_response_summary(data)
-    summary_value = summary_payload.detail if summary_payload.detail is not None else summary_payload.raw
-    text = str(summary_value)
+    detail = _parse_sandbox_response_detail(_unwrap_response_detail(_response_json_or_text(response)))
+    text = str(detail.raw)
     return text if len(text) <= 500 else text[:500] + "…"
 
 
 @dataclass(frozen=True, slots=True)
-class _SandboxResponseSummary:
+class _SandboxResponseDetail:
     raw: object
-    detail: object | None
+    code: str | None
+    exception: str | None
+    error: str | None
 
 
 def _parse_sandbox_invoke_result(value: object) -> dict[str, JsonValue]:
@@ -182,11 +194,30 @@ def _parse_sandbox_invoke_result(value: object) -> dict[str, JsonValue]:
     return _require_json_object(result, label="sandbox response result must be a JSON object")
 
 
-def _parse_sandbox_response_summary(value: object) -> _SandboxResponseSummary:
-    data_mapping = _object_mapping_or_none(value)
-    if data_mapping is None:
-        return _SandboxResponseSummary(raw=value, detail=None)
-    return _SandboxResponseSummary(raw=value, detail=data_mapping.get("detail"))
+def _parse_sandbox_response_detail(value: object) -> _SandboxResponseDetail:
+    mapping = _object_mapping_or_none(value)
+    if mapping is None:
+        return _SandboxResponseDetail(raw=value, code=None, exception=None, error=None)
+    return _SandboxResponseDetail(
+        raw=value,
+        code=_as_optional_str(mapping.get("code")),
+        exception=_as_optional_str(mapping.get("exception")),
+        error=_as_optional_str(mapping.get("error")),
+    )
+
+
+def _unwrap_response_detail(value: object) -> object:
+    mapping = _object_mapping_or_none(value)
+    if mapping is None:
+        return value
+    return mapping.get("detail", value)
+
+
+def _response_json_or_text(response: httpx.Response) -> object:
+    try:
+        return response.json()
+    except ValueError:
+        return response.text
 
 
 def _object_mapping_or_none(value: object) -> dict[str, object] | None:
@@ -198,6 +229,30 @@ def _object_mapping_or_none(value: object) -> dict[str, object] | None:
             return None
         result[key] = item
     return result
+
+
+def _as_optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    return value
+
+
+def _sandbox_invoke_error(
+    *,
+    status_code: int,
+    detail: object,
+    message: str,
+) -> SandboxInvokeError:
+    parsed = _parse_sandbox_response_detail(detail)
+    return SandboxInvokeError(
+        message,
+        status_code=status_code,
+        detail_code=parsed.code,
+        detail_exception=parsed.exception,
+        detail_error=parsed.error,
+    )
 
 
 def _require_object_mapping(value: object, *, label: str) -> dict[str, object]:

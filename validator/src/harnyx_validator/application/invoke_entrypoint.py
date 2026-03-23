@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.application.ports.token_registry import TokenRegistryPort
 from harnyx_commons.domain.miner_task import Response
 from harnyx_commons.domain.session import Session, SessionStatus
 from harnyx_commons.errors import SessionBudgetExhaustedError
-from harnyx_commons.sandbox.client import SandboxClient
+from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
 from harnyx_validator.application.dto.evaluation import (
     EntrypointInvocationRequest,
     EntrypointInvocationResult,
@@ -21,6 +23,25 @@ QUERY_ENTRYPOINT = "query"
 
 class SandboxInvocationError(RuntimeError):
     """Raised when a sandbox entrypoint fails to execute."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int,
+        detail_code: str | None,
+        detail_exception: str | None,
+        detail_error: str | None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail_code = detail_code
+        self.detail_exception = detail_exception
+        self.detail_error = detail_error
+
+
+class MinerResponseValidationError(RuntimeError):
+    """Raised when miner output violates the response contract."""
 
 
 class EntrypointInvoker:
@@ -45,8 +66,12 @@ class EntrypointInvoker:
         payload = await self._invoke_query(request=request, session=session)
         self._raise_if_session_exhausted(session.session_id)
         receipts = tuple(self._receipts.for_session(session.session_id))
+        try:
+            response = Response.model_validate(payload, strict=True)
+        except ValidationError as exc:
+            raise MinerResponseValidationError("miner returned invalid response payload") from exc
         return EntrypointInvocationResult(
-            response=Response.model_validate(payload, strict=True),
+            response=response,
             tool_receipts=receipts,
         )
 
@@ -65,11 +90,28 @@ class EntrypointInvoker:
                 token=token,
                 session_id=session.session_id,
             )
+        except SandboxInvokeError as exc:
+            self._raise_if_session_exhausted(session.session_id, cause=exc)
+            identifier = f"session={session.session_id} uid={request.uid} entrypoint={QUERY_ENTRYPOINT}"
+            message = f"sandbox invocation failed ({identifier}): {exc}"
+            raise SandboxInvocationError(
+                message,
+                status_code=exc.status_code,
+                detail_code=exc.detail_code,
+                detail_exception=exc.detail_exception,
+                detail_error=exc.detail_error,
+            ) from exc
         except Exception as exc:
             self._raise_if_session_exhausted(session.session_id, cause=exc)
             identifier = f"session={session.session_id} uid={request.uid} entrypoint={QUERY_ENTRYPOINT}"
             message = f"sandbox invocation failed ({identifier}): {exc}"
-            raise SandboxInvocationError(message) from exc
+            raise SandboxInvocationError(
+                message,
+                status_code=0,
+                detail_code=None,
+                detail_exception=exc.__class__.__name__,
+                detail_error=str(exc),
+            ) from exc
 
     def _load_session(self, session_id: UUID) -> Session:
         session = self._sessions.get(session_id)
@@ -106,4 +148,9 @@ class EntrypointInvoker:
         return session
 
 
-__all__ = ["EntrypointInvoker", "SandboxClient", "SandboxInvocationError"]
+__all__ = [
+    "EntrypointInvoker",
+    "MinerResponseValidationError",
+    "SandboxClient",
+    "SandboxInvocationError",
+]

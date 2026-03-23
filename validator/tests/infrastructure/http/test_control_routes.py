@@ -42,9 +42,10 @@ def _create_test_app(provider: DemoControlDependencyProvider) -> FastAPI:
 
 
 class StubAcceptBatch:
-    def __init__(self, *, lifecycle: str | None = "processing") -> None:
+    def __init__(self, *, lifecycle: str | None = "processing", error_code: str | None = None) -> None:
         self.received_batch: MinerTaskBatchSpec | None = None
         self._lifecycle = lifecycle
+        self._error_code = error_code
 
     def execute(self, batch: object) -> None:
         if not isinstance(batch, MinerTaskBatchSpec):
@@ -55,6 +56,10 @@ class StubAcceptBatch:
     def lifecycle_for(self, batch_id: UUID) -> str | None:
         _ = batch_id
         return self._lifecycle
+
+    def error_code_for(self, batch_id: UUID) -> str | None:
+        _ = batch_id
+        return self._error_code
 
 
 class StubStatusProvider:
@@ -71,8 +76,14 @@ class FakeProgressTracker:
 
 
 class DemoControlDependencyProvider:
-    def __init__(self, *, snapshot: RunProgressSnapshot, lifecycle: str | None = "processing") -> None:
-        self.accept_batch = StubAcceptBatch(lifecycle=lifecycle)
+    def __init__(
+        self,
+        *,
+        snapshot: RunProgressSnapshot,
+        lifecycle: str | None = "processing",
+        error_code: str | None = None,
+    ) -> None:
+        self.accept_batch = StubAcceptBatch(lifecycle=lifecycle, error_code=error_code)
         self._deps = ValidatorControlDeps(
             accept_batch=self.accept_batch,
             status_provider=StubStatusProvider(),
@@ -440,6 +451,7 @@ def test_progress_endpoint_returns_unknown_for_unaccepted_batch() -> None:
     assert response.json() == {
         "batch_id": str(batch_id),
         "status": "unknown",
+        "error_code": None,
         "total": 0,
         "completed": 0,
         "remaining": 0,

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic import JsonValue as PydanticJsonValue
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
+from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import (
     ALLOWED_TOOL_MODELS,
@@ -21,7 +22,7 @@ from harnyx_commons.llm.pricing import (
     ToolModelName,
     parse_tool_model,
 )
-from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmTool
 from harnyx_commons.tools.desearch import (
     DeSearchAiDateFilter,
@@ -328,7 +329,10 @@ class RuntimeToolInvoker(ToolInvoker):
             max_output_tokens,
         )
 
-        llm_response = await self._llm_provider.invoke(request)
+        try:
+            llm_response = await self._llm_provider.invoke(request)
+        except LlmRetryExhaustedError as exc:
+            raise ToolProviderError("tool provider failed") from exc
         return cast(JsonObject, llm_response.to_payload())
 
     def _parse_invocation(

@@ -33,7 +33,10 @@ from harnyx_validator.application.services.evaluation_batch_prep import (
     EvaluationBatchConfig,
     RunContext,
 )
-from harnyx_validator.application.services.evaluation_runner import EvaluationRunner
+from harnyx_validator.application.services.evaluation_runner import (
+    EvaluationRunner,
+    ValidatorBatchFailedError,
+)
 from harnyx_validator.application.status import StatusProvider
 
 logger = logging.getLogger("harnyx_validator.miner_task_batch")
@@ -132,20 +135,13 @@ class MinerTaskBatchService:
         try:
             run_ctx = self._planner.build_run_context(batch)
             batch_result, elapsed = await self._execute_batch(run_ctx, batch)
+        except ValidatorBatchFailedError:
+            raise
         except Exception as exc:
-            batch_result = MinerTaskBatchRunResult(
-                batch_id=batch.batch_id,
-                tasks=batch.tasks,
-                runs=tuple(
-                    await self._failure_recorder.record_failure_for_missing_pairs(
-                        batch=batch,
-                        error_code="batch_execution_failed",
-                        error_message=str(exc),
-                    )
-                ),
-            )
-            self._complete_batch(batch.batch_id, batch_result, 0.0)
-            return
+            raise ValidatorBatchFailedError(
+                error_code="batch_execution_failed",
+                message=str(exc),
+            ) from exc
         self._complete_batch(run_ctx.batch_id, batch_result, elapsed)
 
     def process(self, batch: MinerTaskBatchSpec) -> None:

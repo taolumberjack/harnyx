@@ -17,7 +17,6 @@ from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskBatchRunResult,
-    MinerTaskRunSubmission,
     ScriptArtifactSpec,
 )
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
@@ -27,6 +26,7 @@ from harnyx_validator.application.ports.subtensor import SubtensorClientPort
 from harnyx_validator.application.services.evaluation_runner import (
     LOCAL_RETRY_ATTEMPTS,
     EvaluationRunner,
+    ValidatorBatchFailedError,
 )
 
 SandboxOptionsFactory = Callable[[ScriptArtifactSpec], SandboxOptions]
@@ -106,14 +106,10 @@ class EvaluationScheduler:
                 "starting miner task run for artifact",
                 extra={"uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
             )
-            deployment, terminal_failures = await self._start_artifact_with_retry(
+            deployment = await self._start_artifact_with_retry(
                 batch_id=batch_id,
                 artifact=artifact,
-                remaining_tasks=remaining_tasks,
             )
-            submissions.extend(terminal_failures)
-            if deployment is None:
-                continue
 
             try:
                 orchestrator = self._make_orchestrator(deployment.client)
@@ -144,8 +140,7 @@ class EvaluationScheduler:
         *,
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
-        remaining_tasks: Sequence[MinerTask],
-    ) -> tuple[SandboxDeployment | None, list[MinerTaskRunSubmission]]:
+    ) -> SandboxDeployment:
         last_error_code = ""
         last_error_message = ""
         for attempt_number in range(1, LOCAL_RETRY_ATTEMPTS + 1):
@@ -171,7 +166,7 @@ class EvaluationScheduler:
                 break
 
             try:
-                return await asyncio.to_thread(self._sandboxes.start, options), []
+                return await asyncio.to_thread(self._sandboxes.start, options)
             except Exception as exc:
                 last_error_code = "sandbox_start_failed"
                 last_error_message = str(exc)
@@ -191,14 +186,10 @@ class EvaluationScheduler:
                 )
                 break
 
-        failures = await self._runner.record_failure_for_artifact(
-            batch_id=batch_id,
-            artifact=artifact,
-            tasks=remaining_tasks,
-            error_code=last_error_code,
-            error_message=last_error_message,
+        raise ValidatorBatchFailedError(
+            error_code=last_error_code or "artifact_setup_failed",
+            message=last_error_message or "artifact setup failed",
         )
-        return None, failures
 
     def _log_artifact_retry(
         self,

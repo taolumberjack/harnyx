@@ -18,6 +18,12 @@ class SessionStatus(StrEnum):
     COMPLETED = "completed"
 
 
+class SessionFailureCode(StrEnum):
+    """Transient execution markers attached to a live session."""
+
+    TOOL_PROVIDER_FAILED = "tool_provider_failed"
+
+
 @dataclass(frozen=True, slots=True)
 class LlmUsageTotals:
     """Accumulated token usage for a single provider/model pair."""
@@ -114,6 +120,9 @@ class Session:
     hard_limit_usd: float | None = None
     usage: SessionUsage = field(default_factory=SessionUsage)
     status: SessionStatus = SessionStatus.ACTIVE
+    active_attempt: int = 0
+    failure_code: SessionFailureCode | None = None
+    failure_attempt: int | None = None
 
     def __post_init__(self) -> None:
         if self.uid <= 0:
@@ -126,6 +135,16 @@ class Session:
             raise ValueError("hard_limit_usd must be non-negative")
         if self.effective_hard_limit_usd < self.budget_usd:
             raise ValueError("hard_limit_usd must be greater than or equal to budget_usd")
+        if self.active_attempt < 0:
+            raise ValueError("active_attempt must be non-negative")
+        if self.failure_code is None and self.failure_attempt is not None:
+            raise ValueError("failure_attempt requires failure_code")
+        if self.failure_code is not None and self.failure_attempt is None:
+            raise ValueError("failure_code requires failure_attempt")
+        if self.failure_attempt is not None and self.failure_attempt < 0:
+            raise ValueError("failure_attempt must be non-negative")
+        if self.failure_attempt is not None and self.failure_attempt > self.active_attempt:
+            raise ValueError("failure_attempt must not exceed active_attempt")
 
     @property
     def effective_hard_limit_usd(self) -> float:
@@ -148,6 +167,36 @@ class Session:
         """Mark the session as completed."""
         return replace(self, status=SessionStatus.COMPLETED)
 
+    def begin_attempt(self) -> Session:
+        """Advance to the next retry attempt and clear any stale failure marker."""
+        return replace(
+            self,
+            active_attempt=self.active_attempt + 1,
+            failure_code=None,
+            failure_attempt=None,
+        )
+
+    def mark_failure_code(self, failure_code: SessionFailureCode) -> Session:
+        """Return a session annotated with a transient execution failure marker."""
+        return replace(
+            self,
+            failure_code=failure_code,
+            failure_attempt=self.active_attempt,
+        )
+
+    def clear_failure_code(self) -> Session:
+        """Return a session with any transient execution failure marker removed."""
+        return replace(self, failure_code=None, failure_attempt=None)
+
+    def consume_failure_code(self) -> tuple[Session, SessionFailureCode | None]:
+        """Return and clear the current-attempt failure marker, if present."""
+        if self.failure_code is None:
+            return self, None
+        if self.failure_attempt != self.active_attempt:
+            return self.clear_failure_code(), None
+        code = self.failure_code
+        return self.clear_failure_code(), code
+
     def with_usage(self, usage: SessionUsage) -> Session:
         """Return a session with updated usage counters."""
         return replace(self, usage=usage)
@@ -156,6 +205,7 @@ class Session:
 __all__ = [
     "LlmUsageTotals",
     "Session",
+    "SessionFailureCode",
     "SessionUsage",
     "SessionStatus",
 ]

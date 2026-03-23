@@ -12,8 +12,13 @@ from harnyx_commons.domain.miner_task import Query, Response
 from harnyx_commons.domain.tool_call import ReceiptMetadata, ToolCall, ToolCallOutcome
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.sandbox.client import SandboxInvokeError
 from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest
-from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker, SandboxClient
+from harnyx_validator.application.invoke_entrypoint import (
+    EntrypointInvoker,
+    SandboxClient,
+    SandboxInvocationError,
+)
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -241,3 +246,29 @@ async def test_invoke_entrypoint_raises_exhausted_when_sandbox_errors_after_exha
                 query=Query(text="demo"),
             ),
         )
+
+
+async def test_invoke_entrypoint_preserves_structured_sandbox_error_metadata() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
+    sandbox.raise_error = SandboxInvokeError(
+        "sandbox entrypoint request failed with status 500: {'code': 'UnhandledException'}",
+        status_code=500,
+        detail_code="UnhandledException",
+        detail_exception="KeyError",
+        detail_error="missing key",
+    )
+
+    with pytest.raises(SandboxInvocationError) as exc_info:
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                query=Query(text="demo"),
+            ),
+        )
+
+    assert exc_info.value.detail_code == "UnhandledException"
+    assert exc_info.value.detail_exception == "KeyError"
+    assert exc_info.value.detail_error == "missing key"

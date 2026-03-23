@@ -16,6 +16,7 @@ from opentelemetry.trace import SpanKind
 from opentelemetry.util.types import AttributeValue
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
+from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from harnyx_commons.tools.desearch_ai_protocol import (
     DeSearchAiDocsResponse,
@@ -151,7 +152,7 @@ class DeSearchClient:
         params = request.to_query_params()
         data = await self._get("web", params)
         if data is None:
-            raise RuntimeError("desearch web search returned empty response")
+            raise ToolProviderError("tool provider failed")
         return SearchWebSearchResponse.model_validate(data)
 
     async def search_links_twitter(
@@ -161,7 +162,7 @@ class DeSearchClient:
         params = request.to_query_params()
         data = await self._get("twitter", params)
         if data is None:
-            raise RuntimeError("desearch twitter search returned empty response")
+            raise ToolProviderError("tool provider failed")
         response = SearchXSearchResponse.model_validate(data)
         self._log_search_links_twitter_summary(request, response)
         return response
@@ -339,7 +340,7 @@ class DeSearchClient:
         payload = {key: value for key, value in payload_items.items() if value is not None}
         data = await self._post("desearch/ai/search", payload, expect_data=False)
         if data is None:
-            raise RuntimeError("desearch ai_search returned empty response")
+            raise ToolProviderError("tool provider failed")
         return data
 
     async def ai_search_twitter_posts(
@@ -440,7 +441,7 @@ class DeSearchClient:
                                     await self._sleep(attempt)
                                     continue
                                 span.set_attributes({"desearch.error": "missing_data"})
-                                raise RuntimeError("desearch returned missing data")
+                                raise ToolProviderError("tool provider failed")
                             if self._empty_payload(data):
                                 if self._should_retry(attempt):
                                     reasons.append("empty_data")
@@ -525,13 +526,13 @@ class DeSearchClient:
                                     "desearch.error": f"http_{status}",
                                 }
                             )
-                            raise RuntimeError(f"desearch request failed with status {status}") from exc
+                            raise ToolProviderError("tool provider failed") from exc
                         await self._sleep(attempt)
                     except httpx.HTTPError as exc:  # pragma: no cover
                         reasons.append(exc.__class__.__name__)
                         if not self._should_retry(attempt):
                             span.set_attributes({"desearch.error": exc.__class__.__name__})
-                            raise RuntimeError(f"desearch request error: {exc}") from exc
+                            raise ToolProviderError("tool provider failed") from exc
                         await self._sleep(attempt)
             finally:
                 final_attributes: dict[str, AttributeValue] = {
@@ -543,7 +544,7 @@ class DeSearchClient:
                     final_attributes["desearch.retry_reasons"] = tuple(reasons)
                 span.set_attributes(final_attributes)
 
-        raise RuntimeError(f"desearch request failed after {self._retry_policy.attempts} attempts: {reasons}")
+        raise ToolProviderError("tool provider failed")
 
     async def _send(
         self,

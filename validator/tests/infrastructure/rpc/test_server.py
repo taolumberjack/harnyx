@@ -6,7 +6,9 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.application.session_manager import SessionManager
+from harnyx_commons.domain.session import Session, SessionFailureCode, SessionStatus, SessionUsage
+from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.executor import ToolExecutor
@@ -82,6 +84,7 @@ class DemoDependencyProvider:
         )
         self.session_registry.create(self.session)
         self.tokens.register(self.session.session_id, DEMO_SESSION_TOKEN)
+        self.session_manager = SessionManager(self.session_registry, self.tokens)
 
         usage_tracker = UsageTracker()
         tool_invoker = RecordingToolInvoker()
@@ -100,6 +103,7 @@ class DemoDependencyProvider:
         self.dependencies = ToolRouteDeps(
             tool_executor=self.tool_executor,
             token_semaphore=self.token_semaphore,
+            session_manager=self.session_manager,
         )
 
     def __call__(self) -> ToolRouteDeps:
@@ -168,6 +172,7 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     provider.dependencies = ToolRouteDeps(
         tool_executor=_FailingToolExecutor(),
         token_semaphore=provider.token_semaphore,
+        session_manager=provider.session_manager,
     )
     app = create_test_app(provider)
     client = TestClient(app)
@@ -188,6 +193,38 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     assert response.status_code == 400
     assert provider.token_semaphore.release_calls == [DEMO_SESSION_TOKEN]
     assert provider.token_semaphore.in_flight(DEMO_SESSION_TOKEN) == 0
+
+
+def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> None:
+    provider = DemoDependencyProvider()
+    provider.session_manager.begin_attempt(provider.session.session_id)
+    provider.dependencies = ToolRouteDeps(
+        tool_executor=_ProviderFailingToolExecutor(),
+        token_semaphore=provider.token_semaphore,
+        session_manager=provider.session_manager,
+    )
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "tool execution failed"}
+    stored = provider.session_registry.get(provider.session.session_id)
+    assert stored is not None
+    assert stored.failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED
+    assert stored.failure_attempt == stored.active_attempt == 1
 
 
 def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None:
@@ -218,3 +255,8 @@ def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None
 class _FailingToolExecutor:
     async def execute(self, _: object) -> object:
         raise RuntimeError("expected failure")
+
+
+class _ProviderFailingToolExecutor:
+    async def execute(self, _: object) -> object:
+        raise ToolProviderError("provider failed")

@@ -12,13 +12,14 @@ from harnyx_validator.application.ports.progress import ProgressRecorder
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 
-BatchLifecycle = Literal["queued", "processing", "completed"]
+BatchLifecycle = Literal["queued", "processing", "completed", "failed"]
 
 
 @dataclass(frozen=True, slots=True)
 class _AcceptedBatchState:
     batch: MinerTaskBatchSpec
     lifecycle: BatchLifecycle
+    error_code: str | None = None
 
 
 @dataclass(slots=True)
@@ -52,17 +53,12 @@ class AcceptEvaluationBatch:
             state = self._require_state(batch_id)
             if not self._all_pairs_recorded(state.batch):
                 raise RuntimeError("cannot mark batch completed before all pairs are recorded")
-            self._accepted_batches[batch_id] = replace(state, lifecycle="completed")
+            self._accepted_batches[batch_id] = replace(state, lifecycle="completed", error_code=None)
 
-    def mark_completed_if_recorded(self, batch_id: UUID) -> bool:
+    def mark_failed(self, batch_id: UUID, *, error_code: str) -> None:
         with self._lock:
             state = self._require_state(batch_id)
-            if state.lifecycle != "processing":
-                raise RuntimeError("can only complete a batch from processing")
-            if not self._all_pairs_recorded(state.batch):
-                return False
-            self._accepted_batches[batch_id] = replace(state, lifecycle="completed")
-            return True
+            self._accepted_batches[batch_id] = replace(state, lifecycle="failed", error_code=error_code)
 
     def lifecycle_for(self, batch_id: UUID) -> BatchLifecycle | None:
         with self._lock:
@@ -70,6 +66,13 @@ class AcceptEvaluationBatch:
             if state is None:
                 return None
             return state.lifecycle
+
+    def error_code_for(self, batch_id: UUID) -> str | None:
+        with self._lock:
+            state = self._accepted_batches.get(batch_id)
+            if state is None:
+                return None
+            return state.error_code
 
     def _queue_new_batch(self, batch: MinerTaskBatchSpec) -> None:
         self._accepted_batches[batch.batch_id] = _AcceptedBatchState(batch=batch, lifecycle="queued")
@@ -82,7 +85,7 @@ class AcceptEvaluationBatch:
     def _set_lifecycle(self, batch_id: UUID, lifecycle: BatchLifecycle) -> None:
         with self._lock:
             state = self._require_state(batch_id)
-            self._accepted_batches[batch_id] = replace(state, lifecycle=lifecycle)
+            self._accepted_batches[batch_id] = replace(state, lifecycle=lifecycle, error_code=None)
 
     def _require_state(self, batch_id: UUID) -> _AcceptedBatchState:
         state = self._accepted_batches.get(batch_id)

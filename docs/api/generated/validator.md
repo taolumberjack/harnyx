@@ -92,6 +92,7 @@ Body: [ProgressResponse](#model-progressresponse)
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` |
 | `completed` |  |  | req | `integer` |
+| `error_code` |  |  | opt | `string` (nullable) |
 | `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
 |  | `run` |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
@@ -122,6 +123,7 @@ Body: [ProgressResponse](#model-progressresponse)
 |  | `validator` |  | req | [ValidatorModel](#model-validatormodel) |
 |  |  | `uid` | req | `integer` |
 | `remaining` |  |  | req | `integer` |
+| `status` |  |  | req | `string` (enum: [unknown, queued, processing, completed, failed]) |
 | `total` |  |  | req | `integer` |
 
 `422` Validation Error
@@ -872,6 +874,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | --- | --- | --- | --- | --- |
 | `batch_id` |  |  | req | `string` |
 | `completed` |  |  | req | `integer` |
+| `error_code` |  |  | opt | `string` (nullable) |
 | `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
 |  | `run` |  | req | [MinerTaskRunModel](#model-minertaskrunmodel) |
@@ -902,6 +905,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `validator` |  | req | [ValidatorModel](#model-validatormodel) |
 |  |  | `uid` | req | `integer` |
 | `remaining` |  |  | req | `integer` |
+| `status` |  |  | req | `string` (enum: [unknown, queued, processing, completed, failed]) |
 | `total` |  |  | req | `integer` |
 
 <details>
@@ -921,6 +925,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "title": "Completed",
       "type": "integer"
     },
+    "error_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error Code"
+    },
     "miner_task_runs": {
       "items": {
         "$ref": "#/components/schemas/MinerTaskRunSubmissionModel"
@@ -933,6 +948,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "title": "Remaining",
       "type": "integer"
     },
+    "status": {
+      "enum": [
+        "unknown",
+        "queued",
+        "processing",
+        "completed",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
     "total": {
       "minimum": 0.0,
       "title": "Total",
@@ -941,6 +967,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   },
   "required": [
     "batch_id",
+    "status",
     "total",
     "completed",
     "remaining",

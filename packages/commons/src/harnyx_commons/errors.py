@@ -23,10 +23,15 @@ class ConcurrencyLimitError(RuntimeError):
     """Raised when a token exceeds its permitted parallel call allowance."""
 
 
+class ToolProviderError(RuntimeError):
+    """Raised when a tool's backing provider fails after retry exhaustion."""
+
+
 __all__ = [
     "SandboxError",
     "MissingEntrypointError",
     "BudgetExceededError",
     "SessionBudgetExhaustedError",
     "ConcurrencyLimitError",
+    "ToolProviderError",
 ]

@@ -16,7 +16,7 @@ from harnyx_commons.domain.miner_task import (
     Response,
     ScoreBreakdown,
 )
-from harnyx_commons.domain.session import SessionStatus
+from harnyx_commons.domain.session import SessionFailureCode, SessionStatus
 from harnyx_commons.domain.tool_call import ReceiptMetadata, ToolCall, ToolCallOutcome
 from harnyx_commons.domain.tool_usage import SearchToolUsageSummary, ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
@@ -32,7 +32,10 @@ from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
 from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
 from harnyx_validator.application.scheduler import SchedulerConfig
-from harnyx_validator.application.services.evaluation_runner import EvaluationRunner
+from harnyx_validator.application.services.evaluation_runner import (
+    EvaluationRunner,
+    ValidatorBatchFailedError,
+)
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
@@ -98,6 +101,23 @@ def _search_usage(receipt_log: FakeReceiptLog, session_id) -> ToolUsageSummary:
     )
 
 
+def _sandbox_invocation_error(
+    message: str,
+    *,
+    status_code: int = 0,
+    detail_code: str | None = None,
+    detail_exception: str = "RuntimeError",
+    detail_error: str | None = None,
+) -> SandboxInvocationError:
+    return SandboxInvocationError(
+        message,
+        status_code=status_code,
+        detail_code=detail_code,
+        detail_exception=detail_exception,
+        detail_error=detail_error or message,
+    )
+
+
 class _ExhaustingOrchestrator:
     def __init__(
         self,
@@ -157,7 +177,7 @@ class _RetryThenSuccessOrchestrator:
             cost_usd=0.25,
         )
         if self.calls == 1:
-            raise SandboxInvocationError("transient sandbox failure")
+            raise _sandbox_invocation_error("transient sandbox failure")
         details = EvaluationDetails(
             score_breakdown=ScoreBreakdown(
                 comparison_score=1.0,
@@ -234,9 +254,142 @@ class _RetryThenExhaustedOrchestrator:
                 issued_at=datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
                 cost_usd=0.04,
             )
-            raise SandboxInvocationError("transient sandbox failure")
+            raise _sandbox_invocation_error("transient sandbox failure")
         self._sessions.update(session.mark_exhausted())
         raise SessionBudgetExhaustedError("session exhausted during retry")
+
+
+class _ProviderMarkerThenSandboxFailureOrchestrator:
+    def __init__(self, *, sessions: FakeSessionRegistry) -> None:
+        self._sessions = sessions
+        self.calls = 0
+
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        self.calls += 1
+        session = self._sessions.get(request.session_id)
+        assert session is not None
+        if self.calls == 1:
+            self._sessions.update(session.mark_failure_code(SessionFailureCode.TOOL_PROVIDER_FAILED))
+            raise _sandbox_invocation_error("tool route failed")
+        raise _sandbox_invocation_error("plain sandbox failure")
+
+
+class _ProviderMarkerThenSuccessOrchestrator:
+    def __init__(
+        self,
+        *,
+        sessions: FakeSessionRegistry,
+        receipt_log: FakeReceiptLog,
+    ) -> None:
+        self._sessions = sessions
+        self._receipt_log = receipt_log
+        self.calls = 0
+        self.session_ids: list = []
+
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        self.calls += 1
+        self.session_ids.append(request.session_id)
+        session = self._sessions.get(request.session_id)
+        assert session is not None
+        _record_receipt(
+            self._receipt_log,
+            session_id=request.session_id,
+            uid=request.uid,
+            receipt_id=f"provider-success-{self.calls}",
+            issued_at=datetime(2025, 10, 17, 12, self.calls, tzinfo=UTC),
+            cost_usd=0.25,
+        )
+        if self.calls == 1:
+            self._sessions.update(session.mark_failure_code(SessionFailureCode.TOOL_PROVIDER_FAILED))
+        details = EvaluationDetails(
+            score_breakdown=ScoreBreakdown(
+                comparison_score=1.0,
+                similarity_score=0.5,
+                total_score=0.75,
+                scoring_version="v1",
+            ),
+            total_tool_usage=_search_usage(self._receipt_log, request.session_id),
+        )
+        self._receipt_log.clear_session(request.session_id)
+        return TaskRunOutcome(
+            run=MinerTaskRun(
+                session_id=request.session_id,
+                uid=request.uid,
+                artifact_id=request.artifact_id,
+                task_id=request.task.task_id,
+                response=Response(text="answer"),
+                details=details,
+                completed_at=datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
+            ),
+            usage=TokenUsageSummary.empty(),
+        )
+
+
+class _RepeatedProviderMarkerOrchestrator:
+    def __init__(self, *, sessions: FakeSessionRegistry, receipt_log: FakeReceiptLog) -> None:
+        self._sessions = sessions
+        self._receipt_log = receipt_log
+        self.calls = 0
+
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        self.calls += 1
+        session = self._sessions.get(request.session_id)
+        assert session is not None
+        _record_receipt(
+            self._receipt_log,
+            session_id=request.session_id,
+            uid=request.uid,
+            receipt_id=f"provider-repeat-{self.calls}",
+            issued_at=datetime(2025, 10, 17, 12, self.calls, tzinfo=UTC),
+            cost_usd=0.25,
+        )
+        self._sessions.update(session.mark_failure_code(SessionFailureCode.TOOL_PROVIDER_FAILED))
+        details = EvaluationDetails(
+            score_breakdown=ScoreBreakdown(
+                comparison_score=1.0,
+                similarity_score=0.5,
+                total_score=0.75,
+                scoring_version="v1",
+            ),
+            total_tool_usage=_search_usage(self._receipt_log, request.session_id),
+        )
+        self._receipt_log.clear_session(request.session_id)
+        return TaskRunOutcome(
+            run=MinerTaskRun(
+                session_id=request.session_id,
+                uid=request.uid,
+                artifact_id=request.artifact_id,
+                task_id=request.task.task_id,
+                response=Response(text="answer"),
+                details=details,
+                completed_at=datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
+            ),
+            usage=TokenUsageSummary.empty(),
+        )
+
+
+class _RepeatedProviderMarkerSandboxFailureOrchestrator:
+    def __init__(self, *, sessions: FakeSessionRegistry) -> None:
+        self._sessions = sessions
+        self.calls = 0
+
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        self.calls += 1
+        session = self._sessions.get(request.session_id)
+        assert session is not None
+        self._sessions.update(session.mark_failure_code(SessionFailureCode.TOOL_PROVIDER_FAILED))
+        raise _sandbox_invocation_error("tool route failed")
+
+
+class _UnhandledMinerCrashOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "sandbox invocation failed (...)",
+            status_code=500,
+            detail_code="UnhandledException",
+            detail_exception="KeyError",
+            detail_error="missing key",
+        )
 
 
 async def test_evaluation_runner_records_exhausted_submission() -> None:
@@ -347,7 +500,7 @@ async def test_evaluation_runner_retries_transient_invocation_with_same_session_
     assert evaluation_store.records == [submission]
 
 
-async def test_evaluation_runner_does_not_retry_generic_post_invoke_failure() -> None:
+async def test_evaluation_runner_fails_batch_on_generic_post_invoke_failure() -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -378,24 +531,17 @@ async def test_evaluation_runner_does_not_retry_generic_post_invoke_failure() ->
         receipt_log=receipt_log,
     )
 
-    submissions = await runner.evaluate_artifact(
-        batch_id=uuid4(),
-        artifact=artifact,
-        tasks=(task,),
-        orchestrator=cast(TaskRunOrchestrator, orchestrator),
-    )
+    with pytest.raises(ValidatorBatchFailedError, match="scoring failed") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, orchestrator),
+        )
 
+    assert exc_info.value.error_code == "unexpected_validator_failure"
     assert orchestrator.calls == 1
-    assert len(submissions) == 1
-    submission = submissions[0]
-    assert submission.score == 0.0
-    assert submission.run.details.error == EvaluationError(
-        code="task_run_failed",
-        message="scoring failed",
-    )
-    assert submission.run.details.total_tool_usage.search_tool.call_count == 1
-    assert submission.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.25)
-    assert evaluation_store.records == [submission]
+    assert evaluation_store.records == []
 
 
 async def test_evaluation_runner_records_budget_exhausted_when_retry_starts_near_limit() -> None:
@@ -453,3 +599,218 @@ async def test_evaluation_runner_records_budget_exhausted_when_retry_starts_near
     assert submission.run.details.total_tool_usage.search_tool.call_count == 1
     assert submission.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.04)
     assert evaluation_store.records == [submission]
+
+
+async def test_evaluation_runner_retries_when_success_path_consumes_provider_marker() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="provider marker success"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    orchestrator = _ProviderMarkerThenSuccessOrchestrator(
+        sessions=session_registry,
+        receipt_log=receipt_log,
+    )
+
+    submissions = await runner.evaluate_artifact(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, orchestrator),
+    )
+
+    assert orchestrator.calls == 2
+    assert len(submissions) == 1
+    assert submissions[0].score == pytest.approx(0.75)
+    assert evaluation_store.records == submissions
+
+
+async def test_evaluation_runner_returns_tool_provider_failed_after_retry_exhaustion() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="provider marker repeat"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    orchestrator = _RepeatedProviderMarkerOrchestrator(
+        sessions=session_registry,
+        receipt_log=receipt_log,
+    )
+
+    with pytest.raises(ValidatorBatchFailedError, match="tool provider failed") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, orchestrator),
+        )
+
+    assert exc_info.value.error_code == "tool_provider_failed"
+    assert orchestrator.calls == 2
+    assert evaluation_store.records == []
+
+
+async def test_evaluation_runner_prefers_provider_marker_over_sandbox_error() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="provider marker sandbox failure"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    orchestrator = _RepeatedProviderMarkerSandboxFailureOrchestrator(sessions=session_registry)
+
+    with pytest.raises(ValidatorBatchFailedError, match="tool provider failed") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, orchestrator),
+        )
+
+    assert exc_info.value.error_code == "tool_provider_failed"
+    assert orchestrator.calls == 2
+    assert evaluation_store.records == []
+
+
+async def test_evaluation_runner_records_zero_score_for_unhandled_miner_exception() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=_ClockSequence(
+            datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
+        ),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="miner crash"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    submissions = await runner.evaluate_artifact(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, _UnhandledMinerCrashOrchestrator()),
+    )
+
+    assert len(submissions) == 1
+    submission = submissions[0]
+    assert submission.score == 0.0
+    assert submission.run.details.error is not None
+    assert submission.run.details.error.code == "miner_unhandled_exception"
+    assert evaluation_store.records == [submission]
+
+
+async def test_evaluation_runner_does_not_let_stale_provider_marker_poison_later_attempt() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="provider marker"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    orchestrator = _ProviderMarkerThenSandboxFailureOrchestrator(sessions=session_registry)
+
+    with pytest.raises(ValidatorBatchFailedError, match="plain sandbox failure") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, orchestrator),
+        )
+
+    assert exc_info.value.error_code == "sandbox_invocation_failed"
+    assert orchestrator.calls == 2
+    assert evaluation_store.records == []

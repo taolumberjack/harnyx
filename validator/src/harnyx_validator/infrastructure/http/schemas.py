@@ -163,7 +163,8 @@ class ProgressResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
     batch_id: str = Field(min_length=1)
-    status: Literal["unknown", "queued", "processing", "completed"]
+    status: Literal["unknown", "queued", "processing", "completed", "failed"]
+    error_code: str | None = None
     total: int = Field(ge=0)
     completed: int = Field(ge=0)
     remaining: int = Field(ge=0)

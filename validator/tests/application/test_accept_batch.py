@@ -136,7 +136,7 @@ def test_accept_batch_duplicate_processing_replay_becomes_completed_when_all_pai
     assert progress.register_attempts == [batch]
 
 
-def test_accept_batch_complete_if_recorded_leaves_processing_when_pairs_are_missing() -> None:
+def test_accept_batch_mark_completed_rejects_when_pairs_are_missing() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
     progress = ProgressSpy()
@@ -148,15 +148,14 @@ def test_accept_batch_complete_if_recorded_leaves_processing_when_pairs_are_miss
     status.state.queued_batches = len(inbox)
     accept_batch.mark_processing(batch.batch_id)
 
-    completed = accept_batch.mark_completed_if_recorded(batch.batch_id)
-
-    assert completed is False
+    with pytest.raises(RuntimeError, match="cannot mark batch completed before all pairs are recorded"):
+        accept_batch.mark_completed(batch.batch_id)
     assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
     assert len(inbox) == 0
     assert status.state.queued_batches == 0
 
 
-def test_accept_batch_complete_if_recorded_marks_completed_when_all_pairs_are_recorded() -> None:
+def test_accept_batch_mark_completed_marks_completed_when_all_pairs_are_recorded() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
     progress = ProgressSpy()
@@ -169,9 +168,7 @@ def test_accept_batch_complete_if_recorded_marks_completed_when_all_pairs_are_re
     accept_batch.mark_processing(batch.batch_id)
     progress.set_recorded_pairs(batch, _all_pairs(batch))
 
-    completed = accept_batch.mark_completed_if_recorded(batch.batch_id)
-
-    assert completed is True
+    accept_batch.mark_completed(batch.batch_id)
     assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
     assert len(inbox) == 0
     assert status.state.queued_batches == 0

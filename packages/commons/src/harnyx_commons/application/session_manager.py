@@ -11,7 +11,7 @@ from harnyx_commons.application.dto.session import (
 )
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.application.ports.token_registry import TokenRegistryPort
-from harnyx_commons.domain.session import Session, SessionStatus
+from harnyx_commons.domain.session import Session, SessionFailureCode, SessionStatus
 
 
 class SessionManager:
@@ -76,6 +76,42 @@ class SessionManager:
                 updated = session
         self._sessions.update(updated)
         return SessionEnvelope(session=updated, token_hash=envelope.token_hash)
+
+    def begin_attempt(self, session_id: UUID) -> SessionEnvelope:
+        """Advance the active retry attempt and clear stale failure markers."""
+        envelope = self.load(session_id)
+        if envelope is None:
+            raise LookupError(f"session {session_id} not found")
+        updated = envelope.session.begin_attempt()
+        self._sessions.update(updated)
+        return SessionEnvelope(session=updated, token_hash=envelope.token_hash)
+
+    def mark_failure_code(self, session_id: UUID, failure_code: SessionFailureCode) -> SessionEnvelope:
+        """Attach a transient execution failure marker to the session."""
+        envelope = self.load(session_id)
+        if envelope is None:
+            raise LookupError(f"session {session_id} not found")
+        updated = envelope.session.mark_failure_code(failure_code)
+        self._sessions.update(updated)
+        return SessionEnvelope(session=updated, token_hash=envelope.token_hash)
+
+    def clear_failure_code(self, session_id: UUID) -> SessionEnvelope:
+        """Clear any transient execution failure marker from the session."""
+        envelope = self.load(session_id)
+        if envelope is None:
+            raise LookupError(f"session {session_id} not found")
+        updated = envelope.session.clear_failure_code()
+        self._sessions.update(updated)
+        return SessionEnvelope(session=updated, token_hash=envelope.token_hash)
+
+    def consume_failure_code(self, session_id: UUID) -> SessionFailureCode | None:
+        """Return and clear the current-attempt failure marker, if present."""
+        envelope = self.load(session_id)
+        if envelope is None:
+            raise LookupError(f"session {session_id} not found")
+        updated, failure_code = envelope.session.consume_failure_code()
+        self._sessions.update(updated)
+        return failure_code
 
     def revoke(self, session_id: UUID) -> None:
         """Remove session/token metadata when no longer needed."""

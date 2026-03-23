@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -9,7 +10,7 @@ import pytest
 from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.session import Session, SessionStatus
+from harnyx_commons.domain.session import Session, SessionFailureCode, SessionStatus
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 
 
@@ -104,3 +105,61 @@ def test_issue_preserves_explicit_hard_limit() -> None:
 
     assert issued.session.budget_usd == pytest.approx(0.5)
     assert issued.session.effective_hard_limit_usd == pytest.approx(1.0)
+
+
+def test_begin_attempt_advances_counter_and_clears_failure_marker() -> None:
+    sessions = FakeSessionRegistry()
+    tokens = InMemoryTokenRegistry()
+    manager = SessionManager(sessions, tokens)
+    request = make_request()
+    manager.issue(request)
+    manager.mark_failure_code(request.session_id, SessionFailureCode.TOOL_PROVIDER_FAILED)
+
+    envelope = manager.begin_attempt(request.session_id)
+
+    assert envelope.session.active_attempt == 1
+    assert envelope.session.failure_code is None
+    assert envelope.session.failure_attempt is None
+
+
+def test_consume_failure_code_returns_current_attempt_marker_and_clears_it() -> None:
+    sessions = FakeSessionRegistry()
+    tokens = InMemoryTokenRegistry()
+    manager = SessionManager(sessions, tokens)
+    request = make_request()
+    manager.issue(request)
+    manager.begin_attempt(request.session_id)
+    manager.mark_failure_code(request.session_id, SessionFailureCode.TOOL_PROVIDER_FAILED)
+
+    assert manager.consume_failure_code(request.session_id) is SessionFailureCode.TOOL_PROVIDER_FAILED
+
+    stored = sessions.get(request.session_id)
+    assert stored is not None
+    assert stored.failure_code is None
+    assert stored.failure_attempt is None
+
+
+def test_consume_failure_code_discards_stale_attempt_marker() -> None:
+    sessions = FakeSessionRegistry()
+    tokens = InMemoryTokenRegistry()
+    manager = SessionManager(sessions, tokens)
+    request = make_request()
+    manager.issue(request)
+    manager.begin_attempt(request.session_id)
+    stored = sessions.get(request.session_id)
+    assert stored is not None
+    sessions.update(
+        replace(
+            stored,
+            active_attempt=2,
+            failure_code=SessionFailureCode.TOOL_PROVIDER_FAILED,
+            failure_attempt=1,
+        )
+    )
+
+    assert manager.consume_failure_code(request.session_id) is None
+
+    updated = sessions.get(request.session_id)
+    assert updated is not None
+    assert updated.failure_code is None
+    assert updated.failure_attempt is None

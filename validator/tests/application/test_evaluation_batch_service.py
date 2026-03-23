@@ -25,6 +25,7 @@ from harnyx_validator.application.services.evaluation_batch import (
     MinerTaskBatchService,
 )
 from harnyx_validator.application.services.evaluation_batch_prep import RunContext
+from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailedError
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
@@ -105,13 +106,12 @@ def _failure_submission(batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
     )
 
 
-async def test_process_async_terminalizes_missing_pairs_after_scheduler_escape(
+async def test_process_async_fails_batch_after_scheduler_escape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     batch = _batch()
     status = StatusProvider()
-    recovered_submission = _failure_submission(batch)
     service = MinerTaskBatchService(
         platform_client=object(),
         subtensor_client=FakeSubtensorClient(),
@@ -137,19 +137,6 @@ async def test_process_async_terminalizes_missing_pairs_after_scheduler_escape(
 
     monkeypatch.setattr(service, "_execute_batch", _raise_execute)
 
-    recovery_calls: list[tuple[MinerTaskBatchSpec, str, str]] = []
-
-    async def _recover_missing_pairs(
-        *,
-        batch: MinerTaskBatchSpec,
-        error_code: str,
-        error_message: str,
-    ) -> list[MinerTaskRunSubmission]:
-        recovery_calls.append((batch, error_code, error_message))
-        return [recovered_submission]
-
-    monkeypatch.setattr(service._failure_recorder, "record_failure_for_missing_pairs", _recover_missing_pairs)
-
     logged: dict[str, object] = {}
 
     def _capture_logs(
@@ -163,22 +150,14 @@ async def test_process_async_terminalizes_missing_pairs_after_scheduler_escape(
 
     monkeypatch.setattr(service, "_log_results", _capture_logs)
 
-    await service.process_async(batch)
+    with pytest.raises(ValidatorBatchFailedError, match="worker boom") as exc_info:
+        await service.process_async(batch)
 
-    assert recovery_calls == [(batch, "batch_execution_failed", "worker boom")]
-    assert status.state.last_error is None
-    assert status.state.last_completed_at is not None
-    assert status.state.running is False
-    assert logged["batch_id"] == batch.batch_id
-    assert logged["batch_result"] == MinerTaskBatchRunResult(
-        batch_id=batch.batch_id,
-        tasks=batch.tasks,
-        runs=(recovered_submission,),
-    )
-    assert logged["elapsed_seconds"] == 0.0
+    assert exc_info.value.error_code == "batch_execution_failed"
+    assert logged == {}
 
 
-async def test_process_async_recovers_from_build_run_context_failure(
+async def test_process_async_fails_from_build_run_context_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -213,18 +192,9 @@ async def test_process_async_recovers_from_build_run_context_failure(
         "build_run_context",
         lambda _current_batch: (_ for _ in ()).throw(RuntimeError("setup boom")),
     )
-    service._failure_recorder._validator_uid = 41
+    with pytest.raises(ValidatorBatchFailedError, match="setup boom") as exc_info:
+        await service.process_async(batch)
 
-    await service.process_async(batch)
-
-    accept_batch.mark_completed(batch.batch_id)
-
-    assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
-    assert progress.recorded_pairs(batch.batch_id) == frozenset(
-        (artifact.artifact_id, task.task_id)
-        for artifact in batch.artifacts
-        for task in batch.tasks
-    )
-    assert status.state.running is False
-    assert status.state.last_error is None
-    assert status.state.last_completed_at is not None
+    assert exc_info.value.error_code == "batch_execution_failed"
+    assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
+    assert progress.recorded_pairs(batch.batch_id) == frozenset()

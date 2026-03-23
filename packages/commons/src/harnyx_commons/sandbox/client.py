@@ -9,6 +9,25 @@ from uuid import UUID
 from harnyx_commons.json_types import JsonValue
 
 
+class SandboxInvokeError(RuntimeError):
+    """Structured sandbox invocation failure surfaced by shared clients."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int,
+        detail_code: str | None,
+        detail_exception: str | None,
+        detail_error: str | None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail_code = detail_code
+        self.detail_exception = detail_exception
+        self.detail_error = detail_error
+
+
 class SandboxClient(Protocol):
     """Adapter responsible for calling miner entrypoints."""
 
@@ -27,4 +46,4 @@ class SandboxClient(Protocol):
         """Release any client-side resources."""
 
 
-__all__ = ["SandboxClient"]
+__all__ = ["SandboxClient", "SandboxInvokeError"]

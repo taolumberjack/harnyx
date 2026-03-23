@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import secrets
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -13,11 +15,11 @@ from harnyx_commons.application.dto.session import SessionEnvelope, SessionIssue
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import EvaluationDetails, EvaluationError, MinerTask
-from harnyx_commons.domain.session import SessionStatus
+from harnyx_commons.domain.session import SessionFailureCode, SessionStatus
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_validator.application.dto.evaluation import (
-    MinerTaskBatchSpec,
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
     ScriptArtifactSpec,
@@ -25,7 +27,10 @@ from harnyx_validator.application.dto.evaluation import (
     TokenUsageSummary,
 )
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator, UsageSummarizer
-from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
+from harnyx_validator.application.invoke_entrypoint import (
+    MinerResponseValidationError,
+    SandboxInvocationError,
+)
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
 from harnyx_validator.application.ports.progress import ProgressRecorder
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
@@ -43,6 +48,39 @@ LOCAL_RETRY_ATTEMPTS = 2
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
     return (completed_at - issued_at).total_seconds() * 1000.0
+
+
+class FailureKind(StrEnum):
+    MINER_TASK_FAILURE = "miner_task_failure"
+    VALIDATOR_BATCH_FAILURE = "validator_batch_failure"
+
+
+@dataclass(frozen=True, slots=True)
+class FailureClassification:
+    kind: FailureKind
+    error_code: str
+    error_message: str
+    log_message: str
+    retryable: bool = False
+    exc: Exception | None = None
+
+
+class AttemptDecisionKind(StrEnum):
+    SUBMISSION = "submission"
+    VALIDATOR_BATCH_FAILURE = "validator_batch_failure"
+
+
+@dataclass(frozen=True, slots=True)
+class TaskAttemptDecision:
+    kind: AttemptDecisionKind
+    submission: MinerTaskRunSubmission | None = None
+    classification: FailureClassification | None = None
+
+
+class ValidatorBatchFailedError(RuntimeError):
+    def __init__(self, *, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class EvaluationRunner:
@@ -90,38 +128,6 @@ class EvaluationRunner:
             )
         return submissions
 
-    async def record_failure_for_missing_pairs(
-        self,
-        *,
-        batch: MinerTaskBatchSpec,
-        error_code: str,
-        error_message: str,
-    ) -> list[MinerTaskRunSubmission]:
-        recorded_pairs = (
-            frozenset()
-            if self._progress is None
-            else self._progress.recorded_pairs(batch.batch_id)
-        )
-        submissions: list[MinerTaskRunSubmission] = []
-        for artifact in batch.artifacts:
-            remaining_tasks = tuple(
-                task
-                for task in batch.tasks
-                if (artifact.artifact_id, task.task_id) not in recorded_pairs
-            )
-            if not remaining_tasks:
-                continue
-            submissions.extend(
-                await self.record_failure_for_artifact(
-                    batch_id=batch.batch_id,
-                    artifact=artifact,
-                    tasks=remaining_tasks,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-            )
-        return submissions
-
     async def _run_tasks_with_sessions(
         self,
         *,
@@ -149,32 +155,32 @@ class EvaluationRunner:
         issued = self._issue_session(uid=artifact.uid, task=task)
         try:
             for attempt_number in range(1, LOCAL_RETRY_ATTEMPTS + 1):
-                try:
-                    return await self._evaluate_task_attempt(
-                        batch_id=batch_id,
-                        artifact=artifact,
-                        task=task,
-                        issued=issued,
-                        orchestrator=orchestrator,
-                    )
-                except SandboxInvocationError as exc:
-                    if attempt_number == LOCAL_RETRY_ATTEMPTS:
-                        return self._record_task_failure(
-                            batch_id=batch_id,
-                            artifact=artifact,
-                            task=task,
-                            session_id=issued.session.session_id,
-                            **_failure_details(exc),
-                            exc=exc,
-                        )
+                self._sessions.begin_attempt(issued.session.session_id)
+                decision = await self._evaluate_task_attempt(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=task,
+                    issued=issued,
+                    orchestrator=orchestrator,
+                )
+                if decision.kind is AttemptDecisionKind.SUBMISSION:
+                    return _require_submission(decision)
+
+                classification = _require_classification(decision)
+                if classification.retryable and attempt_number < LOCAL_RETRY_ATTEMPTS:
                     self._log_retry_attempt(
                         batch_id=batch_id,
                         artifact=artifact,
                         task=task,
                         attempt_number=attempt_number,
-                        exc=exc,
+                        exc=_retry_exception_for_classification(classification),
                     )
                     continue
+
+                raise ValidatorBatchFailedError(
+                    error_code=classification.error_code,
+                    message=classification.error_message,
+                ) from classification.exc
         finally:
             self._sessions.revoke(issued.session.session_id)
 
@@ -188,7 +194,7 @@ class EvaluationRunner:
         task: MinerTask,
         issued: SessionIssued,
         orchestrator: TaskRunOrchestrator,
-    ) -> MinerTaskRunSubmission:
+    ) -> TaskAttemptDecision:
         request = MinerTaskRunRequest(
             session_id=issued.session.session_id,
             token=issued.token,
@@ -198,30 +204,44 @@ class EvaluationRunner:
         )
         try:
             outcome = await orchestrator.evaluate(request)
-            return self._record_success(
+        except SessionBudgetExhaustedError as exc:
+            return _submission_decision(
+                self._record_exhausted(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=task,
+                    session_id=issued.session.session_id,
+                    error_message=str(exc),
+                )
+            )
+        except Exception as exc:
+            failure_code = self._sessions.consume_failure_code(issued.session.session_id)
+            return self._resolve_attempt_failure(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                session_id=issued.session.session_id,
+                exc=exc,
+                failure_code=failure_code,
+            )
+
+        failure_code = self._sessions.consume_failure_code(issued.session.session_id)
+        if failure_code is not None:
+            return self._resolve_attempt_failure(
+                batch_id=batch_id,
+                artifact=artifact,
+                task=task,
+                session_id=issued.session.session_id,
+                failure_code=failure_code,
+            )
+
+        return _submission_decision(
+            self._record_success(
                 batch_id=batch_id,
                 session_id=issued.session.session_id,
                 outcome=outcome,
             )
-        except SessionBudgetExhaustedError as exc:
-            return self._record_exhausted(
-                batch_id=batch_id,
-                artifact=artifact,
-                task=task,
-                session_id=issued.session.session_id,
-                error_message=str(exc),
-            )
-        except SandboxInvocationError:
-            raise
-        except Exception as exc:
-            return self._record_task_failure(
-                batch_id=batch_id,
-                artifact=artifact,
-                task=task,
-                session_id=issued.session.session_id,
-                **_failure_details(exc),
-                exc=exc,
-            )
+        )
 
     async def record_failure_for_artifact(
         self,
@@ -387,6 +407,93 @@ class EvaluationRunner:
             error_message=error_message,
         )
 
+    def _resolve_attempt_failure(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        session_id: UUID,
+        exc: Exception | None = None,
+        failure_code: SessionFailureCode | None = None,
+    ) -> TaskAttemptDecision:
+        classification = self._classify_attempt_failure(
+            exc=exc,
+            failure_code=failure_code,
+        )
+        if classification.kind is FailureKind.MINER_TASK_FAILURE:
+            return _submission_decision(
+                self._record_task_failure(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=task,
+                    session_id=session_id,
+                    error_code=classification.error_code,
+                    error_message=classification.error_message,
+                    log_message=classification.log_message,
+                    exc=_retry_exception_for_classification(classification),
+                )
+            )
+        return _validator_failure_decision(classification)
+
+    def _classify_attempt_failure(
+        self,
+        *,
+        exc: Exception | None,
+        failure_code: SessionFailureCode | None = None,
+    ) -> FailureClassification:
+        if failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED:
+            return FailureClassification(
+                kind=FailureKind.VALIDATOR_BATCH_FAILURE,
+                error_code=failure_code.value,
+                error_message=_failure_message_for_session_code(failure_code),
+                log_message="validator-hosted tool provider failed during miner task run",
+                retryable=True,
+                exc=exc,
+            )
+        if isinstance(exc, LlmRetryExhaustedError):
+            return FailureClassification(
+                kind=FailureKind.VALIDATOR_BATCH_FAILURE,
+                error_code="scoring_llm_retry_exhausted",
+                error_message=str(exc),
+                log_message="validator scoring provider retries exhausted",
+                exc=exc,
+            )
+        if isinstance(exc, MinerResponseValidationError):
+            return FailureClassification(
+                kind=FailureKind.MINER_TASK_FAILURE,
+                error_code="miner_response_invalid",
+                error_message=str(exc),
+                log_message="miner returned invalid response payload",
+                exc=exc,
+            )
+        if isinstance(exc, SandboxInvocationError) and exc.detail_code == "UnhandledException":
+            return FailureClassification(
+                kind=FailureKind.MINER_TASK_FAILURE,
+                error_code="miner_unhandled_exception",
+                error_message=exc.detail_error or str(exc),
+                log_message="miner entrypoint raised unhandled exception",
+                exc=exc,
+            )
+        if isinstance(exc, SandboxInvocationError):
+            return FailureClassification(
+                kind=FailureKind.VALIDATOR_BATCH_FAILURE,
+                error_code="sandbox_invocation_failed",
+                error_message=str(exc),
+                log_message="sandbox invocation failed during miner task run",
+                retryable=True,
+                exc=exc,
+            )
+        if exc is None:
+            raise RuntimeError("attempt failure classification requires exc or failure_code")
+        return FailureClassification(
+            kind=FailureKind.VALIDATOR_BATCH_FAILURE,
+            error_code="unexpected_validator_failure",
+            error_message=str(exc),
+            log_message="validator task execution failed unexpectedly",
+            exc=exc,
+        )
+
     def _log_retry_attempt(
         self,
         *,
@@ -439,18 +546,50 @@ class EvaluationRunner:
         return self._sessions.issue(request)
 
 
-def _failure_details(exc: Exception) -> dict[str, str]:
-    if isinstance(exc, SandboxInvocationError):
-        return {
-            "error_code": "sandbox_invocation_failed",
-            "error_message": str(exc),
-            "log_message": "sandbox invocation failed during miner task run",
-        }
-    return {
-        "error_code": "task_run_failed",
-        "error_message": str(exc),
-        "log_message": "miner task run failed after sandbox invocation",
-    }
+def _failure_message_for_session_code(failure_code: SessionFailureCode) -> str:
+    if failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED:
+        return "tool provider failed"
+    raise RuntimeError(f"unsupported session failure code: {failure_code}")
 
 
-__all__ = ["EvaluationRunner", "LOCAL_RETRY_ATTEMPTS"]
+def _submission_decision(submission: MinerTaskRunSubmission) -> TaskAttemptDecision:
+    return TaskAttemptDecision(
+        kind=AttemptDecisionKind.SUBMISSION,
+        submission=submission,
+    )
+
+
+def _validator_failure_decision(classification: FailureClassification) -> TaskAttemptDecision:
+    return TaskAttemptDecision(
+        kind=AttemptDecisionKind.VALIDATOR_BATCH_FAILURE,
+        classification=classification,
+    )
+
+
+def _require_submission(decision: TaskAttemptDecision) -> MinerTaskRunSubmission:
+    if decision.submission is None:
+        raise RuntimeError("attempt decision requires submission")
+    return decision.submission
+
+
+def _require_classification(decision: TaskAttemptDecision) -> FailureClassification:
+    if decision.classification is None:
+        raise RuntimeError("attempt decision requires failure classification")
+    return decision.classification
+
+
+def _retry_exception_for_classification(classification: FailureClassification) -> Exception:
+    if classification.exc is not None:
+        return classification.exc
+    return RuntimeError(classification.error_message)
+
+
+__all__ = [
+    "AttemptDecisionKind",
+    "EvaluationRunner",
+    "FailureClassification",
+    "FailureKind",
+    "LOCAL_RETRY_ATTEMPTS",
+    "TaskAttemptDecision",
+    "ValidatorBatchFailedError",
+]

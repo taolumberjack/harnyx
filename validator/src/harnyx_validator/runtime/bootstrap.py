@@ -312,7 +312,11 @@ def _build_http_dependencies(
 ) -> tuple[Callable[[], ToolRouteDeps], Callable[[], ValidatorControlDeps], StatusProvider]:
     status_provider = StatusProvider()
     inbound_auth = _build_inbound_auth(resolved)
-    tool_route_provider = _make_dependency_provider(tool_executor, state.token_semaphore)
+    tool_route_provider = _make_dependency_provider(
+        tool_executor,
+        state.token_semaphore,
+        state.session_manager,
+    )
     accept_batch = AcceptEvaluationBatch(state.batch_inbox, status_provider, state.progress_tracker)
     control_provider = _make_control_provider(
         accept_batch,
@@ -376,11 +380,13 @@ def _build_subtensor_client(resolved: Settings) -> SubtensorClientPort:
 def _make_dependency_provider(
     tool_executor: ToolExecutor,
     token_semaphore: TokenSemaphore,
+    session_manager: SessionManager,
 ) -> Callable[[], ToolRouteDeps]:
     def provider() -> ToolRouteDeps:
         return ToolRouteDeps(
             tool_executor=tool_executor,
             token_semaphore=token_semaphore,
+            session_manager=session_manager,
         )
 
     return provider

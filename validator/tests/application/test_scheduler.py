@@ -9,7 +9,6 @@ from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
-    EvaluationError,
     MinerTask,
     Query,
     ReferenceAnswer,
@@ -29,6 +28,7 @@ from harnyx_validator.application.dto.evaluation import (
 from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
 from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
+from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailedError
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
@@ -99,6 +99,16 @@ def _task(text: str, *, budget_usd: float = 0.05) -> MinerTask:
     )
 
 
+def _sandbox_invocation_error(message: str) -> SandboxInvocationError:
+    return SandboxInvocationError(
+        message,
+        status_code=0,
+        detail_code=None,
+        detail_exception="RuntimeError",
+        detail_error=message,
+    )
+
+
 async def test_scheduler_runs_all_tasks_for_each_artifact() -> None:
     tasks = (_task("one"), _task("two"))
     subtensor = FakeSubtensorClient()
@@ -166,7 +176,7 @@ async def test_scheduler_runs_all_tasks_for_each_artifact() -> None:
     assert len(evaluation_records.records_by_batch) == len(result.runs)
 
 
-async def test_scheduler_records_failure_when_sandbox_invocation_errors() -> None:
+async def test_scheduler_fails_batch_when_sandbox_invocation_errors() -> None:
     task = _task("unstable")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -184,7 +194,7 @@ async def test_scheduler_records_failure_when_sandbox_invocation_errors() -> Non
     def orchestrator_factory(_client: object):
         class FailingOrchestrator:
             async def evaluate(self, request):
-                raise SandboxInvocationError("upstream tool failure")
+                raise _sandbox_invocation_error("upstream tool failure")
 
         return FailingOrchestrator()
 
@@ -205,15 +215,11 @@ async def test_scheduler_records_failure_when_sandbox_invocation_errors() -> Non
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
-    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+    with pytest.raises(ValidatorBatchFailedError, match="upstream tool failure") as exc_info:
+        await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert len(result.runs) == 1
-    assert result.runs[0].score == 0.0
-    assert result.runs[0].run.details.error == EvaluationError(
-        code="sandbox_invocation_failed",
-        message="upstream tool failure",
-    )
-    assert result.runs[0].run.details.elapsed_ms == pytest.approx(2000.0)
+    assert exc_info.value.error_code == "sandbox_invocation_failed"
+    assert evaluation_records.records_by_batch == []
 
 
 async def test_scheduler_retries_only_transient_sandbox_invocation_errors() -> None:
@@ -232,7 +238,7 @@ async def test_scheduler_retries_only_transient_sandbox_invocation_errors() -> N
         async def evaluate(self, request):
             self.calls += 1
             if self.calls == 1:
-                raise SandboxInvocationError("upstream tool failure")
+                raise _sandbox_invocation_error("upstream tool failure")
             details = EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
                     comparison_score=1.0,
@@ -283,7 +289,7 @@ async def test_scheduler_retries_only_transient_sandbox_invocation_errors() -> N
     assert result.runs[1].run.response == Response(text="answer second")
 
 
-async def test_scheduler_records_terminal_failure_for_generic_post_invoke_error_and_continues() -> None:
+async def test_scheduler_fails_batch_for_generic_post_invoke_error() -> None:
     tasks = (_task("first"), _task("second"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -339,18 +345,12 @@ async def test_scheduler_records_terminal_failure_for_generic_post_invoke_error_
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
-    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+    with pytest.raises(ValidatorBatchFailedError, match="embedding client unavailable") as exc_info:
+        await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert orchestrator.calls == 2
-    assert len(result.runs) == 2
-    assert len(evaluation_records.records_by_batch) == 2
-    assert result.runs[0].score == 0.0
-    assert result.runs[0].run.details.error == EvaluationError(
-        code="task_run_failed",
-        message="embedding client unavailable",
-    )
-    assert result.runs[1].score == pytest.approx(0.75)
-    assert result.runs[1].run.response == Response(text="answer second")
+    assert exc_info.value.error_code == "unexpected_validator_failure"
+    assert orchestrator.calls == 1
+    assert evaluation_records.records_by_batch == []
 
 
 async def test_scheduler_retries_sandbox_start_once_before_running_tasks() -> None:
@@ -419,7 +419,7 @@ async def test_scheduler_retries_sandbox_start_once_before_running_tasks() -> No
     assert result.runs[0].score == pytest.approx(0.75)
 
 
-async def test_scheduler_returns_terminal_setup_failures_in_batch_result() -> None:
+async def test_scheduler_fails_batch_for_terminal_setup_failures() -> None:
     task = _task("startup failure")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -451,17 +451,12 @@ async def test_scheduler_returns_terminal_setup_failures_in_batch_result() -> No
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
-    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+    with pytest.raises(ValidatorBatchFailedError, match="sandbox cold start failed") as exc_info:
+        await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
+    assert exc_info.value.error_code == "sandbox_start_failed"
     assert len(sandbox_manager.starts) == 2
-    assert len(result.runs) == 1
-    assert len(evaluation_records.records_by_batch) == 1
-    assert result.runs[0] == evaluation_records.records_by_batch[0]
-    assert result.runs[0].score == 0.0
-    assert result.runs[0].run.details.error == EvaluationError(
-        code="sandbox_start_failed",
-        message="sandbox cold start failed",
-    )
+    assert evaluation_records.records_by_batch == []
 
 
 async def test_evaluation_runner_issues_session_with_task_budget() -> None:

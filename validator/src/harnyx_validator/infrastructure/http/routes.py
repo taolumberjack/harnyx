@@ -11,18 +11,15 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
 from fastapi.security import APIKeyHeader
 
+from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import MinerTask
-from harnyx_commons.domain.session import Session
-from harnyx_commons.errors import ConcurrencyLimitError
-from harnyx_commons.protocol_headers import (
-    SESSION_ID_HEADER,
-)
+from harnyx_commons.domain.session import Session, SessionFailureCode
+from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
+from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
-from harnyx_commons.tools.http_models import (
-    ToolExecuteResponseDTO,
-)
+from harnyx_commons.tools.http_models import ToolExecuteResponseDTO
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_miner_sdk.tools.http_models import ToolExecuteRequestDTO
@@ -53,6 +50,7 @@ logger = logging.getLogger("harnyx_validator.http")
 class ToolRouteDeps:
     tool_executor: ToolExecutor
     token_semaphore: TokenSemaphore
+    session_manager: SessionManager
 
 
 @dataclass(frozen=True)
@@ -96,6 +94,13 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
         )
         try:
             result = await _execute_with_semaphore_async(invocation, deps)
+        except ToolProviderError as exc:
+            deps.session_manager.mark_failure_code(
+                session_id,
+                SessionFailureCode.TOOL_PROVIDER_FAILED,
+            )
+            _log_tool_error(session_id, invocation, exc)
+            raise HTTPException(status_code=400, detail=_public_error_message(exc)) from exc
         except (
             ConcurrencyLimitError,
             LookupError,
@@ -178,6 +183,17 @@ def add_control_routes(
             return ProgressResponse(
                 batch_id=str(batch_id),
                 status="unknown",
+                error_code=None,
+                total=0,
+                completed=0,
+                remaining=0,
+                miner_task_runs=[],
+            )
+        if lifecycle == "failed":
+            return ProgressResponse(
+                batch_id=str(batch_id),
+                status="failed",
+                error_code=deps.accept_batch.error_code_for(batch_id),
                 total=0,
                 completed=0,
                 remaining=0,
@@ -189,6 +205,7 @@ def add_control_routes(
         return ProgressResponse(
             batch_id=str(batch_id),
             status=lifecycle,
+            error_code=deps.accept_batch.error_code_for(batch_id),
             total=snapshot["total"],
             completed=snapshot["completed"],
             remaining=snapshot["remaining"],
