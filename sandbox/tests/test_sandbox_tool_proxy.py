@@ -104,7 +104,7 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
     )
     try:
         with bind_tool_invoker(proxy):
-            result = await search_web("harnyx subnet", num=3)
+            result = await search_web(("harnyx", "subnet"), num=3)
     finally:
         await proxy.aclose()
 
@@ -113,7 +113,46 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
     assert result.results[0].url == "https://example.com"
     payload = captured["payload"]
     assert payload["tool"] == "search_web"
-    assert payload["kwargs"] == {"query": "harnyx subnet", "num": 3}
+    assert payload["kwargs"] == {"search_queries": ["harnyx", "subnet"], "num": 3}
+
+
+async def test_search_web_helper_normalizes_plain_string_query() -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "receipt_id": "r2",
+                "response": {"data": []},
+                "results": [],
+                "result_policy": "referenceable",
+                "budget": {
+                    "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
+                    "session_used_budget_usd": 0.0,
+                    "session_remaining_budget_usd": 1.0,
+                },
+            },
+        )
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            result = await search_web("harnyx subnet", num=3)
+    finally:
+        await proxy.aclose()
+
+    assert result.receipt_id == "r2"
+    payload = captured["payload"]
+    assert payload["tool"] == "search_web"
+    assert payload["kwargs"] == {"search_queries": ["harnyx subnet"], "num": 3}
 
 
 async def test_search_ai_helper_invokes_tool_proxy() -> None:
@@ -154,7 +193,7 @@ async def test_search_ai_helper_invokes_tool_proxy() -> None:
     )
     try:
         with bind_tool_invoker(proxy):
-            result = await search_ai("harnyx subnet", tools=("web",), count=3)
+            result = await search_ai("harnyx subnet", count=3)
     finally:
         await proxy.aclose()
 
@@ -165,7 +204,6 @@ async def test_search_ai_helper_invokes_tool_proxy() -> None:
     payload = captured["payload"]
     assert payload["tool"] == "search_ai"
     assert payload["kwargs"]["prompt"] == "harnyx subnet"
-    assert payload["kwargs"]["tools"] == ["web"]
     assert payload["kwargs"]["count"] == 3
 
 

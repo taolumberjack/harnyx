@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Literal, Protocol, cast
-from uuid import UUID
+from dataclasses import asdict
+from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from pydantic import JsonValue as PydanticJsonValue
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
@@ -18,48 +18,30 @@ from harnyx_commons.llm.pricing import (
     MODEL_PRICING,
     SEARCH_AI_PER_REFERENCEABLE_RESULT_USD,
     SEARCH_PRICING,
-    SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD,
     ToolModelName,
     parse_tool_model,
 )
 from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmTool
-from harnyx_commons.tools.desearch import (
-    DeSearchAiDateFilter,
-    DeSearchAiModel,
-    DeSearchAiResultType,
-    DeSearchAiTool,
-)
-from harnyx_commons.tools.desearch_ai_protocol import (
-    DeSearchAiDocsLinkResult,
-    parse_desearch_ai_response,
+from harnyx_commons.llm.schema import (
+    LlmChoice,
+    LlmChoiceMessage,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmMessageToolCall,
+    LlmRequest,
+    LlmResponse,
+    LlmTool,
 )
 from harnyx_commons.tools.executor import ToolInvoker
 from harnyx_commons.tools.normalize import normalize_response
-from harnyx_commons.tools.ports import DeSearchPort
+from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.search_models import (
-    SearchAiResult,
+    FetchPageRequest,
     SearchAiSearchRequest,
-    SearchAiSearchResponse,
-    SearchAiTool,
     SearchWebSearchRequest,
-    SearchXSearchRequest,
 )
 from harnyx_commons.tools.types import TOOL_NAMES, SearchToolName, ToolName, is_search_tool
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
-
-
-class FeedSearchToolProvider(Protocol):
-    async def search_items(
-        self,
-        *,
-        feed_id: UUID,
-        enqueue_seq: int,
-        search_queries: Sequence[str],
-        num_hit: int,
-    ) -> JsonObject:
-        pass
-
 
 MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(TOOL_NAMES))
 
@@ -88,32 +70,19 @@ class LlmToolInvocation(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
-class SearchItemsToolInvocation(BaseModel):
-    """Request payload for search_items tool calls."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    feed_id: UUID
-    enqueue_seq: int = Field(ge=0)
-    search_queries: tuple[str, ...] = Field(min_length=1)
-    num_hit: int = Field(default=20, ge=1, le=200)
-
-
 def build_miner_sandbox_tool_invoker(
     receipt_log: ReceiptLogPort,
     *,
-    search_client: DeSearchPort | None = None,
+    web_search_client: WebSearchProviderPort | None = None,
     llm_provider: LlmProviderPort | None = None,
     llm_provider_name: str | None = None,
-    feed_search_provider: FeedSearchToolProvider | None = None,
     allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
 ) -> RuntimeToolInvoker:
     return RuntimeToolInvoker(
         receipt_log,
-        search_client=search_client,
+        web_search_client=web_search_client,
         llm_provider=llm_provider,
         llm_provider_name=llm_provider_name,
-        feed_search_provider=feed_search_provider,
         advertised_tool_names=MINER_SANDBOX_TOOL_NAMES,
         allowed_models=allowed_models,
     )
@@ -126,19 +95,17 @@ class RuntimeToolInvoker(ToolInvoker):
         self,
         receipt_log: ReceiptLogPort,
         *,
-        search_client: DeSearchPort | None = None,
+        web_search_client: WebSearchProviderPort | None = None,
         llm_provider: LlmProviderPort | None = None,
         llm_provider_name: str | None = None,
-        feed_search_provider: FeedSearchToolProvider | None = None,
         advertised_tool_names: tuple[ToolName, ...] | None = None,
         allowed_models: tuple[ToolModelName, ...] = ALLOWED_TOOL_MODELS,
     ) -> None:
         self._receipts = receipt_log
         self._logger = logging.getLogger("harnyx_commons.tools.runtime_invoker")
-        self._search = search_client
+        self._web_search = web_search_client
         self._llm_provider = llm_provider
         self._llm_provider_name = llm_provider_name or "llm"
-        self._feed_search_provider = feed_search_provider
         self._advertised_tool_names = tuple(sorted(advertised_tool_names or TOOL_NAMES))
         self._allowed_models: set[ToolModelName] = set(allowed_models)
 
@@ -157,8 +124,6 @@ class RuntimeToolInvoker(ToolInvoker):
             return await self._dispatch_search(tool_name, args, kwargs)
         if tool_name == "llm_chat":
             return await self._dispatch_llm(args, kwargs)
-        if tool_name == "search_items":
-            return await self._dispatch_search_items(args, kwargs)
         self._log_unhandled(tool_name, args, kwargs)
         raise LookupError(f"tool {tool_name!r} is not registered")
 
@@ -200,11 +165,6 @@ class RuntimeToolInvoker(ToolInvoker):
             pricing["search_ai"] = {
                 "kind": "per_referenceable_result",
                 "usd_per_referenceable_result": SEARCH_AI_PER_REFERENCEABLE_RESULT_USD,
-            }
-        if "search_items" in visible_tool_names:
-            pricing["search_items"] = {
-                "kind": "flat_per_call",
-                "usd_per_call": SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD,
             }
 
         for tool_name, usd_per_call in SEARCH_PRICING.items():
@@ -258,56 +218,25 @@ class RuntimeToolInvoker(ToolInvoker):
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
     ) -> JsonObject:
-        if self._search is None:
+        if self._web_search is None:
             raise LookupError("search client is not configured")
         payload = self._payload_from_args_kwargs(args, kwargs)
         if tool_name == "search_web":
             request_model_web = SearchWebSearchRequest.model_validate(payload)
-            response_web = await self._search.search_links_web(request_model_web)
+            response_web = await self._web_search.search_web(request_model_web)
             as_mapping = response_web.model_dump(exclude_none=True, mode="json")
-            return cast(JsonObject, as_mapping)
-        elif tool_name == "search_x":
-            request_model_x = SearchXSearchRequest.model_validate(payload)
-            response_x = await self._search.search_links_twitter(request_model_x)
-            as_mapping = response_x.model_dump(exclude_none=True, mode="json")
             return cast(JsonObject, as_mapping)
         elif tool_name == "search_ai":
             request_ai = SearchAiSearchRequest.model_validate(payload)
-            tools = tuple(DeSearchAiTool(value) for value in request_ai.tools)
-            date_filter = None if request_ai.date_filter is None else DeSearchAiDateFilter(str(request_ai.date_filter))
-            result_type = DeSearchAiResultType(str(request_ai.result_type))
-            raw = await self._search.ai_search(
-                prompt=request_ai.prompt,
-                tools=tools,
-                model=DeSearchAiModel.HORIZON,
-                count=request_ai.count,
-                date_filter=date_filter,
-                result_type=result_type,
-                system_message=request_ai.system_message,
-            )
-            response = SearchAiSearchResponse(
-                data=_extract_desearch_ai_results(raw),
-            )
+            response = await self._web_search.search_ai(request_ai)
             as_mapping = response.model_dump(exclude_none=True, mode="json")
             return cast(JsonObject, as_mapping)
+        elif tool_name == "fetch_page":
+            request_page = FetchPageRequest.model_validate(payload)
+            response_page = await self._web_search.fetch_page(request_page)
+            as_mapping = response_page.model_dump(exclude_none=True, mode="json")
+            return cast(JsonObject, as_mapping)
         raise LookupError(f"search tool '{tool_name}' is not supported")
-
-    @normalize_response
-    async def _dispatch_search_items(
-        self,
-        args: Sequence[JsonValue],
-        kwargs: Mapping[str, JsonValue],
-    ) -> JsonObject:
-        if self._feed_search_provider is None:
-            raise LookupError("feed search provider is not configured")
-        payload = self._payload_from_args_kwargs(args, kwargs)
-        invocation = SearchItemsToolInvocation.model_validate(payload)
-        return await self._feed_search_provider.search_items(
-            feed_id=invocation.feed_id,
-            enqueue_seq=invocation.enqueue_seq,
-            search_queries=invocation.search_queries,
-            num_hit=invocation.num_hit,
-        )
 
     async def _dispatch_llm(
         self,
@@ -333,7 +262,7 @@ class RuntimeToolInvoker(ToolInvoker):
             llm_response = await self._llm_provider.invoke(request)
         except LlmRetryExhaustedError as exc:
             raise ToolProviderError("tool provider failed") from exc
-        return cast(JsonObject, llm_response.to_payload())
+        return _public_llm_response_payload(llm_response)
 
     def _parse_invocation(
         self,
@@ -423,58 +352,54 @@ def _optional_mapping(value: object | None, *, label: str) -> Mapping[str, objec
             raise TypeError(f"tool spec {label} must have string keys")
     return cast(Mapping[str, object], value)
 
-def _extract_desearch_ai_results(raw: object) -> list[SearchAiResult]:
-    """Normalize DeSearch AI search payload into a flat list of URL evidence items."""
-    docs = parse_desearch_ai_response(raw)
 
-    results: list[SearchAiResult] = []
-    seen_urls: set[str] = set()
+def _public_llm_response_payload(response: LlmResponse) -> JsonObject:
+    payload: JsonObject = {
+        "id": response.id,
+        "choices": [_public_llm_choice_payload(choice) for choice in response.choices],
+        "usage": cast(JsonObject, asdict(response.usage)),
+    }
+    if response.finish_reason is not None:
+        payload["finish_reason"] = response.finish_reason
+    return payload
 
-    def add(
-        url: str,
-        *,
-        title: str | None = None,
-        note: str | None = None,
-        source: SearchAiTool | None = None,
-    ) -> None:
-        normalized = url.strip()
-        if not normalized or normalized in seen_urls:
-            return
-        seen_urls.add(normalized)
-        results.append(
-            SearchAiResult(
-                url=normalized,
-                title=title or None,
-                note=note or None,
-                source=source,
-            )
-        )
 
-    docs_sections: tuple[tuple[list[DeSearchAiDocsLinkResult] | None, SearchAiTool], ...] = (
-        (docs.search, "web"),
-        (docs.wikipedia_search, "wikipedia"),
-        (docs.youtube_search, "youtube"),
-        (docs.arxiv_search, "arxiv"),
-        (docs.reddit_search, "reddit"),
-        (docs.hacker_news_search, "hackernews"),
-    )
-    for items, source in docs_sections:
-        for item in items or ():
-            add(
-                item.link,
-                title=item.title,
-                note=item.snippet,
-                source=source,
-            )
+def _public_llm_choice_payload(choice: LlmChoice) -> JsonObject:
+    payload: JsonObject = {
+        "index": choice.index,
+        "message": _public_llm_message_payload(choice.message),
+    }
+    if choice.finish_reason is not None:
+        payload["finish_reason"] = choice.finish_reason
+    return payload
 
-    for tweet in docs.tweets or ():
-        tweet_url = tweet.url
-        if tweet_url is None:
-            continue
-        add(tweet_url, note=tweet.text, source="twitter")
 
-    return results
+def _public_llm_message_payload(message: LlmChoiceMessage) -> JsonObject:
+    payload: JsonObject = {
+        "role": message.role,
+        "content": [_public_llm_content_part_payload(part) for part in message.content],
+    }
+    if message.tool_calls:
+        payload["tool_calls"] = [_public_llm_tool_call_payload(call) for call in message.tool_calls]
+    return payload
 
+
+def _public_llm_content_part_payload(part: LlmMessageContentPart) -> JsonObject:
+    payload: JsonObject = {"type": part.type}
+    if part.text is not None:
+        payload["text"] = part.text
+    if part.data is not None:
+        payload["data"] = cast(JsonObject, dict(part.data))
+    return payload
+
+
+def _public_llm_tool_call_payload(call: LlmMessageToolCall) -> JsonObject:
+    return {
+        "id": call.id,
+        "type": call.type,
+        "name": call.name,
+        "arguments": call.arguments,
+    }
 
 __all__ = [
     "ALLOWED_TOOL_MODELS",

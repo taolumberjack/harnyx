@@ -51,25 +51,25 @@ def test_build_tool_results_search_web_referenceable() -> None:
     assert second.result_id == UUID(int=2).hex
 
 
-def test_build_tool_results_search_x_referenceable() -> None:
+def test_build_tool_results_fetch_page_referenceable() -> None:
     payload = {
         "data": [
-            {"url": "https://example.com/tweet-1", "text": "first post", "title": "Thread"},
-            {"url": "https://example.com/tweet-2", "text": "second post"},
+            {"url": "https://example.com/page-1", "content": "first page", "title": "Page"},
+            {"url": "https://example.com/page-2", "content": "second page"},
             {"url": None, "text": "missing url"},
         ],
     }
 
     results = _build_tool_results(
-        "search_x",
+        "fetch_page",
         payload,
         ToolResultPolicy.REFERENCEABLE,
     )
 
     assert len(results) == 2
     assert [(result.index, result.url, result.note, result.title) for result in results] == [
-        (0, "https://example.com/tweet-1", "first post", "Thread"),
-        (1, "https://example.com/tweet-2", "second post", None),
+        (0, "https://example.com/page-1", "first page", "Page"),
+        (1, "https://example.com/page-2", "second page", None),
     ]
 
 

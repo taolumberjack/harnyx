@@ -7,8 +7,9 @@ the exact same schema and typing.
 from __future__ import annotations
 
 from harnyx_miner_sdk.tools.search_models import (
-    FeedSearchHit,
-    FeedSearchResponse,
+    FetchPageRequest,
+    FetchPageResponse,
+    FetchPageResult,
     SearchAiDateFilter,
     SearchAiResult,
     SearchAiResultType,
@@ -33,8 +34,9 @@ __all__ = [
     "SearchAiSearchRequest",
     "SearchAiSearchResponse",
     "SearchAiResult",
-    "FeedSearchHit",
-    "FeedSearchResponse",
+    "FetchPageRequest",
+    "FetchPageResponse",
+    "FetchPageResult",
     "SearchWebSearchRequest",
     "SearchWebSearchResponse",
     "SearchWebResult",

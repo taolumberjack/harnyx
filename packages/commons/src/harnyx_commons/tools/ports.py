@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from harnyx_commons.tools.desearch import (
-    DeSearchAiDateFilter,
-    DeSearchAiModel,
-    DeSearchAiResultType,
-    DeSearchAiTool,
-)
 from harnyx_commons.tools.search_models import (
+    FetchPageRequest,
+    FetchPageResponse,
+    SearchAiSearchRequest,
+    SearchAiSearchResponse,
     SearchWebSearchRequest,
     SearchWebSearchResponse,
     SearchXResult,
@@ -19,10 +17,20 @@ from harnyx_commons.tools.search_models import (
 )
 
 
-class DeSearchPort(Protocol):
-    """Client abstraction for the DeSearch API."""
+class WebSearchProviderPort(Protocol):
+    """Shared provider seam for miner-facing web tools."""
 
-    async def search_links_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse: ...
+    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse: ...
+
+    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse: ...
+
+    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse: ...
+
+    async def aclose(self) -> None: ...
+
+
+class DeSearchPort(Protocol):
+    """Internal DeSearch seam for X-specific helpers."""
 
     async def search_links_twitter(
         self,
@@ -31,17 +39,4 @@ class DeSearchPort(Protocol):
 
     async def fetch_twitter_post(self, *, post_id: str) -> SearchXResult | None: ...
 
-    async def ai_search(
-        self,
-        *,
-        prompt: str,
-        tools: tuple[DeSearchAiTool, ...],
-        model: DeSearchAiModel,
-        count: int,
-        date_filter: DeSearchAiDateFilter | None,
-        result_type: DeSearchAiResultType,
-        system_message: str,
-    ) -> object: ...
-
-
-__all__ = ["DeSearchPort"]
+__all__ = ["DeSearchPort", "WebSearchProviderPort"]

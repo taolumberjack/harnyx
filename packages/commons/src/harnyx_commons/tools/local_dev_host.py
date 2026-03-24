@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.clients import CHUTES, DESEARCH
+from harnyx_commons.clients import CHUTES, DESEARCH, PARALLEL
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.domain.miner_task import DEFAULT_MINER_TASK_BUDGET_USD
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
@@ -21,6 +21,8 @@ from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
+from harnyx_commons.tools.parallel import ParallelClient
+from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS, build_miner_sandbox_tool_invoker
 from harnyx_commons.tools.types import parse_tool_name
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -33,7 +35,7 @@ class LocalToolHost:
     session_id: UUID
     token: str
     _tool_executor: ToolExecutor
-    _search_client: DeSearchClient
+    _search_client: WebSearchProviderPort
     _llm_provider: ChutesLlmProvider
 
     async def invoke(
@@ -62,7 +64,10 @@ class LocalToolHost:
 
 def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> LocalToolHost:
     llm_settings = LlmSettings()
-    if not llm_settings.desearch_api_key_value:
+    if llm_settings.search_provider == "parallel":
+        if not llm_settings.parallel_api_key_value:
+            raise RuntimeError("PARALLEL_API_KEY must be set to run local tool host")
+    elif not llm_settings.desearch_api_key_value:
         raise RuntimeError("DESEARCH_API_KEY must be set to run local tool host")
     if not llm_settings.chutes_api_key_value:
         raise RuntimeError("CHUTES_API_KEY must be set to run local tool host")
@@ -89,12 +94,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
         )
     )
 
-    desearch = DeSearchClient(
-        base_url=DESEARCH.base_url,
-        api_key=llm_settings.desearch_api_key_value,
-        timeout=DESEARCH.timeout_seconds,
-        max_concurrent=llm_settings.desearch_max_concurrent,
-    )
+    search_client = _build_local_search_client(llm_settings)
     llm_provider = ChutesLlmProvider(
         base_url=CHUTES.base_url,
         api_key=llm_settings.chutes_api_key_value,
@@ -103,7 +103,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
     )
     tool_invoker = build_miner_sandbox_tool_invoker(
         receipts,
-        search_client=desearch,
+        web_search_client=search_client,
         llm_provider=llm_provider,
         llm_provider_name="chutes",
         allowed_models=ALLOWED_TOOL_MODELS,
@@ -121,8 +121,24 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
         session_id=session_id,
         token=token,
         _tool_executor=tool_executor,
-        _search_client=desearch,
+        _search_client=search_client,
         _llm_provider=llm_provider,
+    )
+
+
+def _build_local_search_client(settings: LlmSettings) -> WebSearchProviderPort:
+    if settings.search_provider == "parallel":
+        return ParallelClient(
+            base_url=settings.parallel_base_url,
+            api_key=settings.parallel_api_key_value,
+            timeout=PARALLEL.timeout_seconds,
+            max_concurrent=settings.parallel_max_concurrent,
+        )
+    return DeSearchClient(
+        base_url=DESEARCH.base_url,
+        api_key=settings.desearch_api_key_value,
+        timeout=DESEARCH.timeout_seconds,
+        max_concurrent=settings.desearch_max_concurrent,
     )
 
 

@@ -12,7 +12,7 @@ from typing import Protocol
 import bittensor as bt
 
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.clients import CHUTES, DESEARCH, PLATFORM
+from harnyx_commons.clients import CHUTES, DESEARCH, PARALLEL, PLATFORM
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
@@ -22,6 +22,8 @@ from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.executor import ToolExecutor
+from harnyx_commons.tools.parallel import ParallelClient
+from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import (
     ALLOWED_TOOL_MODELS,
     RuntimeToolInvoker,
@@ -54,7 +56,6 @@ from harnyx_validator.infrastructure.state.evaluation_record import InMemoryEval
 from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
 from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
 from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
-from harnyx_validator.infrastructure.tools.feed_search_provider import HttpFeedSearchToolProvider
 from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
 from harnyx_validator.runtime.llm_factory import create_llm_provider_factory
 from harnyx_validator.runtime.settings import Settings
@@ -84,7 +85,7 @@ class RuntimeContext:
     evaluation_records: EvaluationRecordPort
     progress_tracker: InMemoryRunProgress
     usage_tracker: UsageTracker
-    search_client: DeSearchClient | None
+    search_client: WebSearchProviderPort | None
     tool_llm_provider: LlmProviderPort | None
     scoring_llm_provider: LlmProviderPort | None
     tool_invoker: RuntimeToolInvoker
@@ -133,17 +134,11 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     platform_client, platform_hotkey, subtensor_client = _build_external_clients(resolved)
 
     search_client, tool_llm_provider, scoring_llm_provider = _build_llm_clients(resolved)
-    feed_search_provider = HttpFeedSearchToolProvider(
-        base_url=str(resolved.platform_api.platform_base_url),
-        hotkey=platform_hotkey,
-        timeout_seconds=PLATFORM.timeout_seconds,
-    )
     tool_invoker, tool_executor = _build_tooling(
         state=state,
         resolved=resolved,
         search_client=search_client,
         tool_llm_provider=tool_llm_provider,
-        feed_search_provider=feed_search_provider,
     )
 
     scoring_service, weight_submission_service, scoring_embedding_client = _build_services(
@@ -228,7 +223,7 @@ def _build_external_clients(settings: Settings) -> tuple[PlatformPort, bt.Keypai
 
 def _build_llm_clients(
     settings: Settings,
-) -> tuple[DeSearchClient | None, LlmProviderPort | None, LlmProviderPort | None]:
+) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort | None]:
     search_client = _create_search_client(settings)
     tool_llm_provider = _create_tool_llm_provider(settings)
     scoring_llm_provider = _create_scoring_llm_provider(settings)
@@ -239,16 +234,14 @@ def _build_tooling(
     *,
     state: InMemoryState,
     resolved: Settings,
-    search_client: DeSearchClient | None,
+    search_client: WebSearchProviderPort | None,
     tool_llm_provider: LlmProviderPort | None,
-    feed_search_provider: HttpFeedSearchToolProvider | None,
 ) -> tuple[RuntimeToolInvoker, ToolExecutor]:
     tool_invoker = build_miner_sandbox_tool_invoker(
         state.receipt_log,
-        search_client=search_client,
+        web_search_client=search_client,
         llm_provider=tool_llm_provider,
         llm_provider_name=resolved.llm.tool_llm_provider,
-        feed_search_provider=feed_search_provider,
         allowed_models=ALLOWED_TOOL_MODELS,
     )
     tool_executor = ToolExecutor(
@@ -507,13 +500,25 @@ def _build_inbound_auth(resolved: Settings) -> BittensorSr25519InboundVerifier:
     )
 
 
-def _create_search_client(settings: Settings) -> DeSearchClient:
-    return DeSearchClient(
-        base_url=DESEARCH.base_url,
-        api_key=settings.llm.desearch_api_key_value,
-        timeout=DESEARCH.timeout_seconds,
-        max_concurrent=settings.llm.desearch_max_concurrent,
-    )
+def _create_search_client(settings: Settings) -> WebSearchProviderPort:
+    provider = settings.llm.search_provider
+    if provider is None:
+        raise RuntimeError("SEARCH_PROVIDER must be configured")
+    if provider == "desearch":
+        return DeSearchClient(
+            base_url=DESEARCH.base_url,
+            api_key=settings.llm.desearch_api_key_value,
+            timeout=DESEARCH.timeout_seconds,
+            max_concurrent=settings.llm.desearch_max_concurrent,
+        )
+    if provider == "parallel":
+        return ParallelClient(
+            base_url=settings.llm.parallel_base_url,
+            api_key=settings.llm.parallel_api_key_value,
+            timeout=PARALLEL.timeout_seconds,
+            max_concurrent=settings.llm.parallel_max_concurrent,
+        )
+    raise ValueError(f"unsupported search provider: {provider}")
 
 
 def _create_tool_llm_provider(settings: Settings) -> LlmProviderPort | None:

@@ -12,6 +12,12 @@ class DeSearchDefaults:
 
 
 @dataclass(frozen=True, slots=True)
+class ParallelDefaults:
+    base_url: str = "https://api.parallel.ai"
+    timeout_seconds: float = 30.0
+
+
+@dataclass(frozen=True, slots=True)
 class ChutesDefaults:
     base_url: str = "https://llm.chutes.ai"
     timeout_seconds: float = 120.0
@@ -24,14 +30,17 @@ class PlatformDefaults:
 
 # Instances
 DESEARCH = DeSearchDefaults()
+PARALLEL = ParallelDefaults()
 CHUTES = ChutesDefaults()
 PLATFORM = PlatformDefaults()
 
 __all__ = [
     "CHUTES",
     "DESEARCH",
+    "PARALLEL",
     "PLATFORM",
     "ChutesDefaults",
     "DeSearchDefaults",
+    "ParallelDefaults",
     "PlatformDefaults",
 ]

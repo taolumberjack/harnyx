@@ -39,11 +39,10 @@ def parse_tool_model(raw: str | None) -> ToolModelName:
 # Per-call flat rates for search tools, keyed by tool name.
 SEARCH_PRICING: dict[SearchToolName, float] = {
     "search_web": 0.0025,
-    "search_x": 0.003,
+    "fetch_page": 0.0025,
 }
 
 SEARCH_AI_PER_REFERENCEABLE_RESULT_USD = 0.004
-SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD = 0.0025
 
 
 @dataclass(frozen=True)
@@ -97,7 +96,6 @@ __all__ = [
     "MODEL_PRICING",
     "SEARCH_PRICING",
     "SEARCH_AI_PER_REFERENCEABLE_RESULT_USD",
-    "SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD",
     "ModelPricing",
     "parse_tool_model",
 ]

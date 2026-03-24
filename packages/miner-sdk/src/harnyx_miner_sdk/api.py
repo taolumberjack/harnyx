@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, cast
-from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
 from harnyx_miner_sdk.llm import LlmResponse
@@ -14,10 +15,9 @@ from harnyx_miner_sdk.tools.http_models import (
     ToolUsageDTO,
 )
 from harnyx_miner_sdk.tools.search_models import (
-    FeedSearchResponse,
+    FetchPageResponse,
     SearchAiSearchResponse,
     SearchWebSearchResponse,
-    SearchXSearchResponse,
 )
 
 TResponse = TypeVar("TResponse")
@@ -45,11 +45,28 @@ class LlmChatResult(ToolCallResponse[LlmResponse]):
         return self.response
 
 
-@dataclass(frozen=True)
-class TestToolResponse:
-    status: str
-    echo: str
+class TestToolResponse(BaseModel):
+    status: str = ""
+    echo: str = ""
 
+    @field_validator("status", "echo", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: object) -> str:
+        return "" if value is None else str(value)
+
+
+class _SearchWebInvocationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    search_queries: tuple[str, ...]
+    num: int | None = None
+
+    @field_validator("search_queries", mode="before")
+    @classmethod
+    def _normalize_search_queries(cls, value: object) -> object:
+        if isinstance(value, str):
+            return (value,)
+        return value
 
 def _parse_execute_response(raw_response: object) -> ToolExecuteResponseDTO:
     return ToolExecuteResponseDTO.model_validate(raw_response)
@@ -67,10 +84,7 @@ async def test_tool(message: str) -> ToolCallResponse[TestToolResponse]:
     raw_response = await _current_tool_invoker().invoke("test_tool", args=(message,), kwargs={})
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="test_tool response payload must be a mapping")
-    response = TestToolResponse(
-        status=str(response_payload.get("status", "")),
-        echo=str(response_payload.get("echo", "")),
-    )
+    response = TestToolResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -100,35 +114,20 @@ async def tooling_info() -> ToolCallResponse[dict[str, Any]]:
     )
 
 
-async def search_web(query: str, /, **kwargs: Any) -> ToolCallResponse[SearchWebSearchResponse]:
+async def search_web(
+    search_queries: str | Sequence[str],
+    /,
+    **kwargs: Any,
+) -> ToolCallResponse[SearchWebSearchResponse]:
     """Execute the validator-hosted search tool and return its response payload."""
 
-    payload = {"query": query}
-    payload.update(kwargs)
+    payload = _SearchWebInvocationPayload.model_validate(
+        {"search_queries": search_queries, **kwargs}
+    ).model_dump(exclude_none=True, mode="json")
     raw_response = await _current_tool_invoker().invoke("search_web", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="search_web response payload must be a mapping")
     response = SearchWebSearchResponse.model_validate(response_payload)
-    return ToolCallResponse(
-        receipt_id=dto.receipt_id,
-        response=response,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
-
-
-async def search_x(query: str, /, **kwargs: Any) -> ToolCallResponse[SearchXSearchResponse]:
-    """Execute the validator-hosted X search tool and return its response payload."""
-
-    payload = {"query": query}
-    payload.update(kwargs)
-    raw_response = await _current_tool_invoker().invoke("search_x", args=(), kwargs=payload)
-    dto = _parse_execute_response(raw_response)
-    response_payload = _require_response_mapping(dto.response, label="search_x response payload must be a mapping")
-    response = SearchXSearchResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -149,6 +148,26 @@ async def search_ai(prompt: str, /, **kwargs: Any) -> ToolCallResponse[SearchAiS
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="search_ai response payload must be a mapping")
     response = SearchAiSearchResponse.model_validate(response_payload)
+    return ToolCallResponse(
+        receipt_id=dto.receipt_id,
+        response=response,
+        results=dto.results,
+        result_policy=dto.result_policy,
+        cost_usd=dto.cost_usd,
+        usage=dto.usage,
+        budget=dto.budget,
+    )
+
+
+async def fetch_page(url: str, /, **kwargs: Any) -> ToolCallResponse[FetchPageResponse]:
+    """Execute the validator-hosted page fetch tool and return its response payload."""
+
+    payload = {"url": url}
+    payload.update(kwargs)
+    raw_response = await _current_tool_invoker().invoke("fetch_page", args=(), kwargs=payload)
+    dto = _parse_execute_response(raw_response)
+    response_payload = _require_response_mapping(dto.response, label="fetch_page response payload must be a mapping")
+    response = FetchPageResponse.model_validate(response_payload)
     return ToolCallResponse(
         receipt_id=dto.receipt_id,
         response=response,
@@ -192,42 +211,11 @@ async def llm_chat(
     )
 
 
-async def search_items(
-    *,
-    feed_id: UUID | str,
-    enqueue_seq: int,
-    search_queries: Sequence[str],
-    num_hit: int,
-) -> ToolCallResponse[FeedSearchResponse]:
-    """Query prior similar items in a feed via the host-provided tool."""
-
-    payload = {
-        "feed_id": str(feed_id),
-        "enqueue_seq": int(enqueue_seq),
-        "search_queries": list(search_queries),
-        "num_hit": int(num_hit),
-    }
-    raw_response = await _current_tool_invoker().invoke("search_items", args=(), kwargs=payload)
-    dto = _parse_execute_response(raw_response)
-    response_payload = _require_response_mapping(dto.response, label="search_items response payload must be a mapping")
-    response = FeedSearchResponse.model_validate(response_payload)
-    return ToolCallResponse(
-        receipt_id=dto.receipt_id,
-        response=response,
-        results=dto.results,
-        result_policy=dto.result_policy,
-        cost_usd=dto.cost_usd,
-        usage=dto.usage,
-        budget=dto.budget,
-    )
-
-
 __all__ = [
+    "fetch_page",
     "llm_chat",
-    "search_x",
     "search_web",
     "search_ai",
-    "search_items",
     "test_tool",
     "tooling_info",
     "ToolCallResponse",

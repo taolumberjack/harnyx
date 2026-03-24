@@ -1,11 +1,10 @@
-"""Provider-agnostic request/response models for search tools."""
+"""Provider-agnostic request/response models for miner-facing web tools."""
 
 from __future__ import annotations
 
 from typing import Any, Literal
-from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class SearchWebSearchRequest(BaseModel):
@@ -13,9 +12,16 @@ class SearchWebSearchRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    query: str
+    search_queries: tuple[str, ...] = Field(min_length=1)
     num: int | None = None
-    start: int | None = None
+
+    @field_validator("search_queries")
+    @classmethod
+    def _validate_search_queries(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(item.strip() for item in value)
+        if not normalized or any(not item for item in normalized):
+            raise ValueError("search_queries must contain non-empty keywords")
+        return normalized
 
     def to_query_params(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)
@@ -27,7 +33,6 @@ class SearchWebResult(BaseModel):
     link: str
     snippet: str | None = None
     title: str | None = None
-    provider_context: dict[str, Any] | None = None
 
 
 class SearchWebSearchResponse(BaseModel):
@@ -118,7 +123,6 @@ class SearchXResult(BaseModel):
     is_quote_tweet: bool | None = None
     media: list[SearchXMediaEntity] | None = None
     extended_entities: SearchXExtendedEntities | None = None
-    provider_context: dict[str, Any] | None = None
 
 
 class SearchXSearchResponse(BaseModel):
@@ -160,12 +164,10 @@ SearchAiResultType = Literal[
 class SearchAiSearchRequest(BaseModel):
     """Query parameters for the `search_ai` tool."""
 
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     prompt: str = Field(min_length=1)
-    tools: tuple[SearchAiTool, ...] = Field(min_length=1)
     count: int = Field(default=10, ge=1, le=200)
-    date_filter: SearchAiDateFilter | None = None
-    result_type: SearchAiResultType = "LINKS_WITH_FINAL_SUMMARY"
-    system_message: str = ""
 
 
 class SearchAiResult(BaseModel):
@@ -174,38 +176,38 @@ class SearchAiResult(BaseModel):
     url: str = Field(min_length=1)
     note: str | None = None
     title: str | None = None
-    source: SearchAiTool | None = None
 
 
 class SearchAiSearchResponse(BaseModel):
     """Response payload for the `search_ai` tool."""
 
     data: list[SearchAiResult] = Field(default_factory=list)
-    raw: Any | None = None
     attempts: int | None = None
     retry_reasons: tuple[str, ...] | None = None
 
 
-class FeedSearchHit(BaseModel):
-    """Single hit returned by the `search_items` tool."""
+class FetchPageRequest(BaseModel):
+    """Query parameters for the `fetch_page` tool."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
-    job_id: UUID
-    content_id: UUID
-    provider: str
-    external_id: str
-    url: str | None = None
-    text: str
-    requested_at_epoch_ms: int
-    enqueue_seq: int
-    score: float | None = None
+    url: str = Field(min_length=1)
 
 
-class FeedSearchResponse(BaseModel):
-    """Response payload for the `search_items` tool."""
+class FetchPageResult(BaseModel):
+    """Single fetched page item."""
 
-    hits: list[FeedSearchHit] = Field(default_factory=list)
+    url: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    title: str | None = None
+
+
+class FetchPageResponse(BaseModel):
+    """Response payload for the `fetch_page` tool."""
+
+    data: list[FetchPageResult] = Field(default_factory=list)
+    attempts: int | None = None
+    retry_reasons: tuple[str, ...] | None = None
 
 
 __all__ = [
@@ -224,6 +226,7 @@ __all__ = [
     "SearchAiSearchRequest",
     "SearchAiSearchResponse",
     "SearchAiResult",
-    "FeedSearchHit",
-    "FeedSearchResponse",
+    "FetchPageRequest",
+    "FetchPageResponse",
+    "FetchPageResult",
 ]

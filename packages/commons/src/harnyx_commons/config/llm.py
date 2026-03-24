@@ -27,7 +27,7 @@ class LlmSettings(BaseSettings):
 
     # --- Tooling / search ---
     tool_llm_provider: LlmProviderName = Field(default="chutes", alias="TOOL_LLM_PROVIDER")
-    search_provider: Literal["desearch"] | None = Field(default=None, alias="SEARCH_PROVIDER")
+    search_provider: Literal["desearch", "parallel"] | None = Field(default=None, alias="SEARCH_PROVIDER")
 
     # --- Generation / reference / benchmark ---
     generator_llm_provider: LlmProviderName = Field(default="chutes", alias="GENERATOR_LLM_PROVIDER")
@@ -107,12 +107,18 @@ class LlmSettings(BaseSettings):
         default=None, alias="CONTENT_REVIEW_LLM_TIMEOUT_SECONDS"
     )
 
-    # --- Chutes / DeSearch ---
+    # --- Chutes / DeSearch / Parallel ---
     desearch_api_key: SecretStr = Field(
         default_factory=lambda: SecretStr(""), alias="DESEARCH_API_KEY"
     )
     desearch_base_url: str = Field(
         default="https://api.desearch.ai", alias="DESEARCH_BASE_URL"
+    )
+    parallel_api_key: SecretStr = Field(
+        default_factory=lambda: SecretStr(""), alias="PARALLEL_API_KEY"
+    )
+    parallel_base_url: str = Field(
+        default="https://api.parallel.ai", alias="PARALLEL_BASE_URL"
     )
 
     chutes_api_key: SecretStr = Field(default_factory=lambda: SecretStr(""), alias="CHUTES_API_KEY")
@@ -121,6 +127,7 @@ class LlmSettings(BaseSettings):
     vertex_max_concurrent: int = Field(default=30, alias="VERTEX_MAX_CONCURRENT")
     chutes_max_concurrent: int = Field(default=5, alias="CHUTES_MAX_CONCURRENT")
     desearch_max_concurrent: int = Field(default=5, alias="DESEARCH_MAX_CONCURRENT")
+    parallel_max_concurrent: int = Field(default=5, alias="PARALLEL_MAX_CONCURRENT")
 
     # --- Validators ---
     @field_validator("desearch_api_key", mode="before")
@@ -134,6 +141,10 @@ class LlmSettings(BaseSettings):
     @property
     def desearch_api_key_value(self) -> str:
         return self.desearch_api_key.get_secret_value()
+
+    @property
+    def parallel_api_key_value(self) -> str:
+        return self.parallel_api_key.get_secret_value()
 
     @property
     def chutes_api_key_value(self) -> str:

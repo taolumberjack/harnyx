@@ -14,6 +14,7 @@ import httpx
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.util.types import AttributeValue
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.errors import ToolProviderError
@@ -23,6 +24,12 @@ from harnyx_commons.tools.desearch_ai_protocol import (
     parse_desearch_ai_response,
 )
 from harnyx_commons.tools.search_models import (
+    FetchPageRequest,
+    FetchPageResponse,
+    FetchPageResult,
+    SearchAiResult,
+    SearchAiSearchRequest,
+    SearchAiSearchResponse,
     SearchWebResult,
     SearchWebSearchRequest,
     SearchWebSearchResponse,
@@ -32,6 +39,29 @@ from harnyx_commons.tools.search_models import (
 )
 
 _LOGGER = logging.getLogger("harnyx_commons.tools.desearch.calls")
+
+
+class _DeSearchCrawlResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    content: str = Field(min_length=1)
+    attempts: int | None = None
+    retry_reasons: tuple[str, ...] | None = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _normalize_content(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+
+class _DeSearchRetryMetadataPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    attempts: int | None = None
+    retry_reasons: tuple[str, ...] | None = None
+
 
 class DeSearchAiTool(StrEnum):
     WEB = "web"
@@ -64,6 +94,16 @@ class DeSearchAiResultType(StrEnum):
     ONLY_LINKS = "ONLY_LINKS"
     LINKS_WITH_SUMMARIES = "LINKS_WITH_SUMMARIES"
     LINKS_WITH_FINAL_SUMMARY = "LINKS_WITH_FINAL_SUMMARY"
+
+
+_MINER_AI_TOOLS: tuple[DeSearchAiTool, ...] = (
+    DeSearchAiTool.WEB,
+    DeSearchAiTool.HACKER_NEWS,
+    DeSearchAiTool.REDDIT,
+    DeSearchAiTool.WIKIPEDIA,
+    DeSearchAiTool.YOUTUBE,
+    DeSearchAiTool.ARXIV,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +159,7 @@ class DeSearchClient:
         *,
         expect_data: bool = True,
         allow_not_found: bool = False,
+        response_format: str = "json",
     ) -> dict[str, Any] | None:
         path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         return await self._request(
@@ -127,6 +168,7 @@ class DeSearchClient:
             json_payload=dict(payload),
             expect_data=expect_data,
             allow_not_found=allow_not_found,
+            response_format=response_format,
         )
 
     async def _get(
@@ -136,6 +178,7 @@ class DeSearchClient:
         *,
         expect_data: bool = True,
         allow_not_found: bool = False,
+        response_format: str = "json",
     ) -> dict[str, Any] | None:
         path = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         return await self._request(
@@ -144,16 +187,67 @@ class DeSearchClient:
             params=dict(params),
             expect_data=expect_data,
             allow_not_found=allow_not_found,
+            response_format=response_format,
         )
 
     # Convenience wrappers ------------------------------------------------------------------------
 
+    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
+        return await self.search_links_web(request)
+
+    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse:
+        raw = await self.ai_search(
+            prompt=request.prompt,
+            tools=_MINER_AI_TOOLS,
+            model=DeSearchAiModel.HORIZON,
+            count=request.count,
+            date_filter=None,
+            result_type=DeSearchAiResultType.LINKS_WITH_FINAL_SUMMARY,
+            system_message="",
+        )
+        metadata = _DeSearchRetryMetadataPayload.model_validate(raw)
+        return SearchAiSearchResponse(
+            data=_extract_desearch_ai_results(raw),
+            attempts=metadata.attempts,
+            retry_reasons=metadata.retry_reasons,
+        )
+
+    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse:
+        data = await self._get(
+            "web/crawl",
+            {"url": request.url, "format": "text"},
+            expect_data=False,
+            response_format="text",
+        )
+        if data is None:
+            raise ToolProviderError("tool provider failed")
+        payload = _DeSearchCrawlResponsePayload.model_validate(data)
+        return FetchPageResponse(
+            data=[FetchPageResult(url=request.url, content=payload.content)],
+            attempts=payload.attempts,
+            retry_reasons=payload.retry_reasons,
+        )
+
     async def search_links_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
-        params = request.to_query_params()
-        data = await self._get("web", params)
+        data = await self._search_links_web_page(request, start=None)
         if data is None:
             raise ToolProviderError("tool provider failed")
         return SearchWebSearchResponse.model_validate(data)
+
+    async def _search_links_web_page(
+        self,
+        request: SearchWebSearchRequest,
+        *,
+        start: int | None,
+    ) -> dict[str, Any] | None:
+        params: dict[str, Any] = {
+            "query": _build_web_query(request.search_queries),
+        }
+        if request.num is not None:
+            params["num"] = request.num
+        if start is not None:
+            params["start"] = start
+        return await self._get("web", params)
 
     async def search_links_twitter(
         self,
@@ -228,16 +322,15 @@ class DeSearchClient:
         self,
         request: SearchWebSearchRequest,
     ) -> AsyncIterator[DeSearchWebSearchPage]:
-        query = request.query.strip()
-        if not query:
-            raise ValueError("desearch iter_search_links_web_pages requires non-empty query")
-
-        start = request.start or 0
+        _build_web_query(request.search_queries)
+        start = 0
         page_index = 0
         last_first_link: str | None = None
         while True:
-            page_request = request.model_copy(update={"start": start})
-            response = await self.search_links_web(page_request)
+            response_data = await self._search_links_web_page(request, start=start)
+            if response_data is None:
+                raise ToolProviderError("tool provider failed")
+            response = SearchWebSearchResponse.model_validate(response_data)
             page_index += 1
             if not response.data:
                 return
@@ -252,7 +345,7 @@ class DeSearchClient:
             last_first_link = first_link
 
             yield DeSearchWebSearchPage(
-                request=page_request,
+                request=request,
                 response=response,
                 page=page_index,
                 start=start,
@@ -378,6 +471,7 @@ class DeSearchClient:
         params: dict[str, Any] | None = None,
         expect_data: bool = True,
         allow_not_found: bool = False,
+        response_format: str = "json",
     ) -> dict[str, Any] | None:
         if self._semaphore is None:
             return await self._request_with_retries(
@@ -388,6 +482,7 @@ class DeSearchClient:
                 expect_data=expect_data,
                 allow_not_found=allow_not_found,
                 wait_ms=0.0,
+                response_format=response_format,
             )
 
         wait_start = time.perf_counter()
@@ -401,6 +496,7 @@ class DeSearchClient:
                 expect_data=expect_data,
                 allow_not_found=allow_not_found,
                 wait_ms=wait_ms,
+                response_format=response_format,
             )
 
     async def _request_with_retries(
@@ -413,6 +509,7 @@ class DeSearchClient:
         expect_data: bool,
         allow_not_found: bool,
         wait_ms: float,
+        response_format: str,
     ) -> dict[str, Any] | None:
         reasons: list[str] = []
         total_latency_ms = 0.0
@@ -432,7 +529,7 @@ class DeSearchClient:
                     attempt_start = time.perf_counter()
                     try:
                         resp = await self._send(method, path, json_payload=json_payload, params=params)
-                        raw_response, data = await self._parse_response(resp)
+                        raw_response, data = await self._parse_response(resp, response_format=response_format)
                         total_latency_ms += (time.perf_counter() - attempt_start) * 1000
                         if expect_data:
                             if self._missing_data(data):
@@ -561,8 +658,11 @@ class DeSearchClient:
         return await self._client.get(path, headers=headers, params=params)
 
     @staticmethod
-    async def _parse_response(resp: httpx.Response) -> tuple[object, dict[str, Any]]:
+    async def _parse_response(resp: httpx.Response, *, response_format: str) -> tuple[object, dict[str, Any]]:
         resp.raise_for_status()
+        if response_format == "text":
+            raw = resp.text
+            return raw, {"content": raw}
         raw = resp.json()
         data = raw
         if isinstance(data, list):
@@ -616,6 +716,46 @@ def _filter_tweets_for_max_id(
         filtered.append(post)
         filtered_ids.append(tweet_id)
     return filtered, filtered_ids, ignored_count
+
+
+def _build_web_query(search_queries: tuple[str, ...]) -> str:
+    query = " ".join(item.strip() for item in search_queries)
+    if not query:
+        raise ValueError("desearch web search requires non-empty search_queries")
+    return query
+
+
+def _extract_desearch_ai_results(raw: object) -> list[SearchAiResult]:
+    docs = parse_desearch_ai_response(raw)
+    results: list[SearchAiResult] = []
+    seen_urls: set[str] = set()
+
+    def add(url: str, *, title: str | None = None, note: str | None = None) -> None:
+        normalized = url.strip()
+        if not normalized or normalized in seen_urls:
+            return
+        seen_urls.add(normalized)
+        results.append(
+            SearchAiResult(
+                url=normalized,
+                title=title or None,
+                note=note or None,
+            )
+        )
+
+    docs_sections = (
+        (docs.search, "web"),
+        (docs.wikipedia_search, "wikipedia"),
+        (docs.youtube_search, "youtube"),
+        (docs.arxiv_search, "arxiv"),
+        (docs.reddit_search, "reddit"),
+        (docs.hacker_news_search, "hackernews"),
+    )
+    for items, _source in docs_sections:
+        for item in items or ():
+            add(item.link, title=item.title, note=item.snippet)
+
+    return results
 
 
 __all__ = ["DeSearchClient"]

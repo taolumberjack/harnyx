@@ -12,8 +12,48 @@ from harnyx_commons.config.sandbox import SandboxSettings
 from harnyx_commons.config.subtensor import SubtensorSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_validator.infrastructure.scoring.vertex_embedding import LazyVertexTextEmbeddingClient
-from harnyx_validator.runtime.bootstrap import _create_scoring_service, close_runtime_resources
+from harnyx_validator.runtime import bootstrap
+from harnyx_validator.runtime.bootstrap import (
+    _create_scoring_service,
+    _create_search_client,
+    close_runtime_resources,
+)
 from harnyx_validator.runtime.settings import Settings
+
+
+def test_create_search_client_requires_search_provider() -> None:
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            search_provider=None,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="SEARCH_PROVIDER must be configured"):
+        _create_search_client(settings)
+
+
+def test_create_search_client_uses_configured_parallel_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeParallelClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(bootstrap, "ParallelClient", _FakeParallelClient)
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            search_provider="parallel",
+            parallel_base_url="https://proxy.parallel.test",
+            parallel_api_key=SecretStr("parallel-key"),
+            parallel_max_concurrent=7,
+        )
+    )
+
+    _create_search_client(settings)
+
+    assert captured["base_url"] == "https://proxy.parallel.test"
+    assert captured["api_key"] == "parallel-key"
+    assert captured["max_concurrent"] == 7
 
 
 def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() -> None:

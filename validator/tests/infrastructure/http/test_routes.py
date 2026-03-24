@@ -317,8 +317,10 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
     response_payload = body["response"]
     assert "search_repo" not in response_payload["tool_names"]
     assert "get_repo_file" not in response_payload["tool_names"]
+    assert "search_items" not in response_payload["tool_names"]
     assert "search_repo" not in response_payload["pricing"]
     assert "get_repo_file" not in response_payload["pricing"]
+    assert "search_items" not in response_payload["pricing"]
 
     session_snapshot = provider.session_registry.get(provider.session.session_id)
     assert session_snapshot is not None

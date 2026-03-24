@@ -7,7 +7,7 @@ import pytest
 from harnyx_commons.clients import DESEARCH
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.tools.desearch import DeSearchClient
-from harnyx_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
+from harnyx_commons.tools.search_models import FetchPageRequest, SearchWebSearchRequest, SearchXSearchRequest
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 
@@ -20,12 +20,30 @@ async def test_search_web_live() -> None:
         api_key=settings.desearch_api_key_value,
         timeout=DESEARCH.timeout_seconds,
     )
-    request = SearchWebSearchRequest(query="United States latest news", num=5)
+    request = SearchWebSearchRequest(search_queries=("United States", "latest news"), num=5)
 
     result = await client.search_links_web(request)
     await client.aclose()
 
     assert isinstance(result.data, list)
+
+
+async def test_fetch_page_live() -> None:
+    settings = LlmSettings()
+
+    client = DeSearchClient(
+        base_url=DESEARCH.base_url,
+        api_key=settings.desearch_api_key_value,
+        timeout=DESEARCH.timeout_seconds,
+    )
+    request = FetchPageRequest(url="https://example.com")
+
+    result = await client.fetch_page(request)
+    await client.aclose()
+
+    assert len(result.data) == 1
+    assert result.data[0].url == "https://example.com"
+    assert result.data[0].content
 
 
 async def test_search_twitter_live() -> None:

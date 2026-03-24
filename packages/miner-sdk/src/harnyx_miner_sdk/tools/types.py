@@ -6,26 +6,24 @@ from typing import Literal, TypeGuard, cast
 
 ToolName = Literal[
     "search_web",
-    "search_x",
     "search_ai",
+    "fetch_page",
     "llm_chat",
-    "search_items",
     "test_tool",
     "tooling_info",
 ]
-SearchToolName = Literal["search_web", "search_x", "search_ai"]
+SearchToolName = Literal["search_web", "search_ai", "fetch_page"]
 LlmToolName = Literal["llm_chat"]
 
 TOOL_NAMES: set[ToolName] = {
     "search_web",
-    "search_x",
     "search_ai",
+    "fetch_page",
     "llm_chat",
-    "search_items",
     "test_tool",
     "tooling_info",
 }
-SEARCH_TOOLS: set[SearchToolName] = {"search_web", "search_x", "search_ai"}
+SEARCH_TOOLS: set[SearchToolName] = {"search_web", "search_ai", "fetch_page"}
 LLM_TOOLS: set[LlmToolName] = {"llm_chat"}
 
 

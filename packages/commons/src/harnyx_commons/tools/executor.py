@@ -24,7 +24,6 @@ from harnyx_commons.domain.tool_call import (
 from harnyx_commons.errors import BudgetExceededError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import (
-    SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD,
     ToolModelName,
     parse_tool_model,
     price_llm,
@@ -59,8 +58,8 @@ _TOOLS_WITHOUT_USAGE: set[ToolName] = {
 
 _SEARCH_RESULT_FIELDS: dict[SearchToolName, tuple[str, str, str]] = {
     "search_web": ("link", "snippet", "title"),
-    "search_x": ("url", "text", "title"),
     "search_ai": ("url", "note", "title"),
+    "fetch_page": ("url", "content", "title"),
 }
 
 
@@ -136,8 +135,6 @@ class ToolExecutor:
             if name == "search_ai":
                 return 0, None, price_search_ai(referenceable_results=len(results))
             return 0, None, price_search(name)
-        if name == "search_items":
-            return 0, None, SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD
         if name in _TOOLS_WITHOUT_USAGE:
             return 0, None, None
         raise LookupError(f"unsupported tool {request.tool!r}")

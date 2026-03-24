@@ -4,8 +4,9 @@ import json
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
-from harnyx_commons.tools.api import LlmChatResult, llm_chat, search_web, tooling_info
+from harnyx_commons.tools.api import LlmChatResult, fetch_page, llm_chat, search_web, tooling_info
 from harnyx_commons.tools.proxy import ToolInvocationError, ToolProxy
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.sandbox_headers import SESSION_ID_HEADER
@@ -103,7 +104,7 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
     )
     try:
         with bind_tool_invoker(proxy):
-            result = await search_web("harnyx subnet", num=3)
+            result = await search_web(("harnyx", "subnet"), num=3)
     finally:
         await proxy.aclose()
 
@@ -112,7 +113,64 @@ async def test_search_web_helper_invokes_tool_proxy() -> None:
     assert result.results[0].url == "https://example.com"
     payload = captured["payload"]
     assert payload["tool"] == "search_web"
-    assert payload["kwargs"] == {"query": "harnyx subnet", "num": 3}
+    assert payload["kwargs"] == {"search_queries": ["harnyx", "subnet"], "num": 3}
+
+
+async def test_search_web_helper_normalizes_plain_string_query() -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "receipt_id": "r2",
+                "response": {"data": []},
+                "results": [],
+                "result_policy": "referenceable",
+                "budget": {
+                    "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
+                    "session_used_budget_usd": 0.0,
+                    "session_remaining_budget_usd": 1.0,
+                },
+            },
+        )
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            result = await search_web("harnyx subnet", num=3)
+    finally:
+        await proxy.aclose()
+
+    assert result.receipt_id == "r2"
+    payload = captured["payload"]
+    assert payload["tool"] == "search_web"
+    assert payload["kwargs"] == {"search_queries": ["harnyx subnet"], "num": 3}
+
+
+async def test_search_web_helper_rejects_removed_start_pagination() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("search_web should reject unsupported start before invoking the tool proxy")
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            with pytest.raises(ValidationError):
+                await search_web("harnyx subnet", start=10)
+    finally:
+        await proxy.aclose()
 
 async def test_tooling_info_helper_invokes_tool_proxy() -> None:
     captured: dict[str, dict[str, object]] = {}
@@ -158,6 +216,57 @@ async def test_tooling_info_helper_invokes_tool_proxy() -> None:
     payload = captured["payload"]
     assert payload["tool"] == "tooling_info"
     assert payload["kwargs"] == {}
+
+
+async def test_fetch_page_helper_invokes_tool_proxy() -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "receipt_id": "page-1",
+                "response": {
+                    "data": [{"url": "https://example.com", "content": "page body", "title": "Example"}]
+                },
+                "results": [
+                    {
+                        "index": 0,
+                        "result_id": "page-result",
+                        "url": "https://example.com",
+                        "note": "page body",
+                        "title": "Example",
+                    }
+                ],
+                "result_policy": "referenceable",
+                "budget": {
+                    "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
+                    "session_used_budget_usd": 0.0,
+                    "session_remaining_budget_usd": 1.0,
+                },
+            },
+        )
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            result = await fetch_page("https://example.com")
+    finally:
+        await proxy.aclose()
+
+    assert result.receipt_id == "page-1"
+    assert result.results[0].url == "https://example.com"
+    assert result.response.data[0].content == "page body"
+    payload = captured["payload"]
+    assert payload["tool"] == "fetch_page"
+    assert payload["kwargs"] == {"url": "https://example.com"}
 
 
 async def test_llm_chat_helper_invokes_tool_proxy() -> None:

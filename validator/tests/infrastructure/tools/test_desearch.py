@@ -7,7 +7,12 @@ import httpx
 import pytest
 
 from harnyx_commons.tools.desearch import DeSearchAiDateFilter, DeSearchClient
-from harnyx_commons.tools.search_models import SearchWebSearchRequest, SearchXSearchRequest
+from harnyx_commons.tools.search_models import (
+    FetchPageRequest,
+    SearchAiSearchRequest,
+    SearchWebSearchRequest,
+    SearchXSearchRequest,
+)
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -36,7 +41,7 @@ async def test_desearch_client_posts_payload() -> None:
         client=client,
     )
 
-    request = SearchWebSearchRequest(query="harnyx subnet", num=5)
+    request = SearchWebSearchRequest(search_queries=("harnyx", "subnet"), num=5)
     result = await adapter.search_links_web(request)
 
     assert result.data == []
@@ -56,7 +61,7 @@ async def test_desearch_client_raises_on_error_status() -> None:
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="test-key", client=client)
 
     with pytest.raises(RuntimeError):
-        await adapter.search_links_web(SearchWebSearchRequest(query="harnyx subnet"))
+        await adapter.search_links_web(SearchWebSearchRequest(search_queries=("harnyx", "subnet")))
 
 
 async def test_desearch_client_twitter_search() -> None:
@@ -134,3 +139,97 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
     assert response.tweets and len(response.tweets) == 1
     assert response.tweets[0].id == "123"
     assert response.completion == "hello"
+
+
+async def test_desearch_client_search_ai_preserves_retry_metadata() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/desearch/ai/search":
+            raise AssertionError(f"unexpected request: {request.method} {request.url}")
+        payload = json.loads(request.content)
+        assert payload["prompt"] == "harnyx subnet"
+        assert payload["tools"] == ["web", "hackernews", "reddit", "wikipedia", "youtube", "arxiv"]
+        assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
+        assert payload["system_message"] == ""
+        assert payload["count"] == 3
+        return httpx.Response(
+            200,
+            json={
+                "search": [
+                    {
+                        "link": "https://example.com",
+                        "title": "Example",
+                        "snippet": "Snippet",
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="harnyx subnet", count=3))
+
+    assert [item.model_dump(exclude_none=True) for item in response.data] == [
+        {
+            "url": "https://example.com",
+            "title": "Example",
+            "note": "Snippet",
+        }
+    ]
+    assert response.attempts == 1
+    assert response.retry_reasons == ()
+
+
+async def test_desearch_client_fetch_page_text() -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        return httpx.Response(200, text="example page content")
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    response = await adapter.fetch_page(FetchPageRequest(url="https://example.com"))
+
+    assert response.data[0].url == "https://example.com"
+    assert response.data[0].content == "example page content"
+    assert response.attempts == 1
+    assert response.retry_reasons == ()
+    assert captured["method"] == "GET"
+    assert captured["url"] == "https://api.desearch.ai/web/crawl?url=https%3A%2F%2Fexample.com&format=text"
+
+
+async def test_desearch_client_fetch_page_raises_on_error_status() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "failure"})
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    with pytest.raises(RuntimeError):
+        await adapter.fetch_page(FetchPageRequest(url="https://example.com"))
+
+
+async def test_desearch_client_fetch_page_rejects_blank_text() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="   \n  ")
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    with pytest.raises(ValueError):
+        await adapter.fetch_page(FetchPageRequest(url="https://example.com"))

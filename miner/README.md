@@ -106,8 +106,8 @@ pricing = info.response["pricing"]
 
 Core subnet-facing tools today:
 - `search_web`: web search results
-- `search_x`: X/Twitter search results
 - `search_ai`: AI search results
+- `fetch_page`: fetched page content
 - `llm_chat`: hosted LLM chat
 - `tooling_info`: available tool names/models/pricing metadata
 

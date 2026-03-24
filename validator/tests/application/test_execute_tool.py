@@ -9,7 +9,7 @@ import pytest
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCallOutcome
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.llm.pricing import SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD
+from harnyx_commons.llm.pricing import parse_tool_model, price_llm
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvoker
@@ -36,7 +36,7 @@ class RecordingToolInvoker(ToolInvoker):
         kwargs: dict[str, object],
     ) -> dict[str, object]:
         self.calls.append((tool_name, args, kwargs))
-        return {"data": [], "query": kwargs.get("query", "")}
+        return {"data": [], "search_queries": kwargs.get("search_queries", [])}
 
 
 def make_session(*, budget_usd: float = 0.1, hard_limit_usd: float | None = None) -> Session:
@@ -58,8 +58,8 @@ def make_request(session: Session, *, token: str) -> ToolInvocationRequest:
         session_id=session.session_id,
         token=token,
         tool="search_web",
-        args=("harnyx subnet",),
-        kwargs={"query": "harnyx subnet"},
+        args=(),
+        kwargs={"search_queries": ["harnyx", "subnet"]},
     )
 
 
@@ -106,7 +106,7 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
     result = await executor.execute(request)
 
     assert invoker.calls == [
-        ("search_web", ("harnyx subnet",), {"query": "harnyx subnet"})
+        ("search_web", (), {"search_queries": ["harnyx", "subnet"]})
     ]
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
@@ -145,39 +145,6 @@ async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> 
     assert result.budget.session_used_budget_usd == pytest.approx(0.0)
     assert result.budget.session_remaining_budget_usd == pytest.approx(0.1)
 
-
-async def test_execute_tool_prices_search_items_per_call() -> None:
-    session = make_session(budget_usd=1.0)
-    token = generate_token()
-    executor, _, receipt_log, session_registry, _ = build_executor(session, token=token)
-    feed_id = str(uuid4())
-
-    request = ToolInvocationRequest(
-        session_id=session.session_id,
-        token=token,
-        tool="search_items",
-        args=(),
-        kwargs={
-            "feed_id": feed_id,
-            "enqueue_seq": 12,
-            "search_queries": ["alpha beta"],
-            "num_hit": 5,
-        },
-    )
-
-    result = await executor.execute(request)
-
-    stored_session = session_registry.get(session.session_id)
-    assert stored_session is not None
-    assert stored_session.usage.total_cost_usd == pytest.approx(SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD)
-
-    receipt = receipt_log.lookup(result.receipt.receipt_id)
-    assert receipt is not None
-    assert receipt.metadata.cost_usd == pytest.approx(SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD)
-    assert result.budget.session_used_budget_usd == pytest.approx(SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD)
-    assert result.budget.session_remaining_budget_usd == pytest.approx(
-        1.0 - SEARCH_SIMILAR_FEED_ITEMS_PER_CALL_USD
-    )
 
 async def test_execute_tool_budget_is_session_scoped() -> None:
     session_a = make_session(budget_usd=0.2)
@@ -268,7 +235,7 @@ async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
         token=token,
         tool="search_ai",
         args=(),
-        kwargs={"prompt": "harnyx subnet", "tools": ["web"], "count": 3},
+        kwargs={"prompt": "harnyx subnet", "count": 3},
     )
 
     result = await executor.execute(request)
@@ -297,8 +264,8 @@ async def test_execute_tool_logs_response_preview(caplog: pytest.LogCaptureFixtu
         for record in caplog.records
         if record.message.startswith("tool call completed:")
     )
-    assert "response_preview={'data': [], 'query': 'harnyx subnet'}" in completed.message
-    assert completed.response_preview == "{'data': [], 'query': 'harnyx subnet'}"
+    assert "response_preview={'data': [], 'search_queries': ['harnyx', 'subnet']}" in completed.message
+    assert completed.response_preview == "{'data': [], 'search_queries': ['harnyx', 'subnet']}"
     assert completed.results_preview == "()"
 
 
@@ -357,6 +324,12 @@ async def test_execute_tool_rejects_expired_session() -> None:
 async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()
+    usage = LlmUsage(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        reasoning_tokens=7,
+    )
 
     class UsageToolInvoker(ToolInvoker):
         async def invoke(
@@ -377,7 +350,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
                         ),
                     ),
                 ),
-                usage=LlmUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+                usage=usage,
             )
             payload = response.to_payload()
             payload["harnyx_provider"] = "llm"
@@ -422,3 +395,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
     assert usage_totals.total_tokens == 15
     assert usage_totals.call_count == 1
     assert result.response_payload["usage"]["total_tokens"] == 15
+    assert result.response_payload["usage"]["reasoning_tokens"] == 7
+    assert stored_session.usage.total_cost_usd == pytest.approx(
+        price_llm(parse_tool_model("openai/gpt-oss-20b"), usage)
+    )

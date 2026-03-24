@@ -19,7 +19,6 @@ class DeSearchAiDocsLinkResult:
     link: str
     title: str | None = None
     snippet: str | None = None
-    provider_context: dict[str, object] | None = None
 
     __pydantic_config__ = ConfigDict(extra="ignore")
 
