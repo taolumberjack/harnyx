@@ -179,7 +179,7 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     assert receipt.metadata.request_hash
     session_snapshot = provider.session_registry.get(provider.session.session_id)
     assert session_snapshot is not None
-    assert session_snapshot.usage.total_cost_usd == pytest.approx(0.0025)
+    assert session_snapshot.usage.total_cost_usd == pytest.approx(0.0001)
     assert provider.token_semaphore.acquire_calls == [DEMO_SESSION_TOKEN]
     assert provider.token_semaphore.release_calls == [DEMO_SESSION_TOKEN]
     assert provider.token_semaphore.in_flight(DEMO_SESSION_TOKEN) == 0

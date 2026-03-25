@@ -181,7 +181,15 @@ async def test_tooling_info_helper_invokes_tool_proxy() -> None:
             200,
             json={
                 "receipt_id": "info-1",
-                "response": {"tool_names": ["search_web"], "pricing": {"search_web": {"usd_per_call": 0.0025}}},
+                "response": {
+                    "tool_names": ["search_web"],
+                    "pricing": {
+                        "search_web": {
+                            "kind": "per_referenceable_result",
+                            "usd_per_referenceable_result": 0.0001,
+                        }
+                    },
+                },
                 "results": [
                     {
                         "index": 0,

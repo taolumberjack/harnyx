@@ -28,7 +28,6 @@ from harnyx_commons.llm.pricing import (
     parse_tool_model,
     price_llm,
     price_search,
-    price_search_ai,
 )
 from harnyx_commons.llm.schema import LlmResponse
 from harnyx_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
@@ -132,9 +131,7 @@ class ToolExecutor:
         if is_search_tool(name):
             if not isinstance(response_payload, Mapping):
                 raise ValueError("search tool response must be a mapping")
-            if name == "search_ai":
-                return 0, None, price_search_ai(referenceable_results=len(results))
-            return 0, None, price_search(name)
+            return 0, None, price_search(name, referenceable_results=len(results))
         if name in _TOOLS_WITHOUT_USAGE:
             return 0, None, None
         raise LookupError(f"unsupported tool {request.tool!r}")

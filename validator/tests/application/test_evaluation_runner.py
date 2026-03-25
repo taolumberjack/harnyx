@@ -16,8 +16,8 @@ from harnyx_commons.domain.miner_task import (
     Response,
     ScoreBreakdown,
 )
-from harnyx_commons.domain.session import SessionFailureCode, SessionStatus
-from harnyx_commons.domain.tool_call import ReceiptMetadata, ToolCall, ToolCallOutcome
+from harnyx_commons.domain.session import Session, SessionFailureCode, SessionStatus, SessionUsage
+from harnyx_commons.domain.tool_call import ReceiptMetadata, SearchToolResult, ToolCall, ToolCallOutcome
 from harnyx_commons.domain.tool_usage import SearchToolUsageSummary, ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
@@ -28,7 +28,7 @@ from harnyx_validator.application.dto.evaluation import (
     TaskRunOutcome,
     TokenUsageSummary,
 )
-from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
+from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator, UsageSummarizer
 from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
 from harnyx_validator.application.scheduler import SchedulerConfig
@@ -99,6 +99,41 @@ def _search_usage(receipt_log: FakeReceiptLog, session_id) -> ToolUsageSummary:
         llm=ToolUsageSummary.zero().llm,
         llm_cost=0.0,
     )
+
+
+def test_usage_summarizer_falls_back_to_referenceable_result_count_when_search_cost_is_missing() -> None:
+    session = Session(
+        session_id=uuid4(),
+        uid=7,
+        task_id=uuid4(),
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=1.0,
+        usage=SessionUsage(),
+    )
+    receipt = ToolCall(
+        receipt_id="receipt-fallback",
+        session_id=session.session_id,
+        uid=session.uid,
+        tool="search_web",
+        issued_at=datetime(2025, 10, 17, 12, 1, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        metadata=ReceiptMetadata(
+            request_hash="req",
+            response_hash="res",
+            cost_usd=None,
+            results=(
+                SearchToolResult(index=0, result_id="result-1", url="https://a.example", note="A"),
+                SearchToolResult(index=1, result_id="result-2", url="https://b.example", note="B"),
+            ),
+        ),
+    )
+
+    _, total_tool_usage = UsageSummarizer().summarize(session, (receipt,))
+
+    assert total_tool_usage.search_tool.call_count == 1
+    assert total_tool_usage.search_tool.cost == pytest.approx(0.0002)
+    assert total_tool_usage.search_tool_cost == pytest.approx(0.0002)
 
 
 def _sandbox_invocation_error(

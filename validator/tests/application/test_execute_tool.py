@@ -110,7 +110,7 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
     ]
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
-    assert stored_session.usage.total_cost_usd == pytest.approx(0.0025)
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
 
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
@@ -178,19 +178,99 @@ async def test_execute_tool_budget_is_session_scoped() -> None:
 
 
 async def test_execute_tool_budget_snapshot_clamps_remaining_after_soft_budget_is_exhausted() -> None:
-    session = make_session(budget_usd=0.001, hard_limit_usd=0.01)
+    session = make_session(budget_usd=0.0001, hard_limit_usd=0.01)
     token = generate_token()
-    executor, _, _, session_registry, _ = build_executor(session, token=token)
+
+    class SearchWebInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            assert tool_name == "search_web"
+            return {
+                "data": [
+                    {"link": "https://a.example", "snippet": "A"},
+                    {"link": "https://b.example", "snippet": "B"},
+                ]
+            }
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=SearchWebInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
 
     result = await executor.execute(make_request(session, token=token))
 
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
-    assert stored_session.usage.total_cost_usd == pytest.approx(0.0025)
-    assert result.budget.session_budget_usd == pytest.approx(0.001)
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0002)
+    assert result.budget.session_budget_usd == pytest.approx(0.0001)
     assert result.budget.session_hard_limit_usd == pytest.approx(0.01)
-    assert result.budget.session_used_budget_usd == pytest.approx(0.0025)
+    assert result.budget.session_used_budget_usd == pytest.approx(0.0002)
     assert result.budget.session_remaining_budget_usd == pytest.approx(0.0)
+
+
+async def test_execute_tool_prices_search_web_by_referenceable_results() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+
+    class SearchWebInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            assert tool_name == "search_web"
+            return {
+                "data": [
+                    {"link": "https://a.example", "snippet": "A"},
+                    {"link": "", "snippet": "ignored"},
+                    {"link": "https://b.example", "snippet": "B"},
+                ]
+            }
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=SearchWebInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    result = await executor.execute(make_request(session, token=token))
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0002)
+
+    receipt = receipt_log.lookup(result.receipt.receipt_id)
+    assert receipt is not None
+    assert receipt.metadata.cost_usd == pytest.approx(0.0002)
+    assert len(receipt.metadata.results) == 2
 
 
 async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
@@ -242,11 +322,11 @@ async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
 
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
-    assert stored_session.usage.total_cost_usd == pytest.approx(0.008)
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0008)
 
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
-    assert receipt.metadata.cost_usd == pytest.approx(0.008)
+    assert receipt.metadata.cost_usd == pytest.approx(0.0008)
     assert len(receipt.metadata.results) == 2
 
 
@@ -298,10 +378,41 @@ async def test_execute_tool_rejects_invalid_token() -> None:
 
 
 async def test_execute_tool_enforces_budget() -> None:
-    limit = 0.003
-    session = make_session(budget_usd=limit)
+    limit = 0.0001
+    session = make_session(budget_usd=limit, hard_limit_usd=0.00015)
     token = generate_token()
-    executor, *_ = build_executor(session, token=token)
+
+    class SearchWebInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            assert tool_name == "search_web"
+            return {
+                "data": [
+                    {"link": "https://a.example", "snippet": "A"},
+                ]
+            }
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=SearchWebInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
     first = make_request(session, token=token)
     await executor.execute(first)
 

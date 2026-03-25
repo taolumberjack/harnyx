@@ -208,7 +208,7 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
     assert outcome.run.details.score_breakdown.total_score == pytest.approx(1.0)
     assert outcome.run.details.elapsed_ms == pytest.approx(300000.0)
     assert outcome.run.completed_at == datetime(2025, 10, 17, 12, 10, tzinfo=UTC)
-    assert outcome.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.0025)
+    assert outcome.run.details.total_tool_usage.search_tool_cost == pytest.approx(0.0001)
     assert sandbox.requests == [
         (
             "query",

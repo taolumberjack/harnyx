@@ -131,7 +131,7 @@ class UsageSummarizer:
     def _search_cost(tool: SearchToolName, receipt: ToolCall) -> float:
         if receipt.metadata.cost_usd is not None:
             return float(receipt.metadata.cost_usd)
-        return float(price_search(tool))
+        return float(price_search(tool, referenceable_results=len(receipt.metadata.results)))
 
     @staticmethod
     def _llm_usage_totals_to_usage(totals: LlmUsageTotals) -> LlmUsage:

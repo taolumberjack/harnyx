@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
-from harnyx_commons.llm.pricing import MODEL_PRICING, SEARCH_AI_PER_REFERENCEABLE_RESULT_USD, SEARCH_PRICING
+from harnyx_commons.llm.pricing import MODEL_PRICING, SEARCH_PRICING_PER_REFERENCEABLE_RESULT
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker, build_miner_sandbox_tool_invoker
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -16,12 +16,19 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
 
     assert "search_repo" not in payload["tool_names"]
     assert "get_repo_file" not in payload["tool_names"]
-    assert payload["pricing"]["search_web"]["usd_per_call"] == pytest.approx(SEARCH_PRICING["search_web"])
-    assert payload["pricing"]["fetch_page"]["usd_per_call"] == pytest.approx(SEARCH_PRICING["fetch_page"])
+    assert payload["pricing"]["search_web"]["kind"] == "per_referenceable_result"
+    assert payload["pricing"]["fetch_page"]["kind"] == "per_referenceable_result"
+    assert payload["pricing"]["search_ai"]["kind"] == "per_referenceable_result"
+    assert payload["pricing"]["search_web"]["usd_per_referenceable_result"] == pytest.approx(
+        SEARCH_PRICING_PER_REFERENCEABLE_RESULT["search_web"]
+    )
+    assert payload["pricing"]["fetch_page"]["usd_per_referenceable_result"] == pytest.approx(
+        SEARCH_PRICING_PER_REFERENCEABLE_RESULT["fetch_page"]
+    )
     assert "search_repo" not in payload["pricing"]
     assert "get_repo_file" not in payload["pricing"]
     assert payload["pricing"]["search_ai"]["usd_per_referenceable_result"] == pytest.approx(
-        SEARCH_AI_PER_REFERENCEABLE_RESULT_USD
+        SEARCH_PRICING_PER_REFERENCEABLE_RESULT["search_ai"]
     )
     assert "search_items" not in payload["tool_names"]
     assert "search_items" not in payload["pricing"]

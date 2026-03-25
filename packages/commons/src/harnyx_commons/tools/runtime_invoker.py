@@ -16,8 +16,7 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import (
     ALLOWED_TOOL_MODELS,
     MODEL_PRICING,
-    SEARCH_AI_PER_REFERENCEABLE_RESULT_USD,
-    SEARCH_PRICING,
+    SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
     ToolModelName,
     parse_tool_model,
 )
@@ -161,18 +160,13 @@ class RuntimeToolInvoker(ToolInvoker):
             pricing["test_tool"] = {"kind": "free"}
         if "tooling_info" in visible_tool_names:
             pricing["tooling_info"] = {"kind": "free"}
-        if "search_ai" in visible_tool_names:
-            pricing["search_ai"] = {
-                "kind": "per_referenceable_result",
-                "usd_per_referenceable_result": SEARCH_AI_PER_REFERENCEABLE_RESULT_USD,
-            }
 
-        for tool_name, usd_per_call in SEARCH_PRICING.items():
+        for tool_name, usd_per_referenceable_result in SEARCH_PRICING_PER_REFERENCEABLE_RESULT.items():
             if tool_name not in visible_tool_names:
                 continue
             pricing[tool_name] = {
-                "kind": "flat_per_call",
-                "usd_per_call": usd_per_call,
+                "kind": "per_referenceable_result",
+                "usd_per_referenceable_result": usd_per_referenceable_result,
             }
 
         if "llm_chat" in visible_tool_names:
