@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from threading import Condition, Event, Lock
+from uuid import UUID
 
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec
 
@@ -53,6 +54,15 @@ class InMemoryBatchInbox:
     def peek(self) -> MinerTaskBatchSpec | None:
         with self._lock:
             return self._queue[0] if self._queue else None
+
+    def discard(self, batch_id: UUID) -> bool:
+        with self._not_empty:
+            for index, batch in enumerate(self._queue):
+                if batch.batch_id != batch_id:
+                    continue
+                del self._queue[index]
+                return True
+            return False
 
     def __len__(self) -> int:
         with self._lock:

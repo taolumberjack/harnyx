@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from threading import Lock
 from typing import Literal
 from uuid import UUID
 
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec
+from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
 from harnyx_validator.application.ports.progress import ProgressRecorder
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
@@ -32,18 +33,45 @@ class AcceptEvaluationBatch:
     _accepted_batches: dict[UUID, _AcceptedBatchState] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
 
-    def execute(self, batch: MinerTaskBatchSpec) -> None:
+    def execute(
+        self,
+        batch: MinerTaskBatchSpec,
+        *,
+        restore_runs: Sequence[MinerTaskRunSubmission] = (),
+    ) -> None:
         with self._lock:
+            self.progress.restore_completed_runs(batch, restore_runs)
             state = self._accepted_batch_state(batch.batch_id)
             if state is None:
-                self.progress.register(batch)
+                if self._all_pairs_recorded(batch):
+                    self._accepted_batches[batch.batch_id] = _AcceptedBatchState(
+                        batch=batch,
+                        lifecycle="completed",
+                    )
+                    return
                 self._queue_new_batch(batch)
                 return
             if state.batch != batch:
                 raise RuntimeError("batch_id already exists with different contents")
-            if state.lifecycle == "processing" and self._all_pairs_recorded(state.batch):
+            if state.lifecycle == "queued" and self._all_pairs_recorded(state.batch):
                 self._accepted_batches[batch.batch_id] = replace(state, lifecycle="completed")
+                if state.lifecycle == "queued":
+                    self.inbox.discard(batch.batch_id)
+                    self._update_status_queue_length()
             return
+
+    def begin_processing(self, batch_id: UUID) -> bool:
+        with self._lock:
+            state = self._require_state(batch_id)
+            if state.lifecycle == "completed":
+                return False
+            if state.lifecycle != "queued":
+                raise RuntimeError(f"batch_id {batch_id} cannot begin processing from {state.lifecycle}")
+            if self._all_pairs_recorded(state.batch):
+                self._accepted_batches[batch_id] = replace(state, lifecycle="completed", error_code=None)
+                return False
+            self._accepted_batches[batch_id] = replace(state, lifecycle="processing", error_code=None)
+            return True
 
     def mark_processing(self, batch_id: UUID) -> None:
         self._set_lifecycle(batch_id, "processing")

@@ -44,13 +44,20 @@ def _create_test_app(provider: DemoControlDependencyProvider) -> FastAPI:
 class StubAcceptBatch:
     def __init__(self, *, lifecycle: str | None = "processing", error_code: str | None = None) -> None:
         self.received_batch: MinerTaskBatchSpec | None = None
+        self.received_restore_runs: tuple[MinerTaskRunSubmission, ...] = ()
         self._lifecycle = lifecycle
         self._error_code = error_code
 
-    def execute(self, batch: object) -> None:
+    def execute(
+        self,
+        batch: object,
+        *,
+        restore_runs: tuple[MinerTaskRunSubmission, ...] = (),
+    ) -> None:
         if not isinstance(batch, MinerTaskBatchSpec):
             raise AssertionError(f"expected MinerTaskBatchSpec, got {type(batch)!r}")
         self.received_batch = batch
+        self.received_restore_runs = restore_runs
         return None
 
     def lifecycle_for(self, batch_id: UUID) -> str | None:
@@ -263,6 +270,78 @@ def _make_batch_payload(
     }
 
 
+def _make_restore_run_payload(submission: MinerTaskRunSubmission) -> dict[str, object]:
+    score_breakdown = submission.run.details.score_breakdown
+    if score_breakdown is None:
+        raise AssertionError("expected restore submission score breakdown")
+    total_tool_usage = submission.run.details.total_tool_usage
+    llm_usage = total_tool_usage.llm
+    return {
+        "batch_id": str(submission.batch_id),
+        "validator": {"uid": submission.validator_uid},
+        "run": {
+            "artifact_id": str(submission.run.artifact_id),
+            "task_id": str(submission.run.task_id),
+            "completed_at": submission.run.completed_at.isoformat(),
+            "response": {"text": submission.run.response.text if submission.run.response else ""},
+        },
+        "score": submission.score,
+        "usage": {
+            "total_prompt_tokens": submission.usage.total_prompt_tokens,
+            "total_completion_tokens": submission.usage.total_completion_tokens,
+            "total_tokens": submission.usage.total_tokens,
+            "call_count": submission.usage.call_count,
+            "by_provider": submission.usage.by_provider,
+        },
+        "session": {
+            "session_id": str(submission.session.session_id),
+            "uid": submission.session.uid,
+            "status": submission.session.status.value,
+            "issued_at": submission.session.issued_at.isoformat(),
+            "expires_at": submission.session.expires_at.isoformat(),
+        },
+        "specifics": {
+            "score_breakdown": {
+                "comparison_score": score_breakdown.comparison_score,
+                "similarity_score": score_breakdown.similarity_score,
+                "total_score": score_breakdown.total_score,
+                "scoring_version": score_breakdown.scoring_version,
+            },
+            "total_tool_usage": {
+                "search_tool": {
+                    "call_count": total_tool_usage.search_tool.call_count,
+                    "cost": total_tool_usage.search_tool.cost,
+                },
+                "search_tool_cost": total_tool_usage.search_tool_cost,
+                "llm": {
+                    "call_count": llm_usage.call_count,
+                    "prompt_tokens": llm_usage.prompt_tokens,
+                    "completion_tokens": llm_usage.completion_tokens,
+                    "total_tokens": llm_usage.total_tokens,
+                    "cost": llm_usage.cost,
+                    "providers": {
+                        provider: {
+                            model: {
+                                "usage": {
+                                    "prompt_tokens": model_cost.usage.prompt_tokens,
+                                    "completion_tokens": model_cost.usage.completion_tokens,
+                                    "total_tokens": model_cost.usage.total_tokens,
+                                    "call_count": model_cost.usage.call_count,
+                                },
+                                "cost": model_cost.cost,
+                            }
+                            for model, model_cost in models.items()
+                        }
+                        for provider, models in llm_usage.providers.items()
+                    },
+                },
+                "llm_cost": total_tool_usage.llm_cost,
+            },
+            "elapsed_ms": submission.run.details.elapsed_ms,
+        },
+    }
+
+
 def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
     batch_id = uuid4()
     task, submission = _make_task_submission(batch_id=batch_id)
@@ -357,6 +436,88 @@ def test_accept_batch_endpoint_accepts_platform_json_payload() -> None:
     assert received.artifacts[0].artifact_id == artifact_id
     assert received.cutoff_at == "2026-03-08T00:00:00+00:00"
     assert received.created_at == "2026-03-08T00:00:00+00:00"
+    assert provider.accept_batch.received_restore_runs == ()
+
+
+def test_accept_batch_endpoint_forwards_restore_runs() -> None:
+    batch_id = uuid4()
+    task, submission = _make_task_submission(batch_id=batch_id)
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/validator/miner-task-batches/batch",
+        json={
+            **_make_batch_payload(
+                batch_id=batch_id,
+                task_id=task.task_id,
+                artifact_id=submission.run.artifact_id,
+                query_text=task.query.text,
+            ),
+            "restore_runs": [_make_restore_run_payload(submission)],
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(provider.accept_batch.received_restore_runs) == 1
+    restored = provider.accept_batch.received_restore_runs[0]
+    assert restored.batch_id == submission.batch_id
+    assert restored.validator_uid == submission.validator_uid
+    assert restored.run.artifact_id == submission.run.artifact_id
+    assert restored.run.task_id == submission.run.task_id
+    assert restored.run.response == submission.run.response
+    assert restored.run.completed_at == submission.run.completed_at
+    assert restored.score == submission.score
+    assert restored.session.session_id == submission.session.session_id
+    assert restored.session.uid == submission.session.uid
+
+
+def test_accept_batch_endpoint_rejects_invalid_restore_session_status() -> None:
+    batch_id = uuid4()
+    task, submission = _make_task_submission(batch_id=batch_id)
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+    restore_payload = _make_restore_run_payload(submission)
+    session_payload = restore_payload["session"]
+    if not isinstance(session_payload, dict):
+        raise AssertionError("expected restore session payload dict")
+    session_payload["status"] = "not_a_real_status"
+
+    response = client.post(
+        "/validator/miner-task-batches/batch",
+        json={
+            **_make_batch_payload(
+                batch_id=batch_id,
+                task_id=task.task_id,
+                artifact_id=submission.run.artifact_id,
+                query_text=task.query.text,
+            ),
+            "restore_runs": [restore_payload],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "'not_a_real_status' is not a valid SessionStatus"
+    assert provider.accept_batch.received_batch is None
+    assert provider.accept_batch.received_restore_runs == ()
 
 
 def test_accept_batch_endpoint_rejects_legacy_iso_keys() -> None:

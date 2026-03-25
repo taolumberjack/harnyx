@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TypedDict
 from uuid import UUID
@@ -51,6 +52,17 @@ class InMemoryRunProgress:
                 )
             return
         bucket[pair] = result
+
+    def restore_completed_runs(
+        self,
+        batch: MinerTaskBatchSpec,
+        submissions: Sequence[MinerTaskRunSubmission],
+    ) -> None:
+        self.register(batch)
+        for submission in submissions:
+            if submission.batch_id != batch.batch_id:
+                raise RuntimeError("restored submission batch_id mismatch")
+            self.record(submission)
 
     def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
         bucket = self.results_by_batch.get(batch_id, {})

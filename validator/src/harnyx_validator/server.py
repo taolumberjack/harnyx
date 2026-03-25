@@ -50,7 +50,7 @@ _weight_worker = create_weight_worker(
     status_provider=_runtime.status_provider,
 )
 
-WORKER_STOP_TIMEOUT_SECONDS = 30 * 60
+WORKER_STOP_TIMEOUT_SECONDS = 60
 logger = logging.getLogger("harnyx_validator.server")
 
 

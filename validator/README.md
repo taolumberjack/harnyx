@@ -91,7 +91,9 @@ Look for:
 
 Watchtower polls Docker Hub every 5 minutes and will pull/restart the validator when `VALIDATOR_IMAGE` changes.
 
-The stack is configured for a graceful restart window (default `30m`) so in-progress evaluations can finish before the container is restarted.
+The stack now uses a normal short shutdown budget (`60s`), not a long correctness-critical drain window.
+
+Miner-task restart safety no longer depends on the validator staying alive until every in-flight batch fully finishes. Platform persists completed validator submissions while a batch is still active, and if the validator later restarts and reports `unknown` for that batch, platform can redispatch the same batch back to that same validator with restore data so the validator resumes only the remaining work.
 
 ## Troubleshooting
 

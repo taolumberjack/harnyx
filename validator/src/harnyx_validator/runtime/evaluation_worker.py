@@ -104,7 +104,11 @@ class EvaluationWorker:
                 continue
 
             if self._batch_tracker is not None:
-                self._batch_tracker.mark_processing(batch.batch_id)
+                should_process = self._batch_tracker.begin_processing(batch.batch_id)
+                if not should_process:
+                    if self._status is not None:
+                        self._status.state.queued_batches = len(self._inbox)
+                    continue
             if self._status is not None:
                 self._status.state.queued_batches = len(self._inbox)
 

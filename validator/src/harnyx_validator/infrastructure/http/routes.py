@@ -178,10 +178,14 @@ def add_control_routes(
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
         caller: str = Security(require_bittensor_caller),
     ) -> BatchAcceptResponse:
-        batch = payload.to_domain()
         try:
-            deps.accept_batch.execute(batch)
-        except RuntimeError as exc:
+            batch = payload.to_domain()
+            restore_runs = payload.to_domain_restore_runs()
+            deps.accept_batch.execute(
+                batch,
+                restore_runs=restore_runs,
+            )
+        except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return BatchAcceptResponse(status="accepted", batch_id=str(batch.batch_id), caller=caller)
@@ -297,6 +301,7 @@ def _serialize_run(
             task_id=str(submission.run.task_id),
             query=task.query,
             reference_answer=task.reference_answer,
+            completed_at=submission.run.completed_at.isoformat(),
             response=submission.run.response,
         ),
         score=submission.score,

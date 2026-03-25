@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
@@ -13,6 +14,13 @@ class ProgressRecorder(Protocol):
         ...
 
     def record(self, result: MinerTaskRunSubmission) -> None:
+        ...
+
+    def restore_completed_runs(
+        self,
+        batch: MinerTaskBatchSpec,
+        submissions: Sequence[MinerTaskRunSubmission],
+    ) -> None:
         ...
 
     def recorded_pairs(self, batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:

@@ -1,14 +1,30 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 
-from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer
+from harnyx_commons.domain.miner_task import (
+    EvaluationDetails,
+    MinerTask,
+    Query,
+    ReferenceAnswer,
+    Response,
+    ScoreBreakdown,
+)
+from harnyx_commons.domain.session import Session, SessionStatus
+from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskBatchSpec,
+    MinerTaskRunSubmission,
+    ScriptArtifactSpec,
+    TokenUsageSummary,
+)
 from harnyx_validator.application.status import StatusProvider
+from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 
 
@@ -16,6 +32,7 @@ class ProgressSpy:
     def __init__(self) -> None:
         self.register_attempts: list[MinerTaskBatchSpec] = []
         self.registered: list[MinerTaskBatchSpec] = []
+        self.restore_attempts: list[tuple[MinerTaskBatchSpec, tuple[MinerTaskRunSubmission, ...]]] = []
         self._batches_by_id: dict[UUID, MinerTaskBatchSpec] = {}
         self._recorded_by_batch: dict[UUID, set[tuple[UUID, UUID]]] = {}
 
@@ -40,6 +57,19 @@ class ProgressSpy:
     ) -> None:
         self._recorded_by_batch[batch.batch_id] = set(pairs)
 
+    def restore_completed_runs(
+        self,
+        batch: MinerTaskBatchSpec,
+        submissions: Iterable[MinerTaskRunSubmission],
+    ) -> None:
+        restored = tuple(submissions)
+        self.register(batch)
+        if restored:
+            self.restore_attempts.append((batch, restored))
+        bucket = self._recorded_by_batch.setdefault(batch.batch_id, set())
+        for submission in restored:
+            bucket.add((submission.run.artifact_id, submission.run.task_id))
+
 
 def _make_batch(*, batch_id: UUID | None = None, query_text: str = "example") -> MinerTaskBatchSpec:
     task = MinerTask(
@@ -61,6 +91,47 @@ def _all_pairs(batch: MinerTaskBatchSpec) -> frozenset[tuple[UUID, UUID]]:
     return frozenset((artifact.artifact_id, task.task_id) for artifact in batch.artifacts for task in batch.tasks)
 
 
+def _completed_submission(batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
+    artifact = batch.artifacts[0]
+    task = batch.tasks[0]
+    issued_at = datetime.now(UTC)
+    completed_at = issued_at + timedelta(seconds=5)
+    session = Session(
+        session_id=uuid4(),
+        uid=artifact.uid,
+        task_id=task.task_id,
+        issued_at=issued_at,
+        expires_at=completed_at + timedelta(minutes=5),
+        budget_usd=task.budget_usd,
+        status=SessionStatus.COMPLETED,
+    )
+    details = EvaluationDetails(
+        score_breakdown=ScoreBreakdown(
+            comparison_score=1.0,
+            similarity_score=1.0,
+            total_score=1.0,
+            scoring_version="v1",
+        ),
+        total_tool_usage=ToolUsageSummary.zero(),
+    )
+    return MinerTaskRunSubmission(
+        batch_id=batch.batch_id,
+        validator_uid=1,
+        run=MinerTaskRun(
+            session_id=session.session_id,
+            uid=artifact.uid,
+            artifact_id=artifact.artifact_id,
+            task_id=task.task_id,
+            response=Response(text="completed"),
+            details=details,
+            completed_at=completed_at,
+        ),
+        score=1.0,
+        usage=TokenUsageSummary.empty(),
+        session=session,
+    )
+
+
 def test_accept_batch_ignores_exact_duplicate_replay_while_queued() -> None:
     inbox = InMemoryBatchInbox()
     status = StatusProvider()
@@ -73,7 +144,7 @@ def test_accept_batch_ignores_exact_duplicate_replay_while_queued() -> None:
 
     assert len(inbox) == 1
     assert status.state.queued_batches == 1
-    assert progress.register_attempts == [batch]
+    assert progress.register_attempts == [batch, batch]
     assert progress.registered == [batch]
 
 
@@ -92,7 +163,7 @@ def test_accept_batch_ignores_exact_duplicate_replay_while_processing() -> None:
 
     assert len(inbox) == 0
     assert status.state.queued_batches == 0
-    assert progress.register_attempts == [batch]
+    assert progress.register_attempts == [batch, batch]
     assert progress.registered == [batch]
 
 
@@ -113,8 +184,25 @@ def test_accept_batch_ignores_exact_duplicate_replay_while_completed() -> None:
 
     assert len(inbox) == 0
     assert status.state.queued_batches == 0
-    assert progress.register_attempts == [batch]
+    assert progress.register_attempts == [batch, batch]
     assert progress.registered == [batch]
+
+
+def test_accept_batch_marks_new_batch_completed_without_queue_when_restore_runs_cover_all_pairs() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+    restored = _completed_submission(batch)
+
+    accept_batch.execute(batch, restore_runs=(restored,))
+
+    assert len(inbox) == 0
+    assert status.state.queued_batches == 0
+    assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
+    assert progress.register_attempts == [batch]
+    assert progress.restore_attempts == [(batch, (restored,))]
 
 
 def test_accept_batch_duplicate_processing_replay_becomes_completed_when_all_pairs_are_recorded() -> None:
@@ -133,7 +221,65 @@ def test_accept_batch_duplicate_processing_replay_becomes_completed_when_all_pai
 
     assert len(inbox) == 0
     assert status.state.queued_batches == 0
-    assert progress.register_attempts == [batch]
+    assert progress.register_attempts == [batch, batch]
+
+
+def test_accept_batch_duplicate_replay_can_restore_completion_without_conflicting_batch_identity() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+    restored = _completed_submission(batch)
+
+    accept_batch.execute(batch)
+    accept_batch.execute(batch, restore_runs=(restored,))
+
+    assert len(inbox) == 0
+    assert status.state.queued_batches == 0
+    assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
+    assert progress.register_attempts == [batch, batch]
+    assert progress.restore_attempts == [(batch, (restored,))]
+
+
+def test_accept_batch_duplicate_processing_replay_keeps_processing_lifecycle() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+    restored = _completed_submission(batch)
+
+    accept_batch.execute(batch)
+    assert inbox.next() == batch
+    status.state.queued_batches = len(inbox)
+    accept_batch.mark_processing(batch.batch_id)
+    accept_batch.execute(batch, restore_runs=(restored,))
+
+    assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
+    assert len(inbox) == 0
+    assert status.state.queued_batches == 0
+    assert progress.restore_attempts == [(batch, (restored,))]
+
+
+def test_begin_processing_skips_dequeued_batch_restored_to_completion() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _make_batch()
+    restored = _completed_submission(batch)
+
+    accept_batch.execute(batch)
+    assert inbox.next() == batch
+    status.state.queued_batches = len(inbox)
+    accept_batch.execute(batch, restore_runs=(restored,))
+
+    assert accept_batch.begin_processing(batch.batch_id) is False
+    assert accept_batch.lifecycle_for(batch.batch_id) == "completed"
+    assert len(inbox) == 0
+    assert status.state.queued_batches == 0
+    assert progress.restore_attempts == [(batch, (restored,))]
 
 
 def test_accept_batch_mark_completed_rejects_when_pairs_are_missing() -> None:
@@ -190,5 +336,5 @@ def test_accept_batch_rejects_conflicting_replay() -> None:
 
     assert len(inbox) == 1
     assert status.state.queued_batches == 1
-    assert progress.register_attempts == [batch]
+    assert progress.register_attempts == [batch, conflicting]
     assert progress.registered == [batch]

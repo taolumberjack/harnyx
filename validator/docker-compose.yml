@@ -19,7 +19,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    stop_grace_period: "${STOP_GRACE:-30m}"
+    stop_grace_period: "60s"
 
   watchtower:
     image: containrrr/watchtower
@@ -30,7 +30,7 @@ services:
       - --interval
       - "${WATCHTOWER_INTERVAL:-300}"
       - --stop-timeout
-      - "${STOP_GRACE:-30m}"
+      - "60s"
       - --cleanup
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

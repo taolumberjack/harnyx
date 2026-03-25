@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -15,8 +16,15 @@ from harnyx_commons.domain.miner_task import (
     ReferenceAnswer,
     Response,
 )
+from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO, ToolResultDTO
-from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, ScriptArtifactSpec
+from harnyx_validator.application.dto.evaluation import (
+    MinerTaskBatchSpec,
+    MinerTaskRunSubmission,
+    ScriptArtifactSpec,
+    TokenUsageSummary,
+)
+from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.domain.shared_config import VALIDATOR_STRICT_CONFIG
 
 
@@ -36,6 +44,14 @@ class UsageModelEntry(BaseModel):
     total_tokens: int = Field(ge=0)
     call_count: int = Field(ge=0)
 
+    def to_domain(self) -> LlmUsageTotals:
+        return LlmUsageTotals(
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            total_tokens=self.total_tokens,
+            call_count=self.call_count,
+        )
+
 
 class UsageModel(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
@@ -46,6 +62,17 @@ class UsageModel(BaseModel):
     call_count: int = Field(ge=0)
     by_provider: dict[str, dict[str, UsageModelEntry]] = Field(default_factory=dict)
 
+    def to_domain(self) -> TokenUsageSummary:
+        return TokenUsageSummary.from_totals(
+            {
+                provider: {
+                    model: entry.to_domain()
+                    for model, entry in models.items()
+                }
+                for provider, models in self.by_provider.items()
+            }
+        )
+
 
 class SessionModel(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
@@ -55,6 +82,17 @@ class SessionModel(BaseModel):
     status: str = Field(min_length=1)
     issued_at: str = Field(min_length=1)
     expires_at: str = Field(min_length=1)
+
+    def to_domain(self, *, task: MinerTask, uid: int) -> Session:
+        return Session(
+            session_id=UUID(self.session_id),
+            uid=uid,
+            task_id=task.task_id,
+            issued_at=datetime.fromisoformat(self.issued_at),
+            expires_at=datetime.fromisoformat(self.expires_at),
+            budget_usd=task.budget_usd,
+            status=SessionStatus(self.status),
+        )
 
 
 class ValidatorModel(BaseModel):
@@ -120,6 +158,7 @@ class MinerTaskBatchRequestModel(BaseModel):
     created_at: str = Field(min_length=1)
     tasks: list[MinerTaskRequestModel] = Field(min_length=1)
     artifacts: list[ScriptArtifactRequestModel] = Field(min_length=1)
+    restore_runs: list[RestoreMinerTaskRunSubmissionModel] = Field(default_factory=list)
 
     @field_validator("batch_id")
     @classmethod
@@ -135,6 +174,10 @@ class MinerTaskBatchRequestModel(BaseModel):
             artifacts=tuple(artifact.to_domain() for artifact in self.artifacts),
         )
 
+    def to_domain_restore_runs(self) -> tuple[MinerTaskRunSubmission, ...]:
+        batch = self.to_domain()
+        return tuple(entry.to_domain(batch=batch) for entry in self.restore_runs)
+
 
 class MinerTaskRunModel(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
@@ -144,7 +187,75 @@ class MinerTaskRunModel(BaseModel):
     task_id: str = Field(min_length=1)
     query: Query
     reference_answer: ReferenceAnswer
+    completed_at: str | None = None
     response: Response | None = None
+
+
+class RestoreMinerTaskRunModel(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    artifact_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    completed_at: str | None = None
+    response: Response | None = None
+
+    @field_validator("artifact_id", "task_id")
+    @classmethod
+    def _validate_run_uuid(cls, value: str) -> str:
+        return _validate_uuid_string(value)
+
+
+class RestoreMinerTaskRunSubmissionModel(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    batch_id: str = Field(min_length=1)
+    validator: ValidatorModel
+    run: RestoreMinerTaskRunModel
+    score: float = Field(ge=0.0, le=1.0)
+    usage: UsageModel
+    session: SessionModel
+    specifics: EvaluationDetails
+
+    @field_validator("batch_id")
+    @classmethod
+    def _validate_batch_id(cls, value: str) -> str:
+        return _validate_uuid_string(value)
+
+    def to_domain(self, *, batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
+        batch_id = UUID(self.batch_id)
+        if batch_id != batch.batch_id:
+            raise RuntimeError("restore run batch_id mismatch")
+        artifact_id = UUID(self.run.artifact_id)
+        task_id = UUID(self.run.task_id)
+        tasks_by_id = {task.task_id: task for task in batch.tasks}
+        artifacts_by_id = {artifact.artifact_id: artifact for artifact in batch.artifacts}
+        task = tasks_by_id.get(task_id)
+        if task is None:
+            raise RuntimeError(f"restore run task missing from batch: {task_id}")
+        artifact = artifacts_by_id.get(artifact_id)
+        if artifact is None:
+            raise RuntimeError(f"restore run artifact missing from batch: {artifact_id}")
+        session = self.session.to_domain(task=task, uid=artifact.uid)
+        return MinerTaskRunSubmission(
+            batch_id=batch_id,
+            validator_uid=self.validator.uid,
+            run=MinerTaskRun(
+                session_id=session.session_id,
+                uid=artifact.uid,
+                artifact_id=artifact_id,
+                task_id=task_id,
+                response=self.run.response,
+                details=self.specifics,
+                completed_at=(
+                    datetime.fromisoformat(self.run.completed_at)
+                    if self.run.completed_at is not None
+                    else session.issued_at
+                ),
+            ),
+            score=self.score,
+            usage=self.usage.to_domain(),
+            session=session,
+        )
 
 
 class MinerTaskRunSubmissionModel(BaseModel):
