@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import socket
 import time
@@ -12,6 +13,7 @@ import bittensor as bt
 import httpx
 
 from harnyx_commons.bittensor import build_canonical_request
+from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
 
 logger = logging.getLogger("harnyx_validator.platform.registration")
 
@@ -63,9 +65,17 @@ class PlatformRegistrationClient:
         signature = self.hotkey.sign(canonical)
         return f'Bittensor ss58="{self.hotkey.ss58_address}",sig="{signature.hex()}"'
 
-    def register(self, validator_public_base_url: str) -> None:
+    def register(
+        self,
+        validator_public_base_url: str,
+        metadata: ValidatorRegistrationMetadata,
+    ) -> None:
         path = "/v1/validators/register"
-        body = f'{{"base_url":"{validator_public_base_url}"}}'.encode()
+        payload = {
+            "base_url": validator_public_base_url,
+            **metadata.model_dump(mode="json"),
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode()
         headers = {
             "Authorization": self._signed_header("POST", path, body),
             "Content-Type": "application/json",
@@ -85,6 +95,7 @@ def register_with_retry(
     client: PlatformRegistrationClient,
     public_url: str,
     *,
+    metadata: ValidatorRegistrationMetadata,
     attempts: int = 3,
     delay_seconds: float = 2.0,
 ) -> None:
@@ -107,7 +118,7 @@ def register_with_retry(
                 "platform registration attempt",
                 extra={"data": {"attempt": attempt, "attempts": attempts}},
             )
-            client.register(public_url)
+            client.register(public_url, metadata)
             logger.info(
                 "platform registration succeeded",
                 extra={"data": {"attempt": attempt, "attempts": attempts}},

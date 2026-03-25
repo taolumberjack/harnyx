@@ -58,6 +58,7 @@ from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorCli
 from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
 from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
 from harnyx_validator.runtime.llm_factory import create_llm_provider_factory
+from harnyx_validator.runtime.registration_metadata import resolve_validator_registration_metadata
 from harnyx_validator.runtime.settings import Settings
 
 logger = logging.getLogger("harnyx_validator.runtime")
@@ -354,12 +355,13 @@ def _register_with_platform(settings: Settings, hotkey: bt.Keypair, public_url: 
             }
         },
     )
+    metadata = resolve_validator_registration_metadata()
     client = PlatformRegistrationClient(
         platform_base_url=base.rstrip("/"),
         hotkey=hotkey,
         timeout_seconds=PLATFORM.timeout_seconds,
     )
-    register_with_retry(client, public_url.rstrip("/"), attempts=30)
+    register_with_retry(client, public_url.rstrip("/"), metadata=metadata, attempts=30)
 
 def _build_subtensor_client(resolved: Settings) -> SubtensorClientPort:
     client = RuntimeSubtensorClient(resolved.subtensor)

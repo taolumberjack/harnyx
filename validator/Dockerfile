@@ -33,5 +33,9 @@ COPY validator ./validator
 
 RUN uv pip install --system --editable ./validator --no-deps
 
+ARG SOURCE_REVISION=""
+
+ENV SOURCE_REVISION="${SOURCE_REVISION}"
+
 ENTRYPOINT ["uv", "run", "--package", "harnyx-validator", "harnyx-validator"]
 CMD []
