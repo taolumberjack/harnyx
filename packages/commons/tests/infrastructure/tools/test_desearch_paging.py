@@ -124,6 +124,7 @@ async def test_iter_search_links_twitter_pages_stops_if_max_id_ignored(caplog: p
 
 async def test_iter_search_links_web_pages_increments_start_and_stops_on_repeat_first_link() -> None:
     starts: list[int] = []
+    queries: list[str] = []
 
     page_1 = [
         _web_result(link="https://a.example"),
@@ -135,14 +136,19 @@ async def test_iter_search_links_web_pages_increments_start_and_stops_on_repeat_
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/web"
         start = request.url.params.get("start")
+        query = request.url.params.get("query")
         assert start is not None
+        assert query is not None
         starts.append(int(start))
+        queries.append(query)
 
         if len(starts) == 1:
             assert int(start) == 0
+            assert query == "(alpha phrase) OR (beta)"
             return httpx.Response(200, json=page_1, request=request)
         if len(starts) == 2:
             assert int(start) == 3
+            assert query == "(alpha phrase) OR (beta)"
             return httpx.Response(200, json=page_2, request=request)
         raise AssertionError(f"unexpected request #{len(starts)}: {request.url!s}")
 
@@ -157,10 +163,11 @@ async def test_iter_search_links_web_pages_increments_start_and_stops_on_repeat_
     try:
         pages = []
         async for page in client.iter_search_links_web_pages(
-            SearchWebSearchRequest(search_queries=("hello",), num=100)
+            SearchWebSearchRequest(search_queries=("alpha phrase", "beta"), num=100)
         ):
             pages.append(page)
         assert len(pages) == 1
         assert starts == [0, 3]
+        assert queries == ["(alpha phrase) OR (beta)", "(alpha phrase) OR (beta)"]
     finally:
         await client.aclose()

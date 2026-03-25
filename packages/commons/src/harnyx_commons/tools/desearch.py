@@ -719,10 +719,12 @@ def _filter_tweets_for_max_id(
 
 
 def _build_web_query(search_queries: tuple[str, ...]) -> str:
-    query = " ".join(item.strip() for item in search_queries)
-    if not query:
+    terms = tuple(item.strip() for item in search_queries)
+    if not terms or any(not term for term in terms):
         raise ValueError("desearch web search requires non-empty search_queries")
-    return query
+    if len(terms) == 1:
+        return terms[0]
+    return " OR ".join(f"({term})" for term in terms)
 
 
 def _extract_desearch_ai_results(raw: object) -> list[SearchAiResult]:
