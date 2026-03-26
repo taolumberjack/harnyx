@@ -18,8 +18,10 @@ from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
     "vertex:openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas",
     "vertex:openai/gpt-oss-120b": "publishers/openai/models/gpt-oss-120b-maas",
+    "vertex:Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
     "vertex-maas:openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas",
     "vertex-maas:openai/gpt-oss-120b": "publishers/openai/models/gpt-oss-120b-maas",
+    "vertex-maas:Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
 }
 
 

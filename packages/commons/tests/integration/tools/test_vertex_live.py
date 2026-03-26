@@ -6,13 +6,14 @@ from pydantic import BaseModel
 from harnyx_commons.clients import PLATFORM
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.llm.adapter import LlmProviderAdapter
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmRequest
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 
 
-async def test_vertex_maas_completion_live() -> None:
+async def test_vertex_maas_qwen_alias_completion_live() -> None:
     vertex = VertexSettings()
     project = vertex.gcp_project_id
     location = vertex.vertex_maas_gcp_location
@@ -22,17 +23,20 @@ async def test_vertex_maas_completion_live() -> None:
     assert location, "VERTEX_MAAS_GCP_LOCATION must be configured"
     assert credentials_b64, "Vertex credentials must be configured"
 
-    provider = VertexLlmProvider(
-        project=project,
-        location=location,
-        timeout=float(vertex.vertex_timeout_seconds or PLATFORM.timeout_seconds),
-        credentials_path=None,
-        service_account_b64=credentials_b64 or "",
+    provider = LlmProviderAdapter(
+        provider_name="vertex-maas",
+        delegate=VertexLlmProvider(
+            project=project,
+            location=location,
+            timeout=float(vertex.vertex_timeout_seconds or PLATFORM.timeout_seconds),
+            credentials_path=None,
+            service_account_b64=credentials_b64 or "",
+        ),
     )
     try:
         request = LlmRequest(
-            provider="vertex",
-            model="publishers/openai/models/gpt-oss-20b-maas",
+            provider="vertex-maas",
+            model="Qwen/Qwen3-Next-80B-A3B-Instruct",
             messages=(
                 LlmMessage(
                     role="user",

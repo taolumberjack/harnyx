@@ -433,7 +433,14 @@ async def test_execute_tool_rejects_expired_session() -> None:
         await executor.execute(request)
 
 
-async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai/gpt-oss-20b",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
+    ],
+)
+async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()
     usage = LlmUsage(
@@ -466,7 +473,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
             )
             payload = response.to_payload()
             payload["harnyx_provider"] = "llm"
-            payload["harnyx_model"] = "openai/gpt-oss-20b"
+            payload["harnyx_model"] = model
             return payload
 
     session_registry = FakeSessionRegistry()
@@ -491,7 +498,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
         tool="llm_chat",
         args=(),
         kwargs={
-            "model": "openai/gpt-oss-20b",
+            "model": model,
             "messages": [{"role": "user", "content": "ping"}],
         },
     )
@@ -501,7 +508,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
     stored_session = session_registry.get(session.session_id)
     assert stored_session is not None
     assert stored_session.usage.llm_tokens_last_call == 15
-    usage_totals = stored_session.usage.llm_usage_totals["chutes"]["openai/gpt-oss-20b"]
+    usage_totals = stored_session.usage.llm_usage_totals["chutes"][model]
     assert usage_totals.prompt_tokens == 10
     assert usage_totals.completion_tokens == 5
     assert usage_totals.total_tokens == 15
@@ -509,7 +516,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
     assert result.response_payload["usage"]["total_tokens"] == 15
     assert result.response_payload["usage"]["reasoning_tokens"] == 7
     assert stored_session.usage.total_cost_usd == pytest.approx(
-        price_llm(parse_tool_model("openai/gpt-oss-20b"), usage)
+        price_llm(parse_tool_model(model), usage)
     )
 
 

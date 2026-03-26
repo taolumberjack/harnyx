@@ -81,7 +81,12 @@ async def test_adapter_falls_back_to_global_entry() -> None:
 
 @pytest.mark.parametrize("model", ALLOWED_TOOL_MODELS)
 async def test_adapter_applies_default_vertex_aliases(model: str) -> None:
-    expected = model.replace("openai/", "publishers/openai/models/") + "-maas"
+    expected_aliases = {
+        "openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas",
+        "openai/gpt-oss-120b": "publishers/openai/models/gpt-oss-120b-maas",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
+    }
+    expected = expected_aliases[model]
     for provider_name in ("vertex", "vertex-maas"):
         delegate = StubProvider()
         provider = LlmProviderAdapter(provider_name=provider_name, delegate=delegate)

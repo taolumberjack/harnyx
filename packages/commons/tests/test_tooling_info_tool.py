@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
-from harnyx_commons.llm.pricing import MODEL_PRICING, SEARCH_PRICING_PER_REFERENCEABLE_RESULT
+from harnyx_commons.llm.pricing import (
+    MODEL_PRICING,
+    SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
+    parse_tool_model,
+    price_llm,
+)
+from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker, build_miner_sandbox_tool_invoker
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -40,6 +46,16 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["openai/gpt-oss-120b"]["output_per_million"] == pytest.approx(
         MODEL_PRICING["openai/gpt-oss-120b"].output_per_million
     )
+    assert "Qwen/Qwen3-Next-80B-A3B-Instruct" in payload["allowed_tool_models"]
+    assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["input_per_million"] == pytest.approx(
+        MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].input_per_million
+    )
+    assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["output_per_million"] == pytest.approx(
+        MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].output_per_million
+    )
+    assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["reasoning_per_million"] == pytest.approx(
+        MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].reasoning_per_million
+    )
 
 
 async def test_tooling_info_default_surface_matches_miner_contract() -> None:
@@ -53,3 +69,15 @@ async def test_tooling_info_default_surface_matches_miner_contract() -> None:
     assert "search_repo" not in payload["pricing"]
     assert "get_repo_file" not in payload["pricing"]
     assert "search_items" not in payload["pricing"]
+
+
+def test_qwen_tool_model_pricing_ignores_reasoning_tokens() -> None:
+    usage = LlmUsage(
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        reasoning_tokens=1_000_000,
+    )
+
+    cost = price_llm(parse_tool_model("Qwen/Qwen3-Next-80B-A3B-Instruct"), usage)
+
+    assert cost == pytest.approx(0.90)

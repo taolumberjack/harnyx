@@ -241,7 +241,8 @@ async def test_runtime_invoker_rejects_repo_tools_as_unregistered() -> None:
         )
 
 
-async def test_runtime_invoker_routes_llm_chat() -> None:
+@pytest.mark.parametrize("model", ALLOWED_TOOL_MODELS)
+async def test_runtime_invoker_routes_llm_chat(model: str) -> None:
     stub_chutes = StubChutesProvider()
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
@@ -255,7 +256,7 @@ async def test_runtime_invoker_routes_llm_chat() -> None:
         "llm_chat",
         kwargs={
             "messages": [{"role": "user", "content": "hi"}],
-            "model": ALLOWED_TOOL_MODELS[0],
+            "model": model,
             "temperature": 0.1,
         },
     )
@@ -272,7 +273,7 @@ async def test_runtime_invoker_routes_llm_chat() -> None:
     assert result["usage"]["reasoning_tokens"] == 3
     assert result["usage"]["web_search_calls"] == 1
     recorded = stub_chutes.calls[0]
-    assert recorded.model == ALLOWED_TOOL_MODELS[0]
+    assert recorded.model == model
     assert recorded.temperature == 0.1
     assert recorded.messages[0].content[0].type == "input_text"
     assert recorded.messages[0].content[0].text == "hi"
