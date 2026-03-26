@@ -18,7 +18,7 @@ class SubtensorSettings(BaseSettings):
 
     network: str = Field(default="local", alias="SUBTENSOR_NETWORK")
     endpoint: str = Field(default="ws://127.0.0.1:9945", alias="SUBTENSOR_ENDPOINT")
-    netuid: int = Field(default=1, alias="SUBTENSOR_NETUID")
+    netuid: int = Field(default=67, alias="SUBTENSOR_NETUID")
     wallet_name: str = Field(default="harnyx-validator", alias="SUBTENSOR_WALLET_NAME")
     hotkey_name: str = Field(default="default", alias="SUBTENSOR_HOTKEY_NAME")
     hotkey_mnemonic: SecretStr | None = Field(default=None, alias="SUBTENSOR_HOTKEY_MNEMONIC")
