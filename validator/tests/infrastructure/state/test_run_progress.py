@@ -207,3 +207,46 @@ def test_run_progress_record_rejects_conflicting_duplicate_pair() -> None:
         match="batch already recorded a different result for artifact/task pair",
     ):
         progress.record(conflicting)
+
+
+def test_run_progress_snapshot_orders_results_by_artifact_then_task_input_position() -> None:
+    progress = InMemoryRunProgress()
+    batch = _make_multi_batch()
+    template = _make_submission(batch)
+
+    def build_submission(*, artifact_index: int, task_index: int, score: float) -> MinerTaskRunSubmission:
+        run = template.run.model_copy(
+            update={
+                "session_id": uuid4(),
+                "uid": batch.artifacts[artifact_index].uid,
+                "artifact_id": batch.artifacts[artifact_index].artifact_id,
+                "task_id": batch.tasks[task_index].task_id,
+            }
+        )
+        session = replace(
+            template.session,
+            session_id=run.session_id,
+            uid=run.uid,
+            task_id=run.task_id,
+        )
+        return template.model_copy(update={"run": run, "session": session, "score": score})
+
+    submissions = (
+        build_submission(artifact_index=1, task_index=1, score=0.4),
+        build_submission(artifact_index=0, task_index=1, score=0.3),
+        build_submission(artifact_index=1, task_index=0, score=0.2),
+        build_submission(artifact_index=0, task_index=0, score=0.1),
+    )
+
+    progress.register(batch)
+    for submission in submissions:
+        progress.record(submission)
+
+    snapshot = progress.snapshot(batch.batch_id)
+
+    assert tuple((run.run.artifact_id, run.run.task_id) for run in snapshot["miner_task_runs"]) == (
+        (batch.artifacts[0].artifact_id, batch.tasks[0].task_id),
+        (batch.artifacts[0].artifact_id, batch.tasks[1].task_id),
+        (batch.artifacts[1].artifact_id, batch.tasks[0].task_id),
+        (batch.artifacts[1].artifact_id, batch.tasks[1].task_id),
+    )

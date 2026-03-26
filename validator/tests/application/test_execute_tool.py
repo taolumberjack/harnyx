@@ -14,6 +14,7 @@ from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageCon
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvoker
 from harnyx_commons.tools.usage_tracker import UsageTracker
+from harnyx_validator.application.evaluate_task_run import UsageSummarizer
 from harnyx_validator.domain.exceptions import BudgetExceededError
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
@@ -510,3 +511,143 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat() -> None:
     assert stored_session.usage.total_cost_usd == pytest.approx(
         price_llm(parse_tool_model("openai/gpt-oss-20b"), usage)
     )
+
+
+async def test_execute_tool_allows_settlement_after_sibling_exhausts_session() -> None:
+    session = make_session(budget_usd=0.0001, hard_limit_usd=0.00015)
+    token = generate_token()
+
+    class SearchWebInvoker(ToolInvoker):
+        def __init__(self, sessions: FakeSessionRegistry) -> None:
+            self._sessions = sessions
+
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            stored = self._sessions.get(session.session_id)
+            assert stored is not None
+            self._sessions.update(stored.mark_exhausted())
+            return {
+                "data": [
+                    {"link": "https://a.example", "snippet": "A"},
+                ]
+            }
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=SearchWebInvoker(session_registry),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    result = await executor.execute(make_request(session, token=token))
+
+    stored = session_registry.get(session.session_id)
+    assert stored is not None
+    assert stored.status is SessionStatus.EXHAUSTED
+    assert stored.usage.total_cost_usd == pytest.approx(0.0001)
+    assert receipt_log.lookup(result.receipt.receipt_id) is not None
+
+
+async def test_execute_tool_records_receipt_for_search_call_that_exhausts_budget() -> None:
+    session = make_session(budget_usd=0.00005, hard_limit_usd=0.00005)
+    token = generate_token()
+
+    class SearchWebInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            return {
+                "data": [
+                    {"link": "https://a.example", "snippet": "A"},
+                ]
+            }
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=SearchWebInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    with pytest.raises(BudgetExceededError):
+        await executor.execute(make_request(session, token=token))
+
+    stored = session_registry.get(session.session_id)
+    assert stored is not None
+    assert stored.status is SessionStatus.EXHAUSTED
+    assert stored.hard_limit_usd == pytest.approx(0.00005)
+    assert stored.usage.total_cost_usd == pytest.approx(0.0001)
+
+    receipts = receipt_log.for_session(session.session_id)
+    assert len(receipts) == 1
+
+    _, total_tool_usage = UsageSummarizer().summarize(stored, receipts)
+    assert total_tool_usage.search_tool.call_count == 1
+    assert total_tool_usage.search_tool_cost == pytest.approx(0.0001)
+
+
+async def test_execute_tool_rejects_settlement_after_terminal_session_transition() -> None:
+    session = make_session()
+    token = generate_token()
+
+    class SearchWebInvoker(ToolInvoker):
+        def __init__(self, sessions: FakeSessionRegistry) -> None:
+            self._sessions = sessions
+
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            stored = self._sessions.get(session.session_id)
+            assert stored is not None
+            self._sessions.update(stored.mark_error())
+            return {"data": []}
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=SearchWebInvoker(session_registry),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    with pytest.raises(RuntimeError, match="became error during tool accounting"):
+        await executor.execute(make_request(session, token=token))

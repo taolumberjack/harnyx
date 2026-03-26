@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final
 
 from harnyx_commons.sandbox.docker import DockerSandboxManager, resolve_sandbox_host_container_url
@@ -28,8 +26,6 @@ class ContainerSecurity:
     @property
     def extra_args(self) -> tuple[str, ...]:
         """Docker run arguments for security hardening."""
-
-        tmpfs = f"{Path(tempfile.gettempdir())}:rw,noexec,nosuid,nodev,size=64m"
         return (
             "--read-only",
             "--cap-drop",
@@ -42,8 +38,6 @@ class ContainerSecurity:
             self.memory,
             "--cpus",
             self.cpus,
-            "--tmpfs",
-            tmpfs,
         )
 
 

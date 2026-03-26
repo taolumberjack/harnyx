@@ -211,19 +211,19 @@ def add_control_routes(
                 remaining=0,
                 miner_task_runs=[],
             )
+        snapshot = deps.progress_tracker.snapshot(batch_id)
+        tasks_by_id = {task.task_id: task for task in snapshot["tasks"]}
+        runs = [_serialize_run(result, tasks_by_id) for result in snapshot["miner_task_runs"]]
         if lifecycle == "failed":
             return ProgressResponse(
                 batch_id=str(batch_id),
                 status="failed",
                 error_code=deps.accept_batch.error_code_for(batch_id),
-                total=0,
-                completed=0,
-                remaining=0,
-                miner_task_runs=[],
+                total=snapshot["total"],
+                completed=snapshot["completed"],
+                remaining=snapshot["remaining"],
+                miner_task_runs=runs,
             )
-        snapshot = deps.progress_tracker.snapshot(batch_id)
-        tasks_by_id = {task.task_id: task for task in snapshot["tasks"]}
-        runs = [_serialize_run(result, tasks_by_id) for result in snapshot["miner_task_runs"]]
         return ProgressResponse(
             batch_id=str(batch_id),
             status=lifecycle,

@@ -4,15 +4,14 @@ from uuid import uuid4
 
 import pytest
 
-from harnyx_commons.clients import CHUTES
 from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
 from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_validator.application.services.evaluation_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
 )
-from harnyx_validator.runtime.llm_factory import create_llm_provider_factory
 from harnyx_validator.runtime.settings import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
@@ -43,15 +42,9 @@ async def test_evaluation_scoring_live_uses_real_structured_chutes_flow() -> Non
 
     assert model, "SCORING_LLM_MODEL must be configured"
 
-    resolve_provider = create_llm_provider_factory(
-        chutes_api_key=settings.llm.chutes_api_key_value,
-        chutes_base_url=CHUTES.base_url,
-        chutes_timeout=CHUTES.timeout_seconds,
-        gcp_project_id=settings.vertex.gcp_project_id,
-        gcp_location=settings.vertex.gcp_location,
-        vertex_maas_gcp_location=settings.vertex.vertex_maas_gcp_location,
-        vertex_timeout=settings.vertex.vertex_timeout_seconds,
-        gcp_service_account_b64=settings.vertex.gcp_sa_credential_b64_value,
+    resolve_provider = build_cached_llm_provider_resolver(
+        llm_settings=settings.llm,
+        vertex_settings=settings.vertex,
     )
     llm_provider = RecordingProvider(resolve_provider(provider_name))
     service = EvaluationScoringService(

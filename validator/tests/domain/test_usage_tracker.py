@@ -40,14 +40,15 @@ def test_usage_tracker_records_tool_call_within_limits() -> None:
     assert updated.usage.llm_usage_totals == {}
 
 
-def test_usage_tracker_blocks_when_limits_exceeded() -> None:
+def test_usage_tracker_records_completed_call_even_when_it_exhausts_budget() -> None:
     tracker = UsageTracker()
     session = make_session(budget_usd=0.05)
     first = tracker.record_tool_call(session, tool_name="llm_chat", llm_tokens=50, cost_usd=0.04)
     assert first.usage.total_cost_usd == pytest.approx(0.04)
 
-    with pytest.raises(BudgetExceededError):
-        tracker.record_tool_call(first, tool_name="search_web", llm_tokens=50, cost_usd=0.02)
+    second = tracker.record_tool_call(first, tool_name="search_web", llm_tokens=50, cost_usd=0.02)
+
+    assert second.usage.total_cost_usd == pytest.approx(0.06)
 
 
 def test_usage_tracker_rejects_calls_when_session_inactive() -> None:

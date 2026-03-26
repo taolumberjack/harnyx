@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -166,18 +166,13 @@ class ToolExecutor:
             response_payload,
             results,
         )
-        try:
-            updated_session = self._record_usage(
-                session,
-                request,
-                llm_tokens,
-                usage_details,
-                call_cost,
-            )
-        except BudgetExceededError:
-            self._sessions.update(session.mark_exhausted())
-            raise
-        updated_session = _mark_session_exhausted_if_needed(updated_session)
+        updated_session, should_raise_budget_exhausted = self._settle_usage(
+            session_id=session.session_id,
+            request=request,
+            llm_tokens=llm_tokens,
+            usage_details=usage_details,
+            call_cost=call_cost,
+        )
         budget_snapshot = _build_budget_snapshot(updated_session)
         receipt = self._build_receipt(
             request,
@@ -188,7 +183,10 @@ class ToolExecutor:
             cost_usd=call_cost,
         )
         self._receipts.record(receipt)
-        self._sessions.update(updated_session)
+        if should_raise_budget_exhausted:
+            raise BudgetExceededError(
+                f"session {session.session_id} exhausted during tool accounting"
+            )
 
         return _ExecutionResult(
             receipt=receipt,
@@ -198,6 +196,44 @@ class ToolExecutor:
             usage_details=usage_details,
             budget=budget_snapshot,
         )
+
+    def _settle_usage(
+        self,
+        *,
+        session_id: UUID,
+        request: ToolInvocationRequest,
+        llm_tokens: int,
+        usage_details: ToolCallUsage | None,
+        call_cost: float | None,
+    ) -> tuple[Session, bool]:
+        budget_exhausted_by_this_call = False
+
+        def mutate(current: Session) -> Session:
+            nonlocal budget_exhausted_by_this_call
+
+            if current.status not in {SessionStatus.ACTIVE, SessionStatus.EXHAUSTED}:
+                raise RuntimeError(
+                    f"session {session_id} became {current.status.value} during tool accounting"
+                )
+
+            was_already_exhausted = current.status is SessionStatus.EXHAUSTED
+            session_for_accounting = _session_for_usage_accounting(current)
+            updated = self._record_usage(
+                session_for_accounting,
+                request,
+                llm_tokens,
+                usage_details,
+                call_cost,
+            )
+            exhausted = _mark_session_exhausted_if_needed(updated)
+            if exhausted.status is SessionStatus.EXHAUSTED and not was_already_exhausted:
+                budget_exhausted_by_this_call = True
+            if was_already_exhausted and exhausted.status is not SessionStatus.EXHAUSTED:
+                return exhausted.mark_exhausted()
+            return exhausted
+
+        updated_session = self._sessions.mutate(session_id, mutate)
+        return updated_session, budget_exhausted_by_this_call
 
     def _log_success(self, log_context: dict[str, object], result: _ExecutionResult) -> None:
         response_preview = _summarize_value(result.response_payload, limit=500)
@@ -328,6 +364,14 @@ def _mark_session_exhausted_if_needed(session: Session) -> Session:
     if session.usage.total_cost_usd >= session.effective_hard_limit_usd:
         return session.mark_exhausted()
     return session
+
+
+def _session_for_usage_accounting(
+    session: Session,
+) -> Session:
+    if session.status is not SessionStatus.EXHAUSTED:
+        return session
+    return replace(session, status=SessionStatus.ACTIVE)
 
 
 def _resolve_result_policy(tool_name: ToolName) -> ToolResultPolicy:

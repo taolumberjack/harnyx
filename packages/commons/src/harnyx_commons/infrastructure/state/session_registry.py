@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from threading import Lock
 from uuid import UUID
 
@@ -28,6 +29,15 @@ class InMemorySessionRegistry(SessionRegistryPort):
     def update(self, session: Session) -> None:
         with self._lock:
             self._sessions[session.session_id] = session
+
+    def mutate(self, session_id: UUID, mutate: Callable[[Session], Session]) -> Session:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise LookupError(f"session {session_id} not found")
+            updated = mutate(session)
+            self._sessions[session_id] = updated
+            return updated
 
     def delete(self, session_id: UUID) -> None:
         with self._lock:

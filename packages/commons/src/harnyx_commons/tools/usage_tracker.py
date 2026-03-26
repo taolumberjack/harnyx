@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.errors import BudgetExceededError
-from harnyx_commons.tools.budget_validator import BudgetValidator
 from harnyx_commons.tools.cost_accumulator import accumulate_costs
 from harnyx_commons.tools.llm_usage_accumulator import accumulate_llm_usage
 from harnyx_commons.tools.types import ToolName
@@ -29,7 +28,7 @@ class ToolCallUsage:
 
 
 class UsageTracker:
-    """Enforces per-session budget limits for tool invocations."""
+    """Records per-session tool usage for already-completed invocations."""
 
     def record_tool_call(
         self,
@@ -45,7 +44,6 @@ class UsageTracker:
 
         updated_usage = self._update_usage(
             session.usage,
-            session_hard_limit_usd=session.effective_hard_limit_usd,
             normalized_name=normalized_name,
             llm_tokens=llm_tokens,
             usage=usage_details,
@@ -73,16 +71,11 @@ class UsageTracker:
         self,
         budget: SessionUsage,
         *,
-        session_hard_limit_usd: float,
         normalized_name: str,
         llm_tokens: int,
         usage: ToolCallUsage | None,
         cost_usd: float | None,
     ) -> SessionUsage:
-        budget_validator = BudgetValidator(session_hard_limit_usd)
-        projected_total = budget.total_cost_usd + (cost_usd or 0.0)
-        budget_validator.assert_within_limits(projected_total)
-
         usage_totals = accumulate_llm_usage(
             budget.llm_usage_totals,
             usage=usage,
@@ -96,7 +89,6 @@ class UsageTracker:
             cost_usd=cost_usd,
             normalized_tool_name=normalized_name,
         )
-        budget_validator.assert_within_limits(total_cost)
 
         return self._build_usage(
             budget=budget,

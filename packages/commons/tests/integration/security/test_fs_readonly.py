@@ -15,6 +15,6 @@ async def test_root_fs_is_readonly(sandbox) -> None:
         token=str(uuid.uuid4()),
         session_id=uuid.uuid4(),
     )
-    assert response["ok_tmp"] is True
+    assert response["ok_tmp"] is False
     err = response["err_root"]
     assert isinstance(err, str) and err.startswith("err:")

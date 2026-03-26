@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
@@ -41,6 +41,14 @@ class FakeSessionRegistry(SessionRegistryPort):
 
     def update(self, session: Session) -> None:
         self._sessions[session.session_id] = session
+
+    def mutate(self, session_id: UUID, mutate: Callable[[Session], Session]) -> Session:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise LookupError(f"session {session_id} not found")
+        updated = mutate(session)
+        self._sessions[session_id] = updated
+        return updated
 
     def delete(self, session_id: UUID) -> None:
         self._sessions.pop(session_id, None)

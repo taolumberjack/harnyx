@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from pydantic import SecretStr
+
+from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.llm import provider_factory
+
+
+def test_llm_settings_default_provider_concurrency_targets_match_activation_slice() -> None:
+    assert LlmSettings.model_fields["chutes_max_concurrent"].default == 20
+    assert LlmSettings.model_fields["vertex_max_concurrent"].default == 30
+
+
+def test_build_cached_llm_provider_resolver_caches_by_provider_name(
+    monkeypatch,
+) -> None:
+    captured: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append((self.__class__.__name__, kwargs))
+
+    class _FakeChutesProvider(_FakeProvider):
+        pass
+
+    class _FakeVertexProvider(_FakeProvider):
+        pass
+
+    class _FakeAdapter:
+        def __init__(self, *, provider_name: str, delegate: object) -> None:
+            self.provider_name = provider_name
+            self.delegate = delegate
+
+    monkeypatch.setattr(provider_factory, "ChutesLlmProvider", _FakeChutesProvider)
+    monkeypatch.setattr(provider_factory, "VertexLlmProvider", _FakeVertexProvider)
+    monkeypatch.setattr(provider_factory, "LlmProviderAdapter", _FakeAdapter)
+
+    resolver = provider_factory.build_cached_llm_provider_resolver(
+        llm_settings=LlmSettings.model_construct(
+            chutes_api_key=SecretStr("test-key"),
+            chutes_max_concurrent=7,
+            vertex_max_concurrent=11,
+        ),
+        vertex_settings=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_maas_gcp_location="us-east5",
+            vertex_timeout_seconds=45.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+    )
+
+    first = resolver("chutes")
+    second = resolver("chutes")
+    third = resolver("vertex")
+    fourth = resolver("vertex-maas")
+
+    assert first is second
+    assert captured == [
+        (
+            "_FakeChutesProvider",
+            {
+                "base_url": provider_factory.CHUTES.base_url,
+                "api_key": "test-key",
+                "timeout": provider_factory.CHUTES.timeout_seconds,
+                "max_concurrent": 7,
+            },
+        ),
+        (
+            "_FakeVertexProvider",
+            {
+                "project": "project",
+                "location": "us-central1",
+                "timeout": 45.0,
+                "service_account_b64": "vertex-creds",
+                "max_concurrent": 11,
+            },
+        ),
+        (
+            "_FakeVertexProvider",
+            {
+                "project": "project",
+                "location": "us-east5",
+                "timeout": 45.0,
+                "service_account_b64": "vertex-creds",
+                "max_concurrent": 11,
+            },
+        ),
+    ]
+    assert third.provider_name == "vertex"
+    assert fourth.provider_name == "vertex-maas"

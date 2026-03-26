@@ -18,7 +18,7 @@ async def probe(request: Mapping[str, Any]) -> dict[str, Any]:
     mode = request.get("mode")
     if mode == "fs":
         return {
-            "ok_tmp": _try_write(str(TMP_WRITE_TARGET)),
+            "ok_tmp": _try_write_temp(),
             "err_root": _try_write(str(ROOT_BLOCKED_TARGET)),
         }
     if mode == "pids":
@@ -36,6 +36,14 @@ def _try_write(path: str) -> bool | str:
         return True
     except Exception as exc:  # pragma: no cover - exercised in docker tests
         return f"err:{exc.__class__.__name__}"
+
+
+def _try_write_temp() -> bool:
+    try:
+        target = Path(tempfile.gettempdir()) / "ok"
+    except Exception:
+        return False
+    return _try_write(str(target)) is True
 
 
 def _spawn_until_failure(limit: int) -> int | str:
@@ -57,5 +65,4 @@ def _spawn_until_failure(limit: int) -> int | str:
                 proc.terminate()
             except Exception:  # pragma: no cover - cleanup best effort
                 proc.kill()
-TMP_WRITE_TARGET = Path(tempfile.gettempdir()) / "ok"
 ROOT_BLOCKED_TARGET = Path("/root/blocked")

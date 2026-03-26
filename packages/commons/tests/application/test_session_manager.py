@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -10,7 +10,7 @@ import pytest
 from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.session import Session, SessionFailureCode, SessionStatus
+from harnyx_commons.domain.session import Session, SessionFailureCode, SessionStatus, SessionUsage
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 
 
@@ -27,11 +27,34 @@ class FakeSessionRegistry(SessionRegistryPort):
     def update(self, session: Session) -> None:  # pragma: no cover - trivial
         self._sessions[session.session_id] = session
 
+    def mutate(self, session_id: UUID, mutate: Callable[[Session], Session]) -> Session:
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise LookupError(f"session {session_id} not found")
+        updated = mutate(session)
+        self._sessions[session_id] = updated
+        return updated
+
     def delete(self, session_id: UUID) -> None:  # pragma: no cover - trivial
         self._sessions.pop(session_id, None)
 
     def values(self) -> Iterable[Session]:  # pragma: no cover - helper
         return self._sessions.values()
+
+
+class InterleavingSessionRegistry(FakeSessionRegistry):
+    def __init__(self) -> None:
+        super().__init__()
+        self._pending: dict[UUID, Session] = {}
+
+    def inject_before_next_mutate(self, session: Session) -> None:
+        self._pending[session.session_id] = session
+
+    def mutate(self, session_id: UUID, mutate: Callable[[Session], Session]) -> Session:
+        injected = self._pending.pop(session_id, None)
+        if injected is not None:
+            self._sessions[session_id] = injected
+        return super().mutate(session_id, mutate)
 
 
 def make_request(token: str | None = None, *, budget_usd: float = 0.1) -> SessionTokenRequest:
@@ -161,5 +184,60 @@ def test_consume_failure_code_discards_stale_attempt_marker() -> None:
 
     updated = sessions.get(request.session_id)
     assert updated is not None
+    assert updated.failure_code is None
+    assert updated.failure_attempt is None
+
+
+def test_mark_failure_code_preserves_latest_concurrent_session_state() -> None:
+    sessions = InterleavingSessionRegistry()
+    tokens = InMemoryTokenRegistry()
+    manager = SessionManager(sessions, tokens)
+    request = make_request()
+    manager.issue(request)
+
+    stored = sessions.get(request.session_id)
+    assert stored is not None
+    sessions.inject_before_next_mutate(
+        replace(
+            stored.mark_exhausted(),
+            usage=SessionUsage(total_cost_usd=0.0001),
+        )
+    )
+
+    envelope = manager.mark_failure_code(request.session_id, SessionFailureCode.TOOL_PROVIDER_FAILED)
+
+    assert envelope.session.status is SessionStatus.EXHAUSTED
+    assert envelope.session.usage.total_cost_usd == pytest.approx(0.0001)
+    assert envelope.session.failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED
+    assert envelope.session.failure_attempt == 0
+
+
+def test_consume_failure_code_preserves_latest_concurrent_session_state() -> None:
+    sessions = InterleavingSessionRegistry()
+    tokens = InMemoryTokenRegistry()
+    manager = SessionManager(sessions, tokens)
+    request = make_request()
+    manager.issue(request)
+
+    stored = sessions.get(request.session_id)
+    assert stored is not None
+    sessions.inject_before_next_mutate(
+        replace(
+            stored.mark_exhausted(),
+            active_attempt=1,
+            usage=SessionUsage(total_cost_usd=0.0001),
+            failure_code=SessionFailureCode.TOOL_PROVIDER_FAILED,
+            failure_attempt=1,
+        )
+    )
+
+    failure_code = manager.consume_failure_code(request.session_id)
+
+    assert failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED
+    updated = sessions.get(request.session_id)
+    assert updated is not None
+    assert updated.status is SessionStatus.EXHAUSTED
+    assert updated.active_attempt == 1
+    assert updated.usage.total_cost_usd == pytest.approx(0.0001)
     assert updated.failure_code is None
     assert updated.failure_attempt is None

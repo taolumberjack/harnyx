@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from collections.abc import Awaitable, Callable, Sequence
@@ -44,6 +45,7 @@ SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunS
 
 logger = logging.getLogger("harnyx_validator.scheduler")
 LOCAL_RETRY_ATTEMPTS = 2
+ARTIFACT_TASK_PARALLELISM = 5
 
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
@@ -83,6 +85,13 @@ class ValidatorBatchFailedError(RuntimeError):
         self.error_code = error_code
 
 
+@dataclass(slots=True)
+class _ArtifactDispatchState:
+    submissions_by_index: list[MinerTaskRunSubmission | None]
+    validator_failure: ValidatorBatchFailedError | None = None
+    unexpected_failure: Exception | None = None
+
+
 class EvaluationRunner:
     """Executes miner task runs for artifacts and records submissions."""
 
@@ -116,17 +125,67 @@ class EvaluationRunner:
         tasks: Sequence[MinerTask],
         orchestrator: TaskRunOrchestrator,
     ) -> list[MinerTaskRunSubmission]:
-        submissions: list[MinerTaskRunSubmission] = []
-        for task in tasks:
-            submissions.append(
-                await self._evaluate_task_with_retry(
+        indexed_tasks = tuple(enumerate(tasks))
+        if not indexed_tasks:
+            return []
+
+        dispatch = _ArtifactDispatchState(
+            submissions_by_index=[None] * len(indexed_tasks),
+        )
+        pending_tasks: asyncio.Queue[tuple[int, MinerTask]] = asyncio.Queue()
+        for indexed_task in indexed_tasks:
+            pending_tasks.put_nowait(indexed_task)
+
+        workers = [
+            asyncio.create_task(
+                self._run_artifact_worker(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    orchestrator=orchestrator,
+                    pending_tasks=pending_tasks,
+                    dispatch=dispatch,
+                )
+            )
+            for _ in range(min(ARTIFACT_TASK_PARALLELISM, len(indexed_tasks)))
+        ]
+        await asyncio.gather(*workers)
+
+        if dispatch.validator_failure is not None:
+            raise dispatch.validator_failure
+        if dispatch.unexpected_failure is not None:
+            raise dispatch.unexpected_failure
+        return [submission for submission in dispatch.submissions_by_index if submission is not None]
+
+    async def _run_artifact_worker(
+        self,
+        *,
+        batch_id: UUID,
+        artifact: ScriptArtifactSpec,
+        orchestrator: TaskRunOrchestrator,
+        pending_tasks: asyncio.Queue[tuple[int, MinerTask]],
+        dispatch: _ArtifactDispatchState,
+    ) -> None:
+        while True:
+            if dispatch.validator_failure is not None or dispatch.unexpected_failure is not None:
+                return
+            try:
+                task_index, task = pending_tasks.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
+            try:
+                dispatch.submissions_by_index[task_index] = await self._evaluate_task_with_retry(
                     batch_id=batch_id,
                     artifact=artifact,
                     task=task,
                     orchestrator=orchestrator,
                 )
-            )
-        return submissions
+            except ValidatorBatchFailedError as exc:
+                if dispatch.validator_failure is None:
+                    dispatch.validator_failure = exc
+            except Exception as exc:
+                if dispatch.unexpected_failure is None:
+                    dispatch.unexpected_failure = exc
 
     async def _run_tasks_with_sessions(
         self,

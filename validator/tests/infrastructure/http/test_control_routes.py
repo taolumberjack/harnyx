@@ -381,6 +381,47 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
     assert specifics["elapsed_ms"] == pytest.approx(2500.0)
 
 
+def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed() -> None:
+    batch_id = uuid4()
+    first_task, first_submission = _make_task_submission(batch_id=batch_id)
+    second_task, second_submission = _make_task_submission(batch_id=batch_id)
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 2,
+        "completed": 2,
+        "remaining": 0,
+        "tasks": (first_task, second_task),
+        "miner_task_runs": (first_submission, second_submission),
+    }
+
+    provider = DemoControlDependencyProvider(
+        snapshot=snapshot,
+        lifecycle="failed",
+        error_code="sandbox_invocation_failed",
+    )
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/progress")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["batch_id"] == str(batch_id)
+    assert body["status"] == "failed"
+    assert body["error_code"] == "sandbox_invocation_failed"
+    assert body["total"] == 2
+    assert body["completed"] == 2
+    assert body["remaining"] == 0
+    assert [run["run"]["task_id"] for run in body["miner_task_runs"]] == [
+        str(first_task.task_id),
+        str(second_task.task_id),
+    ]
+    assert [run["run"]["query"]["text"] for run in body["miner_task_runs"]] == [
+        first_task.query.text,
+        second_task.query.text,
+    ]
+
+
 def test_accept_batch_endpoint_accepts_platform_json_payload() -> None:
     batch_id = uuid4()
     task_id = uuid4()

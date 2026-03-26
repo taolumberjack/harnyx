@@ -12,11 +12,12 @@ from typing import Protocol
 import bittensor as bt
 
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.clients import CHUTES, DESEARCH, PARALLEL, PLATFORM
+from harnyx_commons.clients import DESEARCH, PARALLEL, PLATFORM
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
@@ -57,7 +58,6 @@ from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgre
 from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorClient
 from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
 from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
-from harnyx_validator.runtime.llm_factory import create_llm_provider_factory
 from harnyx_validator.runtime.registration_metadata import resolve_validator_registration_metadata
 from harnyx_validator.runtime.settings import Settings
 
@@ -65,6 +65,7 @@ logger = logging.getLogger("harnyx_validator.runtime")
 
 _SCORING_EMBEDDING_MODEL = "gemini-embedding-001"
 _SCORING_CHUTES_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+TOKEN_MAX_PARALLEL_CALLS = 2
 
 
 class _ScoringEmbeddingClient(TextEmbeddingPort, Protocol):
@@ -200,7 +201,7 @@ def _build_state() -> InMemoryState:
     evaluation_records = InMemoryEvaluationRecordStore()
     progress_tracker = InMemoryRunProgress()
     batch_inbox = InMemoryBatchInbox()
-    token_semaphore = TokenSemaphore()
+    token_semaphore = TokenSemaphore(max_parallel_calls=TOKEN_MAX_PARALLEL_CALLS)
     usage_tracker = UsageTracker()
     session_manager = SessionManager(session_registry, token_registry)
     return InMemoryState(
@@ -226,8 +227,12 @@ def _build_llm_clients(
     settings: Settings,
 ) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort | None]:
     search_client = _create_search_client(settings)
-    tool_llm_provider = _create_tool_llm_provider(settings)
-    scoring_llm_provider = _create_scoring_llm_provider(settings)
+    resolve_provider = build_cached_llm_provider_resolver(
+        llm_settings=settings.llm,
+        vertex_settings=settings.vertex,
+    )
+    tool_llm_provider = resolve_provider(settings.llm.tool_llm_provider)
+    scoring_llm_provider = resolve_provider(settings.llm.scoring_llm_provider)
     return search_client, tool_llm_provider, scoring_llm_provider
 
 
@@ -523,34 +528,6 @@ def _create_search_client(settings: Settings) -> WebSearchProviderPort:
     raise ValueError(f"unsupported search provider: {provider}")
 
 
-def _create_tool_llm_provider(settings: Settings) -> LlmProviderPort | None:
-    resolve_provider = create_llm_provider_factory(
-        chutes_api_key=settings.llm.chutes_api_key_value,
-        chutes_base_url=CHUTES.base_url,
-        chutes_timeout=CHUTES.timeout_seconds,
-        gcp_project_id=settings.vertex.gcp_project_id,
-        gcp_location=settings.vertex.gcp_location,
-        vertex_maas_gcp_location=settings.vertex.vertex_maas_gcp_location,
-        vertex_timeout=settings.vertex.vertex_timeout_seconds,
-        gcp_service_account_b64=settings.vertex.gcp_sa_credential_b64_value,
-    )
-    return resolve_provider(settings.llm.tool_llm_provider)
-
-
-def _create_scoring_llm_provider(settings: Settings) -> LlmProviderPort | None:
-    resolve_provider = create_llm_provider_factory(
-        chutes_api_key=settings.llm.chutes_api_key_value,
-        chutes_base_url=CHUTES.base_url,
-        chutes_timeout=CHUTES.timeout_seconds,
-        gcp_project_id=settings.vertex.gcp_project_id,
-        gcp_location=settings.vertex.gcp_location,
-        vertex_maas_gcp_location=settings.vertex.vertex_maas_gcp_location,
-        vertex_timeout=settings.vertex.vertex_timeout_seconds,
-        gcp_service_account_b64=settings.vertex.gcp_sa_credential_b64_value,
-    )
-    return resolve_provider(settings.llm.scoring_llm_provider)
-
-
 def _create_scoring_service(
     settings: Settings,
     provider: LlmProviderPort | None,
@@ -611,10 +588,27 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
             return
         await obj.aclose()
 
-    await _aclose(runtime.search_client)
-    await _aclose(runtime.tool_llm_provider)
-    await _aclose(runtime.scoring_llm_provider)
-    await _aclose(runtime.scoring_embedding_client)
+    for owned in _unique_aclose_targets(
+        runtime.search_client,
+        runtime.tool_llm_provider,
+        runtime.scoring_llm_provider,
+        runtime.scoring_embedding_client,
+    ):
+        await _aclose(owned)
+
+
+def _unique_aclose_targets(*objects: _SupportsAclose | None) -> tuple[_SupportsAclose, ...]:
+    seen: set[int] = set()
+    unique: list[_SupportsAclose] = []
+    for obj in objects:
+        if obj is None:
+            continue
+        obj_id = id(obj)
+        if obj_id in seen:
+            continue
+        seen.add(obj_id)
+        unique.append(obj)
+    return tuple(unique)
 
 
 def _verify_request(

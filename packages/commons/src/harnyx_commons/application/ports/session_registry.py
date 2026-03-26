@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol
 from uuid import UUID
 
@@ -19,6 +20,9 @@ class SessionRegistryPort(Protocol):
 
     def update(self, session: Session) -> None:
         """Persist an updated session snapshot."""
+
+    def mutate(self, session_id: UUID, mutate: Callable[[Session], Session]) -> Session:
+        """Atomically load, transform, persist, and return a session snapshot."""
 
     def delete(self, session_id: UUID) -> None:
         """Remove the session, if present."""

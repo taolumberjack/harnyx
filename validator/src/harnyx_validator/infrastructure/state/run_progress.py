@@ -25,6 +25,8 @@ class InMemoryRunProgress:
     batches_by_id: dict[UUID, MinerTaskBatchSpec] = field(default_factory=dict)
     expected_by_batch: dict[UUID, int] = field(default_factory=dict)
     tasks_by_batch: dict[UUID, tuple[MinerTask, ...]] = field(default_factory=dict)
+    task_positions_by_batch: dict[UUID, dict[UUID, int]] = field(default_factory=dict)
+    artifact_positions_by_batch: dict[UUID, dict[UUID, int]] = field(default_factory=dict)
     results_by_batch: dict[
         UUID,
         dict[tuple[UUID, UUID], MinerTaskRunSubmission],
@@ -40,6 +42,12 @@ class InMemoryRunProgress:
         self.batches_by_id[batch.batch_id] = batch
         self.expected_by_batch[batch.batch_id] = len(batch.tasks) * len(batch.artifacts)
         self.tasks_by_batch[batch.batch_id] = batch.tasks
+        self.task_positions_by_batch[batch.batch_id] = {
+            task.task_id: index for index, task in enumerate(batch.tasks)
+        }
+        self.artifact_positions_by_batch[batch.batch_id] = {
+            artifact.artifact_id: index for index, artifact in enumerate(batch.artifacts)
+        }
 
     def record(self, result: MinerTaskRunSubmission) -> None:
         pair = (result.run.artifact_id, result.run.task_id)
@@ -69,7 +77,12 @@ class InMemoryRunProgress:
         return frozenset(bucket)
 
     def snapshot(self, batch_id: UUID) -> RunProgressSnapshot:
-        results = tuple(self.results_by_batch.get(batch_id, {}).values())
+        results = tuple(
+            sorted(
+                self.results_by_batch.get(batch_id, {}).values(),
+                key=lambda result: self._result_sort_key(batch_id, result),
+            )
+        )
         total = int(self.expected_by_batch.get(batch_id, 0))
         completed = len(results)
         remaining = max(0, total - completed)
@@ -81,6 +94,22 @@ class InMemoryRunProgress:
             "tasks": self.tasks_by_batch.get(batch_id, ()),
             "miner_task_runs": results,
         }
+
+    def _result_sort_key(
+        self,
+        batch_id: UUID,
+        result: MinerTaskRunSubmission,
+    ) -> tuple[int, int, str, str]:
+        artifact_positions = self.artifact_positions_by_batch.get(batch_id, {})
+        task_positions = self.task_positions_by_batch.get(batch_id, {})
+        fallback_artifact = len(artifact_positions)
+        fallback_task = len(task_positions)
+        return (
+            artifact_positions.get(result.run.artifact_id, fallback_artifact),
+            task_positions.get(result.run.task_id, fallback_task),
+            str(result.run.artifact_id),
+            str(result.run.task_id),
+        )
 
 
 __all__ = ["InMemoryRunProgress", "RunProgressSnapshot"]
