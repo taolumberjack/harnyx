@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Protocol, cast
 
 import bittensor as bt
 
@@ -46,7 +46,11 @@ from harnyx_validator.application.services.evaluation_scoring import (
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.application.submit_weights import WeightSubmissionService
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
-from harnyx_validator.infrastructure.http.routes import ToolRouteDeps, ValidatorControlDeps
+from harnyx_validator.infrastructure.http.routes import (
+    StatusSigner,
+    ToolRouteDeps,
+    ValidatorControlDeps,
+)
 from harnyx_validator.infrastructure.platform.registration_client import (
     PlatformRegistrationClient,
     register_with_retry,
@@ -160,6 +164,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         resolved=resolved,
         state=state,
         tool_executor=tool_executor,
+        validator_hotkey=platform_hotkey,
     )
 
     return RuntimeContext(
@@ -308,6 +313,7 @@ def _build_http_dependencies(
     resolved: Settings,
     state: InMemoryState,
     tool_executor: ToolExecutor,
+    validator_hotkey: bt.Keypair,
 ) -> tuple[Callable[[], ToolRouteDeps], Callable[[], ValidatorControlDeps], StatusProvider]:
     status_provider = StatusProvider()
     inbound_auth = _build_inbound_auth(resolved)
@@ -322,6 +328,7 @@ def _build_http_dependencies(
         status_provider,
         inbound_auth,
         state.progress_tracker,
+        validator_hotkey,
     )
     return tool_route_provider, control_provider, status_provider
 
@@ -397,6 +404,7 @@ def _make_control_provider(
     status_provider: StatusProvider,
     inbound_auth: BittensorSr25519InboundVerifier,
     progress_tracker: InMemoryRunProgress,
+    validator_hotkey: bt.Keypair,
 ) -> Callable[[], ValidatorControlDeps]:
     async def auth(
         method: str,
@@ -419,6 +427,7 @@ def _make_control_provider(
             status_provider=status_provider,
             auth=auth,
             progress_tracker=progress_tracker,
+            validator_hotkey=cast(StatusSigner, validator_hotkey),
         )
 
     return provider

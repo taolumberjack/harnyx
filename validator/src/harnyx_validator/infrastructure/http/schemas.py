@@ -286,6 +286,7 @@ class ValidatorStatusResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
     status: str = Field(min_length=1)
+    hotkey: str = Field(min_length=1)
     last_batch_id: str | None = None
     last_started_at: str | None = None
     last_completed_at: str | None = None
@@ -294,6 +295,7 @@ class ValidatorStatusResponse(BaseModel):
     last_error: str | None = None
     last_weight_submission_at: str | None = None
     last_weight_error: str | None = None
+    signature_hex: str | None = None
 
 
 __all__ = [

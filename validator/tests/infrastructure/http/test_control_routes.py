@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -30,7 +31,11 @@ from harnyx_validator.application.dto.evaluation import (
 )
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
-from harnyx_validator.infrastructure.http.routes import ControlRouteAuth, ValidatorControlDeps, add_control_routes
+from harnyx_validator.infrastructure.http.routes import (
+    ControlRouteAuth,
+    ValidatorControlDeps,
+    add_control_routes,
+)
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress, RunProgressSnapshot
 
@@ -39,6 +44,14 @@ def _create_test_app(provider: DemoControlDependencyProvider) -> FastAPI:
     app = FastAPI()
     add_control_routes(app, provider)
     return app
+
+
+@dataclass(frozen=True)
+class _StubHotkey:
+    ss58_address: str = "5validator"
+
+    def sign(self, payload: bytes) -> bytes:
+        return b"sig:" + payload
 
 
 class StubAcceptBatch:
@@ -71,7 +84,7 @@ class StubAcceptBatch:
 
 class StubStatusProvider:
     def snapshot(self) -> dict[str, object]:
-        return {"status": "ok"}
+        return {"status": "ok", "running": False}
 
 
 class FakeProgressTracker:
@@ -90,6 +103,7 @@ class DemoControlDependencyProvider:
         auth: ControlRouteAuth | None = None,
         lifecycle: str | None = "processing",
         error_code: str | None = None,
+        validator_hotkey: _StubHotkey | None = None,
     ) -> None:
         self.accept_batch = StubAcceptBatch(lifecycle=lifecycle, error_code=error_code)
         self._deps = ValidatorControlDeps(
@@ -97,6 +111,7 @@ class DemoControlDependencyProvider:
             status_provider=StubStatusProvider(),
             auth=_allow_all_auth if auth is None else auth,
             progress_tracker=FakeProgressTracker(snapshot=snapshot),
+            validator_hotkey=validator_hotkey or _StubHotkey(),
         )
 
     def __call__(self) -> ValidatorControlDeps:
@@ -105,6 +120,7 @@ class DemoControlDependencyProvider:
 
 class RealAcceptBatchDependencyProvider:
     def __init__(self) -> None:
+        self.validator_hotkey = _StubHotkey()
         self.inbox = InMemoryBatchInbox()
         self.status_provider = StatusProvider()
         self.progress_tracker = InMemoryRunProgress()
@@ -118,6 +134,7 @@ class RealAcceptBatchDependencyProvider:
             status_provider=self.status_provider,
             auth=_allow_all_auth,
             progress_tracker=self.progress_tracker,
+            validator_hotkey=self.validator_hotkey,
         )
 
     def __call__(self) -> ValidatorControlDeps:
@@ -160,12 +177,51 @@ def test_status_endpoint_awaits_auth_with_request_primitives() -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["hotkey"] == "5validator"
     assert auth_calls == [(
         "GET",
         "/validator/status?verbose=1",
         b"",
         'Bittensor ss58="5demo",sig="00"',
     )]
+
+
+def test_status_endpoint_returns_signed_ownership_proof_when_timestamp_header_is_present() -> None:
+    batch_id = uuid4()
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot, validator_hotkey=_StubHotkey("5proof"))
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(
+        "/validator/status",
+        headers={
+            "Authorization": 'Bittensor ss58="5demo",sig="00"',
+            "X-Harnyx-Status-Ts": "2026-03-26T04:00:00+00:00",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["hotkey"] == "5proof"
+    expected = "\n".join(
+        (
+            "validator-status-v1",
+            "path=/validator/status",
+            "request_ts=2026-03-26T04:00:00+00:00",
+            "hotkey=5proof",
+            "status=ok",
+            "running=False",
+        )
+    ).encode("utf-8")
+    assert payload["signature_hex"] == (b"sig:" + expected).hex()
 
 
 def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSubmission]:

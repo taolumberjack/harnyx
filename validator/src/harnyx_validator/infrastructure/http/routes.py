@@ -44,6 +44,8 @@ from harnyx_validator.infrastructure.http.schemas import (
 from harnyx_validator.infrastructure.state.run_progress import RunProgressSnapshot
 
 logger = logging.getLogger("harnyx_validator.http")
+_STATUS_PATH = "/validator/status"
+_STATUS_TIMESTAMP_HEADER = "X-Harnyx-Status-Ts"
 
 
 @dataclass(frozen=True)
@@ -62,10 +64,18 @@ class ValidatorControlDeps:
     status_provider: StatusProvider
     auth: ControlRouteAuth
     progress_tracker: ProgressTracker
+    validator_hotkey: StatusSigner
 
 
 class ProgressTracker(Protocol):
     def snapshot(self, batch_id: UUID) -> RunProgressSnapshot:
+        ...
+
+
+class StatusSigner(Protocol):
+    ss58_address: str
+
+    def sign(self, payload: bytes) -> bytes:
         ...
 
 
@@ -235,16 +245,32 @@ def add_control_routes(
         )
 
     @app.get(
-        "/validator/status",
+        _STATUS_PATH,
         response_model=ValidatorStatusResponse,
         description="Return a validator status snapshot for platform health checks.",
     )
     def status(
+        request: Request,
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
         _caller: str = Security(require_bittensor_caller),
     ) -> ValidatorStatusResponse:
         snapshot = deps.status_provider.snapshot()
-        return ValidatorStatusResponse(**snapshot)
+        response = ValidatorStatusResponse(
+            **snapshot,
+            hotkey=deps.validator_hotkey.ss58_address,
+        )
+        request_ts = request.headers.get(_STATUS_TIMESTAMP_HEADER)
+        if request_ts is None:
+            return response
+        proof_payload = _build_status_proof_payload(
+            request_ts=request_ts,
+            hotkey=response.hotkey,
+            status=response.status,
+            running=response.running,
+        )
+        return response.model_copy(
+            update={"signature_hex": deps.validator_hotkey.sign(proof_payload).hex()}
+        )
 
 
 async def _execute_with_semaphore_async(invocation: ToolInvocationRequest, deps: ToolRouteDeps) -> Any:
@@ -319,6 +345,25 @@ def _serialize_usage_block(usage: TokenUsageSummary) -> UsageModel:
         call_count=usage.call_count,
         by_provider=_serialize_usage_providers(usage),
     )
+
+
+def _build_status_proof_payload(
+    *,
+    request_ts: str,
+    hotkey: str,
+    status: str,
+    running: bool,
+) -> bytes:
+    return "\n".join(
+        (
+            "validator-status-v1",
+            f"path={_STATUS_PATH}",
+            f"request_ts={request_ts}",
+            f"hotkey={hotkey}",
+            f"status={status}",
+            f"running={running}",
+        )
+    ).encode("utf-8")
 
 
 def _serialize_usage_providers(usage: TokenUsageSummary) -> dict[str, dict[str, UsageModelEntry]]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from threading import Event, Thread
 
 import bittensor as bt
@@ -15,6 +16,14 @@ from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
+
+
+@dataclass(frozen=True)
+class _StubHotkey:
+    ss58_address: str = "5validator"
+
+    def sign(self, payload: bytes) -> bytes:
+        return payload
 
 
 def test_build_inbound_auth_uses_subnet_owner_hotkey(monkeypatch) -> None:
@@ -228,6 +237,7 @@ async def test_make_control_provider_offloads_verify_request(monkeypatch: pytest
         status_provider=status_provider,
         inbound_auth=inbound_auth,
         progress_tracker=progress_tracker,
+        validator_hotkey=_StubHotkey(),
     )()
 
     caller = await deps.auth(
