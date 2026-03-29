@@ -65,6 +65,7 @@ class StubAcceptBatch:
     ) -> None:
         self.received_batch: MinerTaskBatchSpec | None = None
         self.received_restore_runs: tuple[MinerTaskRunSubmission, ...] = ()
+        self.received_restore_provider_evidence: tuple[dict[str, object], ...] = ()
         self._lifecycle = lifecycle
         self._error_code = error_code
         self._failure_detail = failure_detail
@@ -74,11 +75,13 @@ class StubAcceptBatch:
         batch: object,
         *,
         restore_runs: tuple[MinerTaskRunSubmission, ...] = (),
+        restore_provider_evidence: tuple[dict[str, object], ...] = (),
     ) -> None:
         if not isinstance(batch, MinerTaskBatchSpec):
             raise AssertionError(f"expected MinerTaskBatchSpec, got {type(batch)!r}")
         self.received_batch = batch
         self.received_restore_runs = restore_runs
+        self.received_restore_provider_evidence = restore_provider_evidence
         return None
 
     def lifecycle_for(self, batch_id: UUID) -> str | None:
@@ -171,6 +174,7 @@ def test_status_endpoint_awaits_auth_with_request_primitives() -> None:
         "remaining": 0,
         "tasks": (),
         "miner_task_runs": (),
+        "provider_evidence": (),
     }
     auth_calls: list[tuple[str, str, bytes, str | None]] = []
 
@@ -212,6 +216,7 @@ def test_status_endpoint_returns_signed_ownership_proof_when_timestamp_header_is
         "remaining": 0,
         "tasks": (),
         "miner_task_runs": (),
+        "provider_evidence": (),
     }
     provider = DemoControlDependencyProvider(snapshot=snapshot, validator_hotkey=_StubHotkey("5proof"))
     app = _create_test_app(provider)
@@ -425,6 +430,14 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
         "remaining": 0,
         "tasks": (task,),
         "miner_task_runs": (submission,),
+        "provider_evidence": (
+            {
+                "provider": "desearch",
+                "model": "search_web",
+                "total_calls": 12,
+                "failed_calls": 5,
+            },
+        ),
     }
 
     provider = DemoControlDependencyProvider(snapshot=snapshot)
@@ -440,6 +453,14 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
     assert body["total"] == 1
     assert body["completed"] == 1
     assert body["remaining"] == 0
+    assert body["provider_model_evidence"] == [
+        {
+            "provider": "desearch",
+            "model": "search_web",
+            "total_calls": 12,
+            "failed_calls": 5,
+        }
+    ]
 
     run = body["miner_task_runs"][0]
     assert run["score"] == pytest.approx(0.9)
@@ -465,6 +486,7 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
         "remaining": 0,
         "tasks": (first_task, second_task),
         "miner_task_runs": (first_submission, second_submission),
+        "provider_evidence": (),
     }
 
     provider = DemoControlDependencyProvider(
@@ -524,6 +546,7 @@ def test_accept_batch_endpoint_accepts_platform_json_payload() -> None:
         "remaining": 0,
         "tasks": (),
         "miner_task_runs": (),
+        "provider_evidence": (),
     }
     provider = DemoControlDependencyProvider(snapshot=snapshot)
     app = _create_test_app(provider)
@@ -581,6 +604,7 @@ def test_accept_batch_endpoint_forwards_restore_runs() -> None:
         "remaining": 0,
         "tasks": (),
         "miner_task_runs": (),
+        "provider_evidence": (),
     }
     provider = DemoControlDependencyProvider(snapshot=snapshot)
     app = _create_test_app(provider)
@@ -623,6 +647,7 @@ def test_accept_batch_endpoint_rejects_invalid_restore_session_status() -> None:
         "remaining": 0,
         "tasks": (),
         "miner_task_runs": (),
+        "provider_evidence": (),
     }
     provider = DemoControlDependencyProvider(snapshot=snapshot)
     app = _create_test_app(provider)
@@ -663,6 +688,7 @@ def test_accept_batch_endpoint_rejects_legacy_iso_keys() -> None:
         "remaining": 0,
         "tasks": (),
         "miner_task_runs": (),
+        "provider_evidence": (),
     }
     provider = DemoControlDependencyProvider(snapshot=snapshot)
     app = _create_test_app(provider)
@@ -708,6 +734,7 @@ def test_accept_batch_endpoint_rejects_non_strict_artifact_uid_payload() -> None
         "remaining": 0,
         "tasks": (),
         "miner_task_runs": (),
+        "provider_evidence": (),
     }
     provider = DemoControlDependencyProvider(snapshot=snapshot)
     app = _create_test_app(provider)
@@ -774,6 +801,7 @@ def test_progress_endpoint_returns_unknown_for_unaccepted_batch() -> None:
         "remaining": 0,
         "tasks": (),
         "miner_task_runs": (),
+        "provider_evidence": (),
     }
     provider = DemoControlDependencyProvider(snapshot=snapshot, lifecycle=None)
     app = _create_test_app(provider)
@@ -791,6 +819,7 @@ def test_progress_endpoint_returns_unknown_for_unaccepted_batch() -> None:
         "completed": 0,
         "remaining": 0,
         "miner_task_runs": [],
+        "provider_model_evidence": [],
     }
 
 

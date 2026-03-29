@@ -6,15 +6,17 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.session import Session, SessionFailureCode, SessionStatus, SessionUsage
+from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.executor import ToolExecutor
+from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_routes
+from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
+from harnyx_validator.runtime.bootstrap import ALLOWED_TOOL_MODELS, _ProviderTrackingToolExecutor
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 DEMO_SESSION_TOKEN = uuid4().hex
@@ -65,7 +67,6 @@ class RecordingTokenSemaphore(TokenSemaphore):
         self.release_calls.append(token)
         super().release(token)
 
-
 class DemoDependencyProvider:
     def __init__(self) -> None:
         self.session_registry = FakeSessionRegistry()
@@ -84,7 +85,6 @@ class DemoDependencyProvider:
         )
         self.session_registry.create(self.session)
         self.tokens.register(self.session.session_id, DEMO_SESSION_TOKEN)
-        self.session_manager = SessionManager(self.session_registry, self.tokens)
 
         usage_tracker = UsageTracker()
         tool_invoker = RecordingToolInvoker()
@@ -103,7 +103,66 @@ class DemoDependencyProvider:
         self.dependencies = ToolRouteDeps(
             tool_executor=self.tool_executor,
             token_semaphore=self.token_semaphore,
-            session_manager=self.session_manager,
+        )
+
+    def __call__(self) -> ToolRouteDeps:
+        return self.dependencies
+
+
+class _NoopLlmProvider:
+    async def invoke(self, request):
+        raise AssertionError(f"llm provider should not be called: {request}")
+
+
+class TrackingDependencyProvider:
+    def __init__(self) -> None:
+        self.session_registry = FakeSessionRegistry()
+        self.receipt_log = FakeReceiptLog()
+        self.tokens = InMemoryTokenRegistry()
+        self.progress_tracker = InMemoryRunProgress()
+        self.batch_id = uuid4()
+        self.artifact_id = uuid4()
+
+        self.session = Session(
+            session_id=uuid4(),
+            uid=7,
+            task_id=uuid4(),
+            issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+            expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+            budget_usd=0.1,
+            usage=SessionUsage(),
+            status=SessionStatus.ACTIVE,
+        )
+        self.session_registry.create(self.session)
+        self.tokens.register(self.session.session_id, DEMO_SESSION_TOKEN)
+        self.progress_tracker.register_task_session(
+            batch_id=self.batch_id,
+            session_id=self.session.session_id,
+        )
+
+        usage_tracker = UsageTracker()
+        tool_invoker = RuntimeToolInvoker(
+            FakeReceiptLog(),
+            llm_provider=_NoopLlmProvider(),
+            llm_provider_name="openai",
+            allowed_models=ALLOWED_TOOL_MODELS,
+        )
+
+        self.tool_executor = _ProviderTrackingToolExecutor(
+            session_registry=self.session_registry,
+            receipt_log=self.receipt_log,
+            usage_tracker=usage_tracker,
+            tool_invoker=tool_invoker,
+            token_registry=self.tokens,
+            clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+            progress=self.progress_tracker,
+            search_provider_name="desearch",
+            llm_provider_name="openai",
+        )
+        self.token_semaphore = RecordingTokenSemaphore(max_parallel_calls=1)
+        self.dependencies = ToolRouteDeps(
+            tool_executor=self.tool_executor,
+            token_semaphore=self.token_semaphore,
         )
 
     def __call__(self) -> ToolRouteDeps:
@@ -172,7 +231,6 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     provider.dependencies = ToolRouteDeps(
         tool_executor=_FailingToolExecutor(),
         token_semaphore=provider.token_semaphore,
-        session_manager=provider.session_manager,
     )
     app = create_test_app(provider)
     client = TestClient(app)
@@ -197,11 +255,9 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
 
 def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> None:
     provider = DemoDependencyProvider()
-    provider.session_manager.begin_attempt(provider.session.session_id)
     provider.dependencies = ToolRouteDeps(
         tool_executor=_ProviderFailingToolExecutor(),
         token_semaphore=provider.token_semaphore,
-        session_manager=provider.session_manager,
     )
     app = create_test_app(provider)
     client = TestClient(app)
@@ -221,10 +277,6 @@ def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> 
 
     assert response.status_code == 400
     assert response.json() == {"detail": "tool execution failed"}
-    stored = provider.session_registry.get(provider.session.session_id)
-    assert stored is not None
-    assert stored.failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED
-    assert stored.failure_attempt == stored.active_attempt == 1
 
 
 def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None:
@@ -250,6 +302,31 @@ def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None
         provider.token_semaphore.release(DEMO_SESSION_TOKEN)
 
     assert response.status_code == 400
+
+
+def test_execute_tool_endpoint_invalid_llm_payload_does_not_record_provider_call() -> None:
+    provider = TrackingDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "llm_chat",
+            "args": [],
+            "kwargs": {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": "not-an-allowed-model",
+            },
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == ()
 
 
 class _FailingToolExecutor:

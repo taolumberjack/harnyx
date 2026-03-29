@@ -23,6 +23,7 @@ from harnyx_validator.application.dto.evaluation import (
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
+from harnyx_validator.application.ports.progress import ProviderFailureEvidence
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
@@ -33,6 +34,9 @@ class ProgressSpy:
         self.register_attempts: list[MinerTaskBatchSpec] = []
         self.registered: list[MinerTaskBatchSpec] = []
         self.restore_attempts: list[tuple[MinerTaskBatchSpec, tuple[MinerTaskRunSubmission, ...]]] = []
+        self.restore_provider_evidence_attempts: list[
+            tuple[MinerTaskBatchSpec, tuple[ProviderFailureEvidence, ...]]
+        ] = []
         self._batches_by_id: dict[UUID, MinerTaskBatchSpec] = {}
         self._recorded_by_batch: dict[UUID, set[tuple[UUID, UUID]]] = {}
 
@@ -61,11 +65,15 @@ class ProgressSpy:
         self,
         batch: MinerTaskBatchSpec,
         submissions: Iterable[MinerTaskRunSubmission],
+        provider_evidence: Iterable[ProviderFailureEvidence] = (),
     ) -> None:
         restored = tuple(submissions)
+        restored_provider_evidence = tuple(provider_evidence)
         self.register(batch)
         if restored:
             self.restore_attempts.append((batch, restored))
+        if restored_provider_evidence:
+            self.restore_provider_evidence_attempts.append((batch, restored_provider_evidence))
         bucket = self._recorded_by_batch.setdefault(batch.batch_id, set())
         for submission in restored:
             bucket.add((submission.run.artifact_id, submission.run.task_id))
@@ -336,5 +344,5 @@ def test_accept_batch_rejects_conflicting_replay() -> None:
 
     assert len(inbox) == 1
     assert status.state.queued_batches == 1
-    assert progress.register_attempts == [batch, conflicting]
+    assert progress.register_attempts == [batch]
     assert progress.registered == [batch]

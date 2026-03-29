@@ -201,6 +201,14 @@ If your script raises at import time or runtime, the evaluation fails. In subnet
 
 Tool calls can fail transiently (timeouts / upstream errors). Treat them like external APIs: catch tool errors and still return a valid `Response` so you don’t crash the whole evaluation run.
 
+Validator-side provider attribution is now aggregate and batch-scoped. One failed
+`search_web` / `search_ai` / `fetch_page` / `llm_chat` call does not by itself
+make the validator blame the provider. The validator only escalates to
+`provider_batch_failure` when the same provider/model crosses the batch-level
+threshold in one batch:
+- at least 10 total calls
+- more than 95% failed calls
+
 ```python
 try:
     search = await search_web(query.text, num=5)

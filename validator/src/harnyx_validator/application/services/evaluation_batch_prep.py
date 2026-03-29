@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -41,7 +41,7 @@ class AgentArtifact(Protocol):
     def container_path(self) -> str: ...
 
 
-AgentResolver = Callable[[UUID, MinerTaskBatchSpec, Path, str], Mapping[UUID, AgentArtifact]]
+AgentResolver = Callable[[UUID, ScriptArtifactSpec, Path, str], AgentArtifact]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,35 +102,14 @@ class BatchExecutionPlanner:
         run_ctx: RunContext,
         batch: MinerTaskBatchSpec,
     ) -> tuple[tuple[ScriptArtifactSpec, ...], EvaluationScheduler]:
-        agent_artifacts, volumes, selected_artifacts = self._resolve_agents(run_ctx, batch)
-        scheduler = self._build_scheduler(run_ctx, agent_artifacts, volumes)
-        return selected_artifacts, scheduler
-
-    def _resolve_agents(
-        self,
-        run_ctx: RunContext,
-        batch: MinerTaskBatchSpec,
-    ) -> tuple[
-        Mapping[UUID, AgentArtifact],
-        tuple[tuple[str, str, str | None], ...],
-        tuple[ScriptArtifactSpec, ...],
-    ]:
-        agent_artifacts = self._agent_resolver(
-            run_ctx.batch_id,
-            batch,
-            run_ctx.state_dir,
-            run_ctx.config.state_dir,
-        )
-        volumes = run_ctx.base_volumes + ((resolve_state_mount_source(), run_ctx.config.state_dir, "ro"),)
-        return agent_artifacts, volumes, batch.artifacts
+        scheduler = self._build_scheduler(run_ctx)
+        return batch.artifacts, scheduler
 
     def _build_scheduler(
         self,
         run_ctx: RunContext,
-        agent_artifacts: Mapping[UUID, AgentArtifact],
-        volumes: tuple[tuple[str, str, str | None], ...],
     ) -> EvaluationScheduler:
-        options_factory = self._build_sandbox_options_factory(run_ctx, agent_artifacts, volumes)
+        options_factory = self._build_sandbox_options_factory(run_ctx)
         return EvaluationScheduler(
             tasks=run_ctx.tasks,
             subtensor_client=self._subtensor,
@@ -151,9 +130,10 @@ class BatchExecutionPlanner:
     def _build_sandbox_options_factory(
         self,
         run_ctx: RunContext,
-        agent_artifacts: Mapping[UUID, AgentArtifact],
-        volumes: tuple[tuple[str, str, str | None], ...],
     ) -> Callable[[ScriptArtifactSpec], SandboxOptions]:
+        volumes = run_ctx.base_volumes + ((resolve_state_mount_source(), run_ctx.config.state_dir, "ro"),)
+        resolved_artifacts: dict[UUID, AgentArtifact] = {}
+
         def sandbox_options_factory(artifact: ScriptArtifactSpec) -> SandboxOptions:
             container_name = (
                 f"harnyx-sandbox-{artifact.uid}-{artifact.artifact_id.hex[:8]}-{run_ctx.batch_id.hex[:8]}"
@@ -161,11 +141,16 @@ class BatchExecutionPlanner:
             env = dict(run_ctx.base_env)
             env["MINER_UID"] = str(artifact.uid)
             env["EVALUATION_RUN_ID"] = str(run_ctx.batch_id)
-            resolved_artifact = agent_artifacts.get(artifact.artifact_id)
-            if resolved_artifact is not None:
-                env["AGENT_PATH"] = resolved_artifact.container_path
-            elif "AGENT_PATH" not in env:
-                raise RuntimeError(f"agent path missing for artifact {artifact.uid}/{artifact.artifact_id}")
+            resolved_artifact = resolved_artifacts.get(artifact.artifact_id)
+            if resolved_artifact is None:
+                resolved_artifact = self._agent_resolver(
+                    run_ctx.batch_id,
+                    artifact,
+                    run_ctx.state_dir,
+                    run_ctx.config.state_dir,
+                )
+                resolved_artifacts[artifact.artifact_id] = resolved_artifact
+            env["AGENT_PATH"] = resolved_artifact.container_path
             return replace(
                 run_ctx.base_options,
                 container_name=container_name,

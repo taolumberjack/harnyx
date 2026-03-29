@@ -13,15 +13,18 @@ import bittensor as bt
 
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.clients import DESEARCH, PARALLEL, PLATFORM
+from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
 from harnyx_commons.tools.desearch import DeSearchClient
+from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.ports import WebSearchProviderPort
@@ -72,11 +75,75 @@ _SCORING_CHUTES_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 _SCORING_LLM_MODEL = "openai/gpt-oss-120b-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 TOKEN_MAX_PARALLEL_CALLS = 2
+_SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 
 
 class _ScoringEmbeddingClient(TextEmbeddingPort, Protocol):
     async def aclose(self) -> None:
         ...
+
+
+class _ProviderTrackingToolExecutor(ToolExecutor):
+    def __init__(
+        self,
+        *,
+        session_registry: InMemorySessionRegistry,
+        receipt_log: InMemoryReceiptLog,
+        usage_tracker: UsageTracker,
+        tool_invoker: RuntimeToolInvoker,
+        token_registry: InMemoryTokenRegistry,
+        clock: Callable[[], datetime],
+        progress: InMemoryRunProgress,
+        search_provider_name: str | None,
+        llm_provider_name: str,
+    ) -> None:
+        super().__init__(
+            session_registry=session_registry,
+            receipt_log=receipt_log,
+            usage_tracker=usage_tracker,
+            tool_invoker=tool_invoker,
+            token_registry=token_registry,
+            clock=clock,
+        )
+        self._progress = progress
+        self._search_provider_name = search_provider_name
+        self._llm_provider_name = llm_provider_name
+
+    async def _invoke_tool_async(self, request: ToolInvocationRequest) -> JsonObject:
+        provider_key = _provider_key_from_request(
+            request=request,
+            search_provider_name=self._search_provider_name,
+            llm_provider_name=self._llm_provider_name,
+        )
+        try:
+            response = await super()._invoke_tool_async(request)
+        except ToolProviderError:
+            self._record_provider_call(request=request, provider_key=provider_key)
+            if provider_key is not None:
+                provider, model = provider_key
+                self._progress.record_provider_failure(
+                    session_id=request.session_id,
+                    provider=provider,
+                    model=model,
+                )
+            raise
+        self._record_provider_call(request=request, provider_key=provider_key)
+        return response
+
+    def _record_provider_call(
+        self,
+        *,
+        request: ToolInvocationRequest,
+        provider_key: tuple[str, str] | None,
+    ) -> None:
+        if provider_key is None:
+            return
+        provider, model = provider_key
+        self._progress.record_provider_call(
+            session_id=request.session_id,
+            provider=provider,
+            model=model,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,13 +324,16 @@ def _build_tooling(
         llm_provider_name=resolved.llm.tool_llm_provider,
         allowed_models=ALLOWED_TOOL_MODELS,
     )
-    tool_executor = ToolExecutor(
+    tool_executor = _ProviderTrackingToolExecutor(
         session_registry=state.session_registry,
         receipt_log=state.receipt_log,
         usage_tracker=state.usage_tracker,
         tool_invoker=tool_invoker,
         token_registry=state.token_registry,
         clock=_clock,
+        progress=state.progress_tracker,
+        search_provider_name=resolved.llm.search_provider,
+        llm_provider_name=resolved.llm.tool_llm_provider,
     )
     return tool_invoker, tool_executor
 
@@ -322,7 +392,6 @@ def _build_http_dependencies(
     tool_route_provider = _make_dependency_provider(
         tool_executor,
         state.token_semaphore,
-        state.session_manager,
     )
     accept_batch = AcceptEvaluationBatch(state.batch_inbox, status_provider, state.progress_tracker)
     control_provider = _make_control_provider(
@@ -386,16 +455,51 @@ def _build_subtensor_client(resolved: Settings) -> SubtensorClientPort:
     return client
 
 
+def _provider_key_from_request(
+    *,
+    request: ToolInvocationRequest,
+    search_provider_name: str | None,
+    llm_provider_name: str,
+) -> tuple[str, str] | None:
+    if request.tool in _SEARCH_PROVIDER_TOOLS:
+        if search_provider_name is None:
+            return None
+        return search_provider_name, request.tool
+    if request.tool != "llm_chat":
+        return None
+    model = _model_name_from_request(request)
+    if model is None:
+        return None
+    return llm_provider_name, model
+
+
+def _model_name_from_request(request: ToolInvocationRequest) -> str | None:
+    payload = dict(request.kwargs)
+    if not payload and request.args:
+        first_arg = request.args[0]
+        if isinstance(first_arg, dict):
+            payload = {
+                key: value
+                for key, value in first_arg.items()
+                if isinstance(key, str)
+            }
+    model_raw = payload.get("model")
+    if not isinstance(model_raw, str):
+        return None
+    model = model_raw.strip()
+    if not model:
+        return None
+    return model
+
+
 def _make_dependency_provider(
     tool_executor: ToolExecutor,
     token_semaphore: TokenSemaphore,
-    session_manager: SessionManager,
 ) -> Callable[[], ToolRouteDeps]:
     def provider() -> ToolRouteDeps:
         return ToolRouteDeps(
             tool_executor=tool_executor,
             token_semaphore=token_semaphore,
-            session_manager=session_manager,
         )
 
     return provider

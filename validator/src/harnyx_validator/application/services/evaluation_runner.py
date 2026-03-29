@@ -16,7 +16,7 @@ from harnyx_commons.application.dto.session import SessionEnvelope, SessionIssue
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import EvaluationDetails, EvaluationError, MinerTask
-from harnyx_commons.domain.session import SessionFailureCode, SessionStatus
+from harnyx_commons.domain.session import SessionStatus
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
@@ -33,7 +33,7 @@ from harnyx_validator.application.invoke_entrypoint import (
     SandboxInvocationError,
 )
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
-from harnyx_validator.application.ports.progress import ProgressRecorder
+from harnyx_validator.application.ports.progress import ProgressRecorder, ProviderFailureEvidence
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
@@ -46,6 +46,9 @@ SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunS
 logger = logging.getLogger("harnyx_validator.scheduler")
 LOCAL_RETRY_ATTEMPTS = 2
 ARTIFACT_TASK_PARALLELISM = 5
+ARTIFACT_INFRA_FAILURE_THRESHOLD = 2
+PROVIDER_BATCH_MIN_TOTAL_CALLS = 10
+PROVIDER_BATCH_MIN_FAILURE_RATE = 0.95
 
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
@@ -53,7 +56,8 @@ def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
 
 
 class FailureKind(StrEnum):
-    MINER_TASK_FAILURE = "miner_task_failure"
+    TASK_FAILURE = "task_failure"
+    ARTIFACT_FAILURE = "artifact_failure"
     VALIDATOR_BATCH_FAILURE = "validator_batch_failure"
 
 
@@ -69,7 +73,7 @@ class FailureClassification:
 
 class AttemptDecisionKind(StrEnum):
     SUBMISSION = "submission"
-    VALIDATOR_BATCH_FAILURE = "validator_batch_failure"
+    FAILURE = "failure"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,9 +107,30 @@ class ValidatorBatchFailedError(RuntimeError):
         self.failure_detail = failure_detail
 
 
+class ArtifactExecutionFailedError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        message: str,
+        failure_detail: ValidatorBatchFailureDetail,
+        completed_submissions: tuple[MinerTaskRunSubmission, ...],
+        remaining_tasks: tuple[MinerTask, ...],
+        artifact_breaker_tripped: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.failure_detail = failure_detail
+        self.completed_submissions = completed_submissions
+        self.remaining_tasks = remaining_tasks
+        self.artifact_breaker_tripped = artifact_breaker_tripped
+
+
 @dataclass(slots=True)
 class _ArtifactDispatchState:
     submissions_by_index: list[MinerTaskRunSubmission | None]
+    artifact_failure_count: int = 0
+    artifact_breaker_failure: FailureClassification | None = None
     validator_failure: ValidatorBatchFailedError | None = None
     unexpected_failure: Exception | None = None
 
@@ -172,7 +197,31 @@ class EvaluationRunner:
             raise dispatch.validator_failure
         if dispatch.unexpected_failure is not None:
             raise dispatch.unexpected_failure
-        return [submission for submission in dispatch.submissions_by_index if submission is not None]
+
+        completed_submissions = tuple(
+            submission for submission in dispatch.submissions_by_index if submission is not None
+        )
+        if dispatch.artifact_breaker_failure is None:
+            return list(completed_submissions)
+
+        remaining_tasks = tuple(
+            task for index, task in indexed_tasks if dispatch.submissions_by_index[index] is None
+        )
+        raise ArtifactExecutionFailedError(
+            error_code=dispatch.artifact_breaker_failure.error_code,
+            message=dispatch.artifact_breaker_failure.error_message,
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code=dispatch.artifact_breaker_failure.error_code,
+                error_message=dispatch.artifact_breaker_failure.error_message,
+                occurred_at=self._clock(),
+                artifact_id=artifact.artifact_id,
+                uid=artifact.uid,
+                exception_type=_exception_type_name(dispatch.artifact_breaker_failure.exc),
+            ),
+            completed_submissions=completed_submissions,
+            remaining_tasks=remaining_tasks,
+            artifact_breaker_tripped=True,
+        )
 
     async def _run_artifact_worker(
         self,
@@ -184,7 +233,11 @@ class EvaluationRunner:
         dispatch: _ArtifactDispatchState,
     ) -> None:
         while True:
-            if dispatch.validator_failure is not None or dispatch.unexpected_failure is not None:
+            if (
+                dispatch.validator_failure is not None
+                or dispatch.unexpected_failure is not None
+                or dispatch.artifact_breaker_failure is not None
+            ):
                 return
             try:
                 task_index, task = pending_tasks.get_nowait()
@@ -192,12 +245,24 @@ class EvaluationRunner:
                 return
 
             try:
-                dispatch.submissions_by_index[task_index] = await self._evaluate_task_with_retry(
+                decision = await self._evaluate_task_with_retry(
                     batch_id=batch_id,
                     artifact=artifact,
                     task=task,
                     orchestrator=orchestrator,
                 )
+                if decision.kind is AttemptDecisionKind.SUBMISSION:
+                    dispatch.submissions_by_index[task_index] = _require_submission(decision)
+                    continue
+
+                classification = _require_classification(decision)
+                if classification.kind is FailureKind.ARTIFACT_FAILURE:
+                    dispatch.submissions_by_index[task_index] = _require_submission(decision)
+                    dispatch.artifact_failure_count += 1
+                    if dispatch.artifact_failure_count >= ARTIFACT_INFRA_FAILURE_THRESHOLD:
+                        dispatch.artifact_breaker_failure = classification
+                    continue
+                raise RuntimeError("unexpected non-submission decision from task retry loop")
             except ValidatorBatchFailedError as exc:
                 if dispatch.validator_failure is None:
                     dispatch.validator_failure = exc
@@ -208,16 +273,22 @@ class EvaluationRunner:
     async def _run_tasks_with_sessions(
         self,
         *,
+        batch_id: UUID,
         artifact: ScriptArtifactSpec,
         tasks: Sequence[MinerTask],
         create_submission: SubmissionFactory,
     ) -> list[MinerTaskRunSubmission]:
         submissions: list[MinerTaskRunSubmission] = []
         for task in tasks:
-            issued = self._issue_session(uid=artifact.uid, task=task)
+            issued = self._issue_session(
+                batch_id=batch_id,
+                uid=artifact.uid,
+                task=task,
+            )
             try:
                 submissions.append(await create_submission(task, issued))
             finally:
+                self._clear_task_session(issued.session.session_id)
                 self._sessions.revoke(issued.session.session_id)
         return submissions
 
@@ -228,8 +299,12 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         orchestrator: TaskRunOrchestrator,
-    ) -> MinerTaskRunSubmission:
-        issued = self._issue_session(uid=artifact.uid, task=task)
+    ) -> TaskAttemptDecision:
+        issued = self._issue_session(
+            batch_id=batch_id,
+            uid=artifact.uid,
+            task=task,
+        )
         try:
             for attempt_number in range(1, LOCAL_RETRY_ATTEMPTS + 1):
                 self._sessions.begin_attempt(issued.session.session_id)
@@ -241,7 +316,7 @@ class EvaluationRunner:
                     orchestrator=orchestrator,
                 )
                 if decision.kind is AttemptDecisionKind.SUBMISSION:
-                    return _require_submission(decision)
+                    return decision
 
                 classification = _require_classification(decision)
                 if classification.retryable and attempt_number < LOCAL_RETRY_ATTEMPTS:
@@ -253,6 +328,21 @@ class EvaluationRunner:
                         exc=_retry_exception_for_classification(classification),
                     )
                     continue
+
+                if classification.kind is FailureKind.ARTIFACT_FAILURE:
+                    return _artifact_failure_decision(
+                        classification=classification,
+                        submission=self._record_task_failure(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            session_id=issued.session.session_id,
+                            error_code=classification.error_code,
+                            error_message=classification.error_message,
+                            log_message=classification.log_message,
+                            exc=_retry_exception_for_classification(classification),
+                        ),
+                    )
 
                 raise ValidatorBatchFailedError(
                     error_code=classification.error_code,
@@ -268,6 +358,7 @@ class EvaluationRunner:
                     ),
                 ) from classification.exc
         finally:
+            self._clear_task_session(issued.session.session_id)
             self._sessions.revoke(issued.session.session_id)
 
         raise RuntimeError("task retry loop exited without returning")
@@ -301,26 +392,17 @@ class EvaluationRunner:
                 )
             )
         except Exception as exc:
-            failure_code = self._sessions.consume_failure_code(issued.session.session_id)
+            provider_failures = self._consume_provider_failures(issued.session.session_id)
             return self._resolve_attempt_failure(
                 batch_id=batch_id,
                 artifact=artifact,
                 task=task,
                 session_id=issued.session.session_id,
                 exc=exc,
-                failure_code=failure_code,
+                provider_failures=provider_failures,
             )
 
-        failure_code = self._sessions.consume_failure_code(issued.session.session_id)
-        if failure_code is not None:
-            return self._resolve_attempt_failure(
-                batch_id=batch_id,
-                artifact=artifact,
-                task=task,
-                session_id=issued.session.session_id,
-                failure_code=failure_code,
-            )
-
+        self._consume_provider_failures(issued.session.session_id)
         return _submission_decision(
             self._record_success(
                 batch_id=batch_id,
@@ -350,6 +432,7 @@ class EvaluationRunner:
             )
 
         return await self._run_tasks_with_sessions(
+            batch_id=batch_id,
             artifact=artifact,
             tasks=tasks,
             create_submission=create_submission,
@@ -500,14 +583,14 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         session_id: UUID,
-        exc: Exception | None = None,
-        failure_code: SessionFailureCode | None = None,
+        exc: Exception,
+        provider_failures: tuple[ProviderFailureEvidence, ...],
     ) -> TaskAttemptDecision:
         classification = self._classify_attempt_failure(
             exc=exc,
-            failure_code=failure_code,
+            provider_failures=provider_failures,
         )
-        if classification.kind is FailureKind.MINER_TASK_FAILURE:
+        if classification.kind is FailureKind.TASK_FAILURE:
             return _submission_decision(
                 self._record_task_failure(
                     batch_id=batch_id,
@@ -520,26 +603,27 @@ class EvaluationRunner:
                     exc=_retry_exception_for_classification(classification),
                 )
             )
-        return _validator_failure_decision(classification)
+        return _failure_decision(classification)
 
     def _classify_attempt_failure(
         self,
         *,
-        exc: Exception | None,
-        failure_code: SessionFailureCode | None = None,
+        exc: Exception,
+        provider_failures: tuple[ProviderFailureEvidence, ...],
     ) -> FailureClassification:
-        if failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED:
-            return FailureClassification(
-                kind=FailureKind.VALIDATOR_BATCH_FAILURE,
-                error_code=failure_code.value,
-                error_message=_failure_message_for_session_code(failure_code),
-                log_message="validator-hosted tool provider failed during miner task run",
-                retryable=True,
-                exc=exc,
-            )
+        if _is_provider_caused_terminal_failure(exc):
+            provider_batch_evidence = _provider_batch_failure_evidence(provider_failures)
+            if provider_batch_evidence is not None:
+                return FailureClassification(
+                    kind=FailureKind.VALIDATOR_BATCH_FAILURE,
+                    error_code="provider_batch_failure",
+                    error_message=_provider_batch_failure_message(provider_batch_evidence),
+                    log_message="provider failure threshold reached for validator batch",
+                    exc=exc,
+                )
         if isinstance(exc, LlmRetryExhaustedError):
             return FailureClassification(
-                kind=FailureKind.VALIDATOR_BATCH_FAILURE,
+                kind=FailureKind.TASK_FAILURE,
                 error_code="scoring_llm_retry_exhausted",
                 error_message=str(exc),
                 log_message="validator scoring provider retries exhausted",
@@ -547,7 +631,7 @@ class EvaluationRunner:
             )
         if isinstance(exc, MinerResponseValidationError):
             return FailureClassification(
-                kind=FailureKind.MINER_TASK_FAILURE,
+                kind=FailureKind.TASK_FAILURE,
                 error_code="miner_response_invalid",
                 error_message=str(exc),
                 log_message="miner returned invalid response payload",
@@ -555,7 +639,7 @@ class EvaluationRunner:
             )
         if isinstance(exc, SandboxInvocationError) and exc.detail_code == "UnhandledException":
             return FailureClassification(
-                kind=FailureKind.MINER_TASK_FAILURE,
+                kind=FailureKind.TASK_FAILURE,
                 error_code="miner_unhandled_exception",
                 error_message=exc.detail_error or str(exc),
                 log_message="miner entrypoint raised unhandled exception",
@@ -563,15 +647,13 @@ class EvaluationRunner:
             )
         if isinstance(exc, SandboxInvocationError):
             return FailureClassification(
-                kind=FailureKind.VALIDATOR_BATCH_FAILURE,
+                kind=FailureKind.ARTIFACT_FAILURE,
                 error_code="sandbox_invocation_failed",
                 error_message=str(exc),
                 log_message="sandbox invocation failed during miner task run",
                 retryable=True,
                 exc=exc,
             )
-        if exc is None:
-            raise RuntimeError("attempt failure classification requires exc or failure_code")
         return FailureClassification(
             kind=FailureKind.VALIDATOR_BATCH_FAILURE,
             error_code="unexpected_validator_failure",
@@ -610,13 +692,29 @@ class EvaluationRunner:
         if self._progress is not None:
             self._progress.record(submission)
 
+    def _consume_provider_failures(self, session_id: UUID) -> tuple[ProviderFailureEvidence, ...]:
+        if self._progress is None:
+            return ()
+        return self._progress.consume_provider_failures(session_id)
+
+    def _clear_task_session(self, session_id: UUID) -> None:
+        if self._progress is None:
+            return
+        self._progress.clear_task_session(session_id)
+
     def _validator_uid_value(self) -> int:
         if self._validator_uid is None:
             info = self._subtensor.validator_info()
             self._validator_uid = int(info.uid)
         return self._validator_uid
 
-    def _issue_session(self, *, uid: int, task: MinerTask) -> SessionIssued:
+    def _issue_session(
+        self,
+        *,
+        batch_id: UUID,
+        uid: int,
+        task: MinerTask,
+    ) -> SessionIssued:
         issued_at = self._clock()
         expires_at = issued_at + self._config.session_ttl
         token = secrets.token_urlsafe(self._config.token_secret_bytes)
@@ -629,13 +727,43 @@ class EvaluationRunner:
             budget_usd=task.budget_usd,
             token=token,
         )
-        return self._sessions.issue(request)
+        issued = self._sessions.issue(request)
+        if self._progress is not None:
+            self._progress.register_task_session(
+                batch_id=batch_id,
+                session_id=issued.session.session_id,
+            )
+        return issued
 
 
-def _failure_message_for_session_code(failure_code: SessionFailureCode) -> str:
-    if failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED:
-        return "tool provider failed"
-    raise RuntimeError(f"unsupported session failure code: {failure_code}")
+def _provider_batch_failure_evidence(
+    provider_failures: tuple[ProviderFailureEvidence, ...],
+) -> ProviderFailureEvidence | None:
+    for evidence in provider_failures:
+        if evidence["total_calls"] < PROVIDER_BATCH_MIN_TOTAL_CALLS:
+            continue
+        if evidence["failed_calls"] / evidence["total_calls"] <= PROVIDER_BATCH_MIN_FAILURE_RATE:
+            continue
+        return evidence
+    return None
+
+
+def _provider_batch_failure_message(evidence: ProviderFailureEvidence) -> str:
+    return (
+        "provider failure threshold reached "
+        f"(provider={evidence['provider']} model={evidence['model']} "
+        f"failed_calls={evidence['failed_calls']} total_calls={evidence['total_calls']})"
+    )
+
+
+def _is_provider_caused_terminal_failure(exc: Exception) -> bool:
+    if not isinstance(exc, SandboxInvocationError):
+        return False
+    if exc.detail_code != "UnhandledException":
+        return False
+    if exc.detail_exception != "ToolInvocationError":
+        return False
+    return exc.detail_error == "tool invocation failed with 400: tool execution failed"
 
 
 def _submission_decision(submission: MinerTaskRunSubmission) -> TaskAttemptDecision:
@@ -645,9 +773,21 @@ def _submission_decision(submission: MinerTaskRunSubmission) -> TaskAttemptDecis
     )
 
 
-def _validator_failure_decision(classification: FailureClassification) -> TaskAttemptDecision:
+def _failure_decision(classification: FailureClassification) -> TaskAttemptDecision:
     return TaskAttemptDecision(
-        kind=AttemptDecisionKind.VALIDATOR_BATCH_FAILURE,
+        kind=AttemptDecisionKind.FAILURE,
+        classification=classification,
+    )
+
+
+def _artifact_failure_decision(
+    *,
+    classification: FailureClassification,
+    submission: MinerTaskRunSubmission,
+) -> TaskAttemptDecision:
+    return TaskAttemptDecision(
+        kind=AttemptDecisionKind.FAILURE,
+        submission=submission,
         classification=classification,
     )
 
@@ -677,6 +817,9 @@ def _exception_type_name(exc: Exception | None) -> str | None:
 
 
 __all__ = [
+    "ARTIFACT_TASK_PARALLELISM",
+    "ARTIFACT_INFRA_FAILURE_THRESHOLD",
+    "ArtifactExecutionFailedError",
     "AttemptDecisionKind",
     "EvaluationRunner",
     "FailureClassification",

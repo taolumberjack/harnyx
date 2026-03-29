@@ -7,8 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.session import Session, SessionFailureCode, SessionStatus, SessionUsage
+from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
@@ -86,7 +85,6 @@ class DemoDependencyProvider:
         )
         self.session_registry.create(self.session)
         self.tokens.register(self.session.session_id, DEMO_SESSION_TOKEN)
-        self.session_manager = SessionManager(self.session_registry, self.tokens)
 
         usage_tracker = UsageTracker()
         tool_invoker = RecordingToolInvoker()
@@ -104,7 +102,6 @@ class DemoDependencyProvider:
 
         self.dependencies = ToolRouteDeps(
             tool_executor=self.tool_executor,
-            session_manager=self.session_manager,
             token_semaphore=self.token_semaphore,
         )
 
@@ -130,7 +127,6 @@ class ToolingInfoDependencyProvider:
         )
         self.session_registry.create(self.session)
         self.tokens.register(self.session.session_id, DEMO_SESSION_TOKEN)
-        self.session_manager = SessionManager(self.session_registry, self.tokens)
 
         self.tool_executor = ToolExecutor(
             session_registry=self.session_registry,
@@ -143,7 +139,6 @@ class ToolingInfoDependencyProvider:
         self.token_semaphore = RecordingTokenSemaphore(max_parallel_calls=1)
         self.dependencies = ToolRouteDeps(
             tool_executor=self.tool_executor,
-            session_manager=self.session_manager,
             token_semaphore=self.token_semaphore,
         )
 
@@ -212,7 +207,6 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     provider = DemoDependencyProvider()
     provider.dependencies = ToolRouteDeps(
         tool_executor=_FailingToolExecutor(),
-        session_manager=provider.session_manager,
         token_semaphore=provider.token_semaphore,
     )
     app = create_test_app(provider)
@@ -238,10 +232,8 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
 
 def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> None:
     provider = DemoDependencyProvider()
-    provider.session_manager.begin_attempt(provider.session.session_id)
     provider.dependencies = ToolRouteDeps(
         tool_executor=_ProviderFailingToolExecutor(),
-        session_manager=provider.session_manager,
         token_semaphore=provider.token_semaphore,
     )
     app = create_test_app(provider)
@@ -264,8 +256,7 @@ def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> 
     assert response.json() == {"detail": "tool execution failed"}
     stored = provider.session_registry.get(provider.session.session_id)
     assert stored is not None
-    assert stored.failure_code is SessionFailureCode.TOOL_PROVIDER_FAILED
-    assert stored.failure_attempt == stored.active_attempt == 1
+    assert stored.failure_code is None
 
 
 def test_execute_tool_endpoint_rejects_repo_tools() -> None:

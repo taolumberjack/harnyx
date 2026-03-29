@@ -36,6 +36,11 @@ Body: [MinerTaskBatchRequestModel](#model-minertaskbatchrequestmodel)
 | `batch_id` |  |  | req | `string` |
 | `created_at` |  |  | req | `string` |
 | `cutoff_at` |  |  | req | `string` |
+| `restore_provider_evidence` |  |  | opt | array[[ProviderEvidenceModel](#model-providerevidencemodel)] |
+|  | `failed_calls` |  | req | `integer` |
+|  | `model` |  | req | `string` |
+|  | `provider` |  | req | `string` |
+|  | `total_calls` |  | req | `integer` |
 | `restore_runs` |  |  | opt | array[[RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
 |  | `run` |  | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
@@ -158,6 +163,11 @@ Body: [ProgressResponse](#model-progressresponse)
 |  |  | `total_tokens` | req | `integer` |
 |  | `validator` |  | req | [ValidatorModel](#model-validatormodel) |
 |  |  | `uid` | req | `integer` |
+| `provider_model_evidence` |  |  | opt | array[[ProviderEvidenceModel](#model-providerevidencemodel)] |
+|  | `failed_calls` |  | req | `integer` |
+|  | `model` |  | req | `string` |
+|  | `provider` |  | req | `string` |
+|  | `total_calls` |  | req | `integer` |
 | `remaining` |  |  | req | `integer` |
 | `status` |  |  | req | `string` (enum: [unknown, queued, processing, completed, failed]) |
 | `total` |  |  | req | `integer` |
@@ -862,6 +872,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `batch_id` |  |  | req | `string` |
 | `created_at` |  |  | req | `string` |
 | `cutoff_at` |  |  | req | `string` |
+| `restore_provider_evidence` |  |  | opt | array[[ProviderEvidenceModel](#model-providerevidencemodel)] |
+|  | `failed_calls` |  | req | `integer` |
+|  | `model` |  | req | `string` |
+|  | `provider` |  | req | `string` |
+|  | `total_calls` |  | req | `integer` |
 | `restore_runs` |  |  | opt | array[[RestoreMinerTaskRunSubmissionModel](#model-restoreminertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
 |  | `run` |  | req | [RestoreMinerTaskRunModel](#model-restoreminertaskrunmodel) |
@@ -902,7 +917,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ```json
 {
-  "additionalProperties": false,
   "properties": {
     "artifacts": {
       "items": {
@@ -926,6 +940,13 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minLength": 1,
       "title": "Cutoff At",
       "type": "string"
+    },
+    "restore_provider_evidence": {
+      "items": {
+        "$ref": "#/components/schemas/ProviderEvidenceModel"
+      },
+      "title": "Restore Provider Evidence",
+      "type": "array"
     },
     "restore_runs": {
       "items": {
@@ -1230,6 +1251,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `total_tokens` | req | `integer` |
 |  | `validator` |  | req | [ValidatorModel](#model-validatormodel) |
 |  |  | `uid` | req | `integer` |
+| `provider_model_evidence` |  |  | opt | array[[ProviderEvidenceModel](#model-providerevidencemodel)] |
+|  | `failed_calls` |  | req | `integer` |
+|  | `model` |  | req | `string` |
+|  | `provider` |  | req | `string` |
+|  | `total_calls` |  | req | `integer` |
 | `remaining` |  |  | req | `integer` |
 | `status` |  |  | req | `string` (enum: [unknown, queued, processing, completed, failed]) |
 | `total` |  |  | req | `integer` |
@@ -1279,6 +1305,13 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "title": "Miner Task Runs",
       "type": "array"
     },
+    "provider_model_evidence": {
+      "items": {
+        "$ref": "#/components/schemas/ProviderEvidenceModel"
+      },
+      "title": "Provider Model Evidence",
+      "type": "array"
+    },
     "remaining": {
       "minimum": 0.0,
       "title": "Remaining",
@@ -1310,6 +1343,57 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "miner_task_runs"
   ],
   "title": "ProgressResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-providerevidencemodel"></a>
+### Model: ProviderEvidenceModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `failed_calls` |  |  | req | `integer` |
+| `model` |  |  | req | `string` |
+| `provider` |  |  | req | `string` |
+| `total_calls` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "failed_calls": {
+      "minimum": 0.0,
+      "title": "Failed Calls",
+      "type": "integer"
+    },
+    "model": {
+      "minLength": 1,
+      "title": "Model",
+      "type": "string"
+    },
+    "provider": {
+      "minLength": 1,
+      "title": "Provider",
+      "type": "string"
+    },
+    "total_calls": {
+      "minimum": 0.0,
+      "title": "Total Calls",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "provider",
+    "model",
+    "total_calls",
+    "failed_calls"
+  ],
+  "title": "ProviderEvidenceModel",
   "type": "object"
 }
 ```

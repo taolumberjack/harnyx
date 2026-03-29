@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from harnyx_commons.domain.miner_task import (
     DEFAULT_MINER_TASK_BUDGET_USD,
@@ -24,9 +24,17 @@ from harnyx_validator.application.dto.evaluation import (
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
+from harnyx_validator.application.ports.progress import ProviderFailureEvidence
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.domain.evaluation import MinerTaskRun
 from harnyx_validator.domain.shared_config import VALIDATOR_STRICT_CONFIG
+
+_VALIDATOR_TRANSPORT_CONFIG = ConfigDict(
+    extra="ignore",
+    frozen=True,
+    strict=True,
+    str_strip_whitespace=True,
+)
 
 
 class BatchAcceptResponse(BaseModel):
@@ -152,7 +160,7 @@ class MinerTaskRequestModel(BaseModel):
 
 
 class MinerTaskBatchRequestModel(BaseModel):
-    model_config = VALIDATOR_STRICT_CONFIG
+    model_config = _VALIDATOR_TRANSPORT_CONFIG
 
     batch_id: str = Field(min_length=1)
     cutoff_at: str = Field(min_length=1)
@@ -160,6 +168,7 @@ class MinerTaskBatchRequestModel(BaseModel):
     tasks: list[MinerTaskRequestModel] = Field(min_length=1)
     artifacts: list[ScriptArtifactRequestModel] = Field(min_length=1)
     restore_runs: list[RestoreMinerTaskRunSubmissionModel] = Field(default_factory=list)
+    restore_provider_evidence: list[ProviderEvidenceModel] = Field(default_factory=list)
 
     @field_validator("batch_id")
     @classmethod
@@ -178,6 +187,9 @@ class MinerTaskBatchRequestModel(BaseModel):
     def to_domain_restore_runs(self) -> tuple[MinerTaskRunSubmission, ...]:
         batch = self.to_domain()
         return tuple(entry.to_domain(batch=batch) for entry in self.restore_runs)
+
+    def to_domain_restore_provider_evidence(self) -> tuple[ProviderFailureEvidence, ...]:
+        return tuple(entry.to_domain() for entry in self.restore_provider_evidence)
 
 
 class MinerTaskRunModel(BaseModel):
@@ -295,6 +307,23 @@ class FailureDetailResponse(BaseModel):
         )
 
 
+class ProviderEvidenceModel(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    total_calls: int = Field(ge=0)
+    failed_calls: int = Field(ge=0)
+
+    def to_domain(self) -> ProviderFailureEvidence:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "total_calls": self.total_calls,
+            "failed_calls": self.failed_calls,
+        }
+
+
 class ProgressResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
@@ -306,6 +335,7 @@ class ProgressResponse(BaseModel):
     completed: int = Field(ge=0)
     remaining: int = Field(ge=0)
     miner_task_runs: list[MinerTaskRunSubmissionModel]
+    provider_model_evidence: list[ProviderEvidenceModel] = Field(default_factory=list)
 
 
 class ValidatorStatusResponse(BaseModel):
@@ -331,6 +361,7 @@ __all__ = [
     "MinerTaskRequestModel",
     "MinerTaskRunModel",
     "MinerTaskRunSubmissionModel",
+    "ProviderEvidenceModel",
     "ProgressResponse",
     "SessionModel",
     "ScriptArtifactRequestModel",

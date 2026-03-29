@@ -17,6 +17,10 @@ from harnyx_validator.infrastructure.parsers import parse_batch
 class PlatformClientError(RuntimeError):
     """Raised when the platform responds with an unexpected status."""
 
+    def __init__(self, *, status_code: int | None, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 @dataclass
 class HttpPlatformClient(PlatformPort):
@@ -63,7 +67,8 @@ class HttpPlatformClient(PlatformPort):
             )
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(
-                f"platform returned {response.status_code} for GET {path}",
+                status_code=response.status_code,
+                message=f"platform returned {response.status_code} for GET {path}",
             )
         return parse_batch(response.json())
 
@@ -76,7 +81,8 @@ class HttpPlatformClient(PlatformPort):
             )
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(
-                f"platform returned {response.status_code} for GET {path}",
+                status_code=response.status_code,
+                message=f"platform returned {response.status_code} for GET {path}",
             )
         return response.content
 
@@ -89,7 +95,8 @@ class HttpPlatformClient(PlatformPort):
             )
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(
-                f"platform returned {response.status_code} for GET /v1/weights"
+                status_code=response.status_code,
+                message=f"platform returned {response.status_code} for GET /v1/weights",
             )
         payload = response.json()
         weights = {int(uid): float(weight) for uid, weight in payload.get("weights", {}).items()}

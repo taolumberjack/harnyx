@@ -9,6 +9,7 @@ from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
+    EvaluationError,
     MinerTask,
     Query,
     ReferenceAnswer,
@@ -28,8 +29,13 @@ from harnyx_validator.application.dto.evaluation import (
 from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
 from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
-from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailedError
+from harnyx_validator.application.services.evaluation_runner import (
+    ArtifactExecutionFailedError,
+    ValidatorBatchFailedError,
+    ValidatorBatchFailureDetail,
+)
 from harnyx_validator.domain.evaluation import MinerTaskRun
+from harnyx_validator.runtime.agent_artifact import ArtifactPreparationError
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -88,6 +94,26 @@ class DummyProgressRecorder:
 
     def recorded_pairs(self, _batch_id: UUID) -> frozenset[tuple[UUID, UUID]]:
         return frozenset(self._recorded)
+
+    def register_task_session(
+        self,
+        *,
+        batch_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        return None
+
+    def record_provider_call(self, *, session_id: UUID, provider: str, model: str) -> None:
+        return None
+
+    def record_provider_failure(self, *, session_id: UUID, provider: str, model: str) -> None:
+        return None
+
+    def consume_provider_failures(self, session_id: UUID) -> tuple[dict[str, object], ...]:
+        return ()
+
+    def clear_task_session(self, session_id: UUID) -> None:
+        return None
 
 
 def _task(text: str, *, budget_usd: float = 0.05) -> MinerTask:
@@ -176,7 +202,7 @@ async def test_scheduler_runs_all_tasks_for_each_artifact() -> None:
     assert len(evaluation_records.records_by_batch) == len(result.runs)
 
 
-async def test_scheduler_fails_batch_when_sandbox_invocation_errors() -> None:
+async def test_scheduler_records_zero_score_when_sandbox_invocation_errors() -> None:
     task = _task("unstable")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -215,11 +241,15 @@ async def test_scheduler_fails_batch_when_sandbox_invocation_errors() -> None:
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
-    with pytest.raises(ValidatorBatchFailedError, match="upstream tool failure") as exc_info:
-        await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert exc_info.value.error_code == "sandbox_invocation_failed"
-    assert evaluation_records.records_by_batch == []
+    assert len(result.runs) == 1
+    assert result.runs[0].score == 0.0
+    assert result.runs[0].run.details.error == EvaluationError(
+        code="sandbox_invocation_failed",
+        message="upstream tool failure",
+    )
+    assert evaluation_records.records_by_batch == list(result.runs)
 
 
 async def test_scheduler_retries_only_transient_sandbox_invocation_errors() -> None:
@@ -419,7 +449,7 @@ async def test_scheduler_retries_sandbox_start_once_before_running_tasks() -> No
     assert result.runs[0].score == pytest.approx(0.75)
 
 
-async def test_scheduler_fails_batch_for_terminal_setup_failures() -> None:
+async def test_scheduler_records_zero_score_for_terminal_setup_failures() -> None:
     task = _task("startup failure")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -451,12 +481,248 @@ async def test_scheduler_fails_batch_for_terminal_setup_failures() -> None:
     )
 
     artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
-    with pytest.raises(ValidatorBatchFailedError, match="sandbox cold start failed") as exc_info:
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert len(sandbox_manager.starts) == 2
+    assert len(result.runs) == 1
+    assert result.runs[0].run.details.error == EvaluationError(
+        code="sandbox_start_failed",
+        message="sandbox cold start failed",
+    )
+    assert evaluation_records.records_by_batch == list(result.runs)
+
+
+async def test_scheduler_fails_batch_after_three_sandbox_start_breakers() -> None:
+    task = _task("startup failure")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+
+    class AlwaysFailingSandboxManager(DummySandboxManager):
+        def start(self, options: object | None = None) -> SandboxDeployment:
+            self.starts.append(options)
+            raise RuntimeError("sandbox cold start failed")
+
+    sandbox_manager = AlwaysFailingSandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=lambda _client: _client,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = tuple(
+        ScriptArtifactSpec(uid=uid, artifact_id=uuid4(), content_hash=f"hash-{uid}", size_bytes=0)
+        for uid in (3, 5, 7)
+    )
+    with pytest.raises(
+        ValidatorBatchFailedError,
+        match="validator artifact breaker tripped across 3 artifacts",
+    ) as exc_info:
         await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert exc_info.value.error_code == "sandbox_start_failed"
-    assert len(sandbox_manager.starts) == 2
-    assert evaluation_records.records_by_batch == []
+    assert exc_info.value.error_code == "artifact_breaker_tripped"
+    assert exc_info.value.failure_detail.error_code == "artifact_breaker_tripped"
+    assert len(sandbox_manager.starts) == 6
+    assert [submission.run.details.error for submission in evaluation_records.records_by_batch] == [
+        EvaluationError(code="sandbox_start_failed", message="sandbox cold start failed"),
+        EvaluationError(code="sandbox_start_failed", message="sandbox cold start failed"),
+        EvaluationError(code="sandbox_start_failed", message="sandbox cold start failed"),
+    ]
+
+
+async def test_scheduler_fails_batch_after_three_artifact_fetch_breakers() -> None:
+    task = _task("fetch failure")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=lambda _client: _client,
+        sandbox_options_factory=lambda _artifact: (_ for _ in ()).throw(
+            ArtifactPreparationError(
+                error_code="artifact_fetch_failed",
+                message="platform artifact fetch exhausted retries",
+                exception_type="PlatformClientError",
+            )
+        ),
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = tuple(
+        ScriptArtifactSpec(uid=uid, artifact_id=uuid4(), content_hash=f"hash-{uid}", size_bytes=0)
+        for uid in (3, 5, 7)
+    )
+
+    with pytest.raises(
+        ValidatorBatchFailedError,
+        match="validator artifact breaker tripped across 3 artifacts",
+    ) as exc_info:
+        await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert exc_info.value.error_code == "artifact_breaker_tripped"
+    assert len(sandbox_manager.starts) == 0
+    assert [submission.run.details.error for submission in evaluation_records.records_by_batch] == [
+        EvaluationError(code="artifact_fetch_failed", message="platform artifact fetch exhausted retries"),
+        EvaluationError(code="artifact_fetch_failed", message="platform artifact fetch exhausted retries"),
+        EvaluationError(code="artifact_fetch_failed", message="platform artifact fetch exhausted retries"),
+    ]
+
+
+async def test_scheduler_keeps_three_hash_mismatch_failures_artifact_scoped() -> None:
+    task = _task("hash mismatch")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=lambda _client: _client,
+        sandbox_options_factory=lambda _artifact: (_ for _ in ()).throw(
+            ArtifactPreparationError(
+                error_code="artifact_hash_mismatch",
+                message="platform agent sha256 mismatch",
+            )
+        ),
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = tuple(
+        ScriptArtifactSpec(uid=uid, artifact_id=uuid4(), content_hash=f"hash-{uid}", size_bytes=0)
+        for uid in (3, 5, 7)
+    )
+
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert len(result.runs) == 3
+    assert len(sandbox_manager.starts) == 0
+    assert [submission.run.details.error for submission in result.runs] == [
+        EvaluationError(code="artifact_hash_mismatch", message="platform agent sha256 mismatch"),
+        EvaluationError(code="artifact_hash_mismatch", message="platform agent sha256 mismatch"),
+        EvaluationError(code="artifact_hash_mismatch", message="platform agent sha256 mismatch"),
+    ]
+
+
+async def test_scheduler_fails_batch_after_three_artifact_breakers() -> None:
+    task = _task("artifact breaker")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    batch_id = uuid4()
+    artifacts = tuple(
+        ScriptArtifactSpec(uid=uid, artifact_id=uuid4(), content_hash=f"hash-{uid}", size_bytes=0)
+        for uid in (3, 5, 7)
+    )
+
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    class ArtifactFailingRunner:
+        def __init__(self) -> None:
+            self.failed_artifact_ids: list[UUID] = []
+            self.recorded_artifact_ids: list[UUID] = []
+
+        async def evaluate_artifact(self, *, artifact: ScriptArtifactSpec, tasks, **_kwargs):
+            self.failed_artifact_ids.append(artifact.artifact_id)
+            raise ArtifactExecutionFailedError(
+                error_code="sandbox_invocation_failed",
+                message="shared sandbox failure",
+                failure_detail=ValidatorBatchFailureDetail(
+                    error_code="sandbox_invocation_failed",
+                    error_message="shared sandbox failure",
+                    occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+                    artifact_id=artifact.artifact_id,
+                    uid=artifact.uid,
+                    exception_type="SandboxInvocationError",
+                ),
+                completed_submissions=(),
+                remaining_tasks=tuple(tasks),
+                artifact_breaker_tripped=True,
+            )
+
+        async def record_failure_for_artifact(
+            self,
+            *,
+            artifact: ScriptArtifactSpec,
+            tasks,
+            error_code: str,
+            error_message: str,
+            **_kwargs,
+        ) -> list[MinerTaskRunSubmission]:
+            self.recorded_artifact_ids.append(artifact.artifact_id)
+            assert tuple(tasks) == (task,)
+            assert error_code == "sandbox_invocation_failed"
+            assert error_message == "shared sandbox failure"
+            return []
+
+    failing_runner = ArtifactFailingRunner()
+    scheduler._runner = failing_runner
+
+    with pytest.raises(
+        ValidatorBatchFailedError,
+        match="validator artifact breaker tripped across 3 artifacts",
+    ) as exc_info:
+        await scheduler.run(batch_id=batch_id, requested_artifacts=artifacts)
+
+    assert exc_info.value.error_code == "artifact_breaker_tripped"
+    assert exc_info.value.failure_detail.error_code == "artifact_breaker_tripped"
+    assert len(sandbox_manager.starts) == 3
+    assert len(sandbox_manager.stops) == 3
+    assert failing_runner.failed_artifact_ids == [artifact.artifact_id for artifact in artifacts]
+    assert failing_runner.recorded_artifact_ids == [artifact.artifact_id for artifact in artifacts]
 
 
 async def test_evaluation_runner_issues_session_with_task_budget() -> None:
@@ -482,7 +748,11 @@ async def test_evaluation_runner_issues_session_with_task_budget() -> None:
     )
 
     task = _task("budgeted", budget_usd=0.123)
-    issued = scheduler._runner._issue_session(uid=3, task=task)
+    issued = scheduler._runner._issue_session(
+        batch_id=uuid4(),
+        uid=3,
+        task=task,
+    )
 
     assert issued.session.task_id == task.task_id
     assert issued.session.budget_usd == pytest.approx(0.123)

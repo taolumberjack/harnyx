@@ -209,6 +209,96 @@ def test_run_progress_record_rejects_conflicting_duplicate_pair() -> None:
         progress.record(conflicting)
 
 
+def test_run_progress_restore_provider_evidence_is_monotonic_for_duplicate_replay() -> None:
+    progress = InMemoryRunProgress()
+    batch = _make_batch()
+    session_id = uuid4()
+
+    progress.register(batch)
+    progress.register_task_session(
+        batch_id=batch.batch_id,
+        session_id=session_id,
+    )
+    progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
+    progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
+    progress.record_provider_failure(session_id=session_id, provider="openai", model="gpt-4o")
+    progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
+    progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
+    progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
+
+    progress.restore_completed_runs(
+        batch,
+        submissions=(),
+        provider_evidence=(
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "total_calls": 1,
+                "failed_calls": 0,
+            },
+            {
+                "provider": "anthropic",
+                "model": "claude-sonnet",
+                "total_calls": 4,
+                "failed_calls": 1,
+            },
+        ),
+    )
+
+    assert progress.provider_evidence(batch.batch_id) == (
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet",
+            "total_calls": 4,
+            "failed_calls": 1,
+        },
+        {
+            "provider": "desearch",
+            "model": "search_web",
+            "total_calls": 3,
+            "failed_calls": 0,
+        },
+        {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "total_calls": 2,
+            "failed_calls": 1,
+        },
+    )
+
+
+def test_run_progress_rejected_restore_does_not_mutate_provider_evidence() -> None:
+    progress = InMemoryRunProgress()
+    batch = _make_batch()
+    other_batch = _make_batch()
+    session_id = uuid4()
+
+    progress.register(batch)
+    progress.register_task_session(
+        batch_id=batch.batch_id,
+        session_id=session_id,
+    )
+    progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
+    progress.record_provider_failure(session_id=session_id, provider="openai", model="gpt-4o")
+    before = progress.provider_evidence(batch.batch_id)
+
+    with pytest.raises(RuntimeError, match="restored submission batch_id mismatch"):
+        progress.restore_completed_runs(
+            batch,
+            submissions=(_make_submission(other_batch),),
+            provider_evidence=(
+                {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet",
+                    "total_calls": 4,
+                    "failed_calls": 1,
+                },
+            ),
+        )
+
+    assert progress.provider_evidence(batch.batch_id) == before
+
+
 def test_run_progress_snapshot_orders_results_by_artifact_then_task_input_position() -> None:
     progress = InMemoryRunProgress()
     batch = _make_multi_batch()

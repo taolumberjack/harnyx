@@ -62,7 +62,12 @@ class ProgressSpy:
     def record(self, _result) -> None:
         return None
 
-    def restore_completed_runs(self, batch: MinerTaskBatchSpec, submissions) -> None:
+    def restore_completed_runs(
+        self,
+        batch: MinerTaskBatchSpec,
+        submissions,
+        _provider_evidence=(),
+    ) -> None:
         self.register(batch)
         bucket = self._recorded_by_batch.setdefault(batch.batch_id, set())
         for submission in submissions:

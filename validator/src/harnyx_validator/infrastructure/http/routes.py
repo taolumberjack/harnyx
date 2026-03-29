@@ -11,10 +11,9 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
 from fastapi.security import APIKeyHeader
 
-from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import MinerTask
-from harnyx_commons.domain.session import Session, SessionFailureCode
+from harnyx_commons.domain.session import Session
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolInvocationRequest
@@ -28,6 +27,7 @@ from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
     TokenUsageSummary,
 )
+from harnyx_validator.application.ports.progress import ProviderFailureEvidence
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.infrastructure.http.schemas import (
@@ -37,6 +37,7 @@ from harnyx_validator.infrastructure.http.schemas import (
     MinerTaskRunModel,
     MinerTaskRunSubmissionModel,
     ProgressResponse,
+    ProviderEvidenceModel,
     SessionModel,
     UsageModel,
     UsageModelEntry,
@@ -54,7 +55,6 @@ _STATUS_TIMESTAMP_HEADER = "X-Harnyx-Status-Ts"
 class ToolRouteDeps:
     tool_executor: ToolExecutor
     token_semaphore: TokenSemaphore
-    session_manager: SessionManager
 
 
 ControlRouteAuth = Callable[[str, str, bytes, str | None], Awaitable[str]]
@@ -118,10 +118,6 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
         try:
             result = await _execute_with_semaphore_async(invocation, deps)
         except ToolProviderError as exc:
-            deps.session_manager.mark_failure_code(
-                session_id,
-                SessionFailureCode.TOOL_PROVIDER_FAILED,
-            )
             _log_tool_error(session_id, invocation, exc)
             raise HTTPException(status_code=400, detail=_public_error_message(exc)) from exc
         except (
@@ -193,9 +189,11 @@ def add_control_routes(
         try:
             batch = payload.to_domain()
             restore_runs = payload.to_domain_restore_runs()
+            restore_provider_evidence = payload.to_domain_restore_provider_evidence()
             deps.accept_batch.execute(
                 batch,
                 restore_runs=restore_runs,
+                restore_provider_evidence=restore_provider_evidence,
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -223,10 +221,12 @@ def add_control_routes(
                 completed=0,
                 remaining=0,
                 miner_task_runs=[],
+                provider_model_evidence=[],
             )
         snapshot = deps.progress_tracker.snapshot(batch_id)
         tasks_by_id = {task.task_id: task for task in snapshot["tasks"]}
         runs = [_serialize_run(result, tasks_by_id) for result in snapshot["miner_task_runs"]]
+        provider_model_evidence = [_serialize_provider_evidence(entry) for entry in snapshot["provider_evidence"]]
         if lifecycle == "failed":
             return ProgressResponse(
                 batch_id=str(batch_id),
@@ -237,6 +237,7 @@ def add_control_routes(
                 completed=snapshot["completed"],
                 remaining=snapshot["remaining"],
                 miner_task_runs=runs,
+                provider_model_evidence=provider_model_evidence,
             )
         return ProgressResponse(
             batch_id=str(batch_id),
@@ -247,6 +248,7 @@ def add_control_routes(
             completed=snapshot["completed"],
             remaining=snapshot["remaining"],
             miner_task_runs=runs,
+            provider_model_evidence=provider_model_evidence,
         )
 
     @app.get(
@@ -348,6 +350,15 @@ def _serialize_failure_detail(
     if detail is None:
         return None
     return FailureDetailResponse.from_domain(detail)
+
+
+def _serialize_provider_evidence(entry: ProviderFailureEvidence) -> ProviderEvidenceModel:
+    return ProviderEvidenceModel(
+        provider=entry["provider"],
+        model=entry["model"],
+        total_calls=entry["total_calls"],
+        failed_calls=entry["failed_calls"],
+    )
 
 
 def _serialize_usage_block(usage: TokenUsageSummary) -> UsageModel:
