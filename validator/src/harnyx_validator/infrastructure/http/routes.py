@@ -283,7 +283,7 @@ def add_control_routes(
 async def _execute_with_semaphore_async(invocation: ToolInvocationRequest, deps: ToolRouteDeps) -> Any:
     token = invocation.token
     semaphore = deps.token_semaphore
-    semaphore.acquire(token)
+    await semaphore.acquire_async(token)
     try:
         return await deps.tool_executor.execute(invocation)
     finally:

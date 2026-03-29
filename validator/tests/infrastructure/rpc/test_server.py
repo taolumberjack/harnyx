@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.errors import ToolProviderError
@@ -63,9 +66,14 @@ class RecordingTokenSemaphore(TokenSemaphore):
         self.acquire_calls.append(token)
         super().acquire(token)
 
+    async def acquire_async(self, token: str) -> None:
+        self.acquire_calls.append(token)
+        await super().acquire_async(token)
+
     def release(self, token: str) -> None:
         self.release_calls.append(token)
         super().release(token)
+
 
 class DemoDependencyProvider:
     def __init__(self) -> None:
@@ -279,29 +287,50 @@ def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> 
     assert response.json() == {"detail": "tool execution failed"}
 
 
-def test_execute_tool_endpoint_rejects_when_concurrency_limit_exceeded() -> None:
+def test_execute_tool_endpoint_waits_for_same_token_permit_then_succeeds() -> None:
     provider = DemoDependencyProvider()
     app = create_test_app(provider)
-    client = TestClient(app)
+    response_box: dict[str, Response | Exception] = {}
+    done = threading.Event()
+
+    def issue_request() -> None:
+        try:
+            with TestClient(app) as client:
+                response_box["response"] = client.post(
+                    "/v1/tools/execute",
+                    json={
+                        "tool": "search_web",
+                        "args": ["demo"],
+                        "kwargs": {"query": "demo"},
+                    },
+                    headers={
+                        "x-platform-token": DEMO_SESSION_TOKEN,
+                        SESSION_ID_HEADER: str(provider.session.session_id),
+                    },
+                )
+        except Exception as exc:  # pragma: no cover - defensive capture
+            response_box["error"] = exc
+        finally:
+            done.set()
 
     provider.token_semaphore.acquire(DEMO_SESSION_TOKEN)
+    request_thread = threading.Thread(target=issue_request)
+    request_thread.start()
     try:
-        response = client.post(
-            "/v1/tools/execute",
-            json={
-                "tool": "search_web",
-                "args": ["demo"],
-                "kwargs": {"query": "demo"},
-            },
-            headers={
-                "x-platform-token": DEMO_SESSION_TOKEN,
-                SESSION_ID_HEADER: str(provider.session.session_id),
-            },
-        )
+        deadline = time.monotonic() + 1.0
+        while len(provider.token_semaphore.acquire_calls) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert provider.token_semaphore.acquire_calls == [DEMO_SESSION_TOKEN, DEMO_SESSION_TOKEN]
+        assert not done.is_set()
     finally:
         provider.token_semaphore.release(DEMO_SESSION_TOKEN)
+    request_thread.join(timeout=1.0)
 
-    assert response.status_code == 400
+    assert not request_thread.is_alive()
+    assert "error" not in response_box
+    response = response_box["response"]
+    assert isinstance(response, Response)
+    assert response.status_code == 200
 
 
 def test_execute_tool_endpoint_invalid_llm_payload_does_not_record_provider_call() -> None:

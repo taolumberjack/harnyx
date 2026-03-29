@@ -202,6 +202,99 @@ async def test_desearch_client_search_ai_preserves_retry_metadata() -> None:
     assert response.retry_reasons == ()
 
 
+async def test_desearch_client_search_ai_accepts_summary_and_results_shape() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/desearch/ai/search":
+            raise AssertionError(f"unexpected request: {request.method} {request.url}")
+        return httpx.Response(
+            200,
+            json={
+                "summary": "Hamlet is a tragedy.",
+                "results": [
+                    {
+                        "url": "https://example.com/hamlet",
+                        "title": "Hamlet",
+                        "snippet": "Plot summary",
+                    }
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+
+    assert [item.model_dump(exclude_none=True) for item in response.data] == [
+        {
+            "url": "https://example.com/hamlet",
+            "title": "Hamlet",
+            "note": "Plot summary",
+        }
+    ]
+
+
+async def test_desearch_client_search_ai_accepts_sdk_search_results_shape() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/desearch/ai/search":
+            raise AssertionError(f"unexpected request: {request.method} {request.url}")
+        return httpx.Response(
+            200,
+            json={
+                "youtube_search_results": {
+                    "organic_results": [
+                        {
+                            "link": "https://example.com/video",
+                            "title": "Hamlet video",
+                            "summary_description": "Video summary",
+                        }
+                    ]
+                }
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+
+    assert [item.model_dump(exclude_none=True) for item in response.data] == [
+        {
+            "url": "https://example.com/video",
+            "title": "Hamlet video",
+            "note": "Video summary",
+        }
+    ]
+
+
+async def test_desearch_client_search_ai_summary_only_shape_returns_empty_results() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/desearch/ai/search":
+            raise AssertionError(f"unexpected request: {request.method} {request.url}")
+        return httpx.Response(
+            200,
+            json={"summary": "Hamlet is a tragedy by Shakespeare."},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://api.desearch.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
+
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+
+    assert response.data == []
+    assert response.attempts == 1
+    assert response.retry_reasons == ()
+
+
 async def test_desearch_client_fetch_page_text() -> None:
     captured: dict[str, Any] = {}
 

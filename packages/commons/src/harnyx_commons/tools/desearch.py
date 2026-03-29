@@ -745,17 +745,8 @@ def _extract_desearch_ai_results(raw: object) -> list[SearchAiResult]:
             )
         )
 
-    docs_sections = (
-        (docs.search, "web"),
-        (docs.wikipedia_search, "wikipedia"),
-        (docs.youtube_search, "youtube"),
-        (docs.arxiv_search, "arxiv"),
-        (docs.reddit_search, "reddit"),
-        (docs.hacker_news_search, "hackernews"),
-    )
-    for items, _source in docs_sections:
-        for item in items or ():
-            add(item.link, title=item.title, note=item.snippet)
+    for item in docs.results or ():
+        add(item.link, title=item.title, note=item.snippet)
 
     return results
 
