@@ -10,6 +10,8 @@ from pathlib import Path, PurePosixPath
 DEFAULT_AGENT_FILENAME = "agent.py"
 MAX_AGENT_BYTES = 256_000
 _LOG_SNIPPET_LIMIT = 512
+_DIRECTORY_MODE = 0o755
+_FILE_MODE = 0o644
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +84,7 @@ def stage_agent_source(
         key=key,
         filename=filename,
     )
+    checksum_path = agent_path.parent / "agent.sha256"
 
     if agent_path.exists():
         existing_hash = hashlib.sha256(agent_path.read_bytes()).hexdigest()
@@ -89,6 +92,11 @@ def stage_agent_source(
             raise RuntimeError(
                 f"staged agent content hash mismatch for {agent_path}: expected={content_hash} actual={existing_hash}"
             )
+        _normalize_staged_permissions(
+            state_dir=state_dir,
+            agent_path=agent_path,
+            extra_files=(checksum_path,),
+        )
         return AgentArtifact(
             content_hash=content_hash,
             host_path=agent_path,
@@ -107,14 +115,37 @@ def stage_agent_source(
             temp_path.unlink()
         raise
 
-    agent_path.chmod(0o644)
-    (agent_dir / "agent.sha256").write_text(content_hash, encoding="utf-8")
+    checksum_path.write_text(content_hash, encoding="utf-8")
+    _normalize_staged_permissions(
+        state_dir=state_dir,
+        agent_path=agent_path,
+        extra_files=(checksum_path,),
+    )
 
     return AgentArtifact(
         content_hash=content_hash,
         host_path=agent_path,
         container_path=container_path,
     )
+
+
+def _normalize_staged_permissions(
+    *,
+    state_dir: Path,
+    agent_path: Path,
+    extra_files: tuple[Path, ...] = (),
+) -> None:
+    current = state_dir
+    current.chmod(_DIRECTORY_MODE)
+    relative_dir = agent_path.parent.relative_to(state_dir)
+    for part in relative_dir.parts:
+        current = current / part
+        current.chmod(_DIRECTORY_MODE)
+
+    agent_path.chmod(_FILE_MODE)
+    for extra_file in extra_files:
+        if extra_file.exists():
+            extra_file.chmod(_FILE_MODE)
 
 
 def _validate_agent_source(path: Path) -> None:

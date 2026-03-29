@@ -10,11 +10,12 @@ This directory contains the miner-facing CLI tools for the Harnyx Subnet.
       │  write agent.py
       │  (imports harnyx-miner-sdk)
       ▼
-  ┌─────────────────────────────────┐
-  │  miner/                         │  ◀── what you interact with
-  │  • harnyx-miner-dev   (test)    │
-  │  • harnyx-miner-submit (upload) │
-  └─────────────────────────────────┘
+  ┌──────────────────────────────────────────┐
+  │  miner/                                  │  ◀── what you interact with
+  │  • harnyx-miner-dev         (test)       │
+  │  • harnyx-miner-local-eval  (benchmark)  │
+  │  • harnyx-miner-submit      (upload)     │
+  └──────────────────────────────────────────┘
                 │
                 │ submits script to platform
                 ▼
@@ -32,13 +33,13 @@ This directory contains the miner-facing CLI tools for the Harnyx Subnet.
 
 **What each directory is:**
 
-- `miner/` — CLI tools you use directly (`harnyx-miner-dev`, `harnyx-miner-submit`)
-- [`packages/miner-sdk/`](../packages/miner-sdk/README.md) — SDK your script imports; you don't need to read its docs
-- `sandbox/` — runtime that validators use to execute your script; you don't need it
+- `miner/` — CLI tools you use directly (`harnyx-miner-dev`, `harnyx-miner-local-eval`, `harnyx-miner-submit`)
+- [`packages/miner-sdk/`](../packages/miner-sdk/README.md) — SDK your script imports; you don't need to read its docs first
+- `sandbox/` — runtime that validators use to execute your script; you don't run it directly
 
 ---
 
-## Write → Test → Submit
+## Write → Test → Local Eval → Submit
 
 ### Step 1: Setup
 
@@ -52,9 +53,12 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 
 | Variable | Purpose |
 |----------|---------|
-| `CHUTES_API_KEY` | LLM tool calls |
-| `DESEARCH_API_KEY` | Search tool calls |
-| `PLATFORM_BASE_URL` | Script uploads |
+| `CHUTES_API_KEY` | Evaluation scoring and `llm_chat` tool calls |
+| `DESEARCH_API_KEY` | Optional: required if your agent uses search tools |
+| `SEARCH_PROVIDER` | Optional: required if your agent uses search tools |
+| `PLATFORM_BASE_URL` | Public monitoring and script uploads |
+
+The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, miner tooling also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`.
 
 ---
 
@@ -65,6 +69,18 @@ You submit **one UTF-8 Python source file** (≤ 256KB). Validators will:
 1. Stage it as `agent.py`
 2. Load it via `runpy.run_path`
 3. Call your `query` entrypoint with a strict `Query` JSON payload
+
+If `./agent.py` does not exist yet, start with a minimal stub:
+
+```python
+from harnyx_miner_sdk.decorators import entrypoint
+from harnyx_miner_sdk.query import Query, Response
+
+
+@entrypoint("query")
+async def query(query: Query) -> Response:
+    return Response(text=query.text)
+```
 
 Your script must define this entrypoint:
 
@@ -118,7 +134,6 @@ Core subnet-facing tools today:
 - `fetch_page`: fetched page content
 - `llm_chat`: hosted LLM chat
 - `tooling_info`: available tool names/models/pricing metadata
-
 - `test_tool`: invocation sanity check; not used in subnet evaluation
 
 Pricing for all tools is read from `tooling_info.response["pricing"]`.
@@ -145,7 +160,23 @@ uv run --package harnyx-miner harnyx-miner-dev --agent-path ./agent.py --request
 
 ---
 
-### Step 4: Submit to the platform
+### Step 4: Run local batch evaluation
+
+Use `harnyx-miner-local-eval` to benchmark your local artifact against a completed public miner-task batch before you submit.
+
+Run it:
+
+```bash
+uv run --package harnyx-miner harnyx-miner-local-eval --agent-path ./agent.py
+```
+
+By default it selects the latest completed public batch and runs `vs-champion`. It also supports `target-only`, specific `--batch-id` selection, and writes JSON + Markdown reports you can use for your improvement loop.
+
+See [`local-eval.md`](local-eval.md) for prerequisites, modes, reports, and the full local-eval workflow. If you are using a code agent, the public step-based skills in [`skills/README.md`](skills/README.md) can help structure that loop.
+
+---
+
+### Step 5: Submit to the platform
 
 Set the platform base URL:
 

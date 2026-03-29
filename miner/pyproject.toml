@@ -12,10 +12,13 @@ dependencies = [
   "python-dotenv>=1.1.1",
   "bittensor==9.9.0",
   "harnyx-miner-sdk>=0.1.1",
+  "harnyx-commons>=0.1.1",
+  "harnyx-validator>=20260329.post0",
 ]
 
 [project.scripts]
 harnyx-miner-dev = "harnyx_miner.dev:main"
+harnyx-miner-local-eval = "harnyx_miner.local_eval:main"
 harnyx-miner-submit = "harnyx_miner.submit:main"
 
 [project.optional-dependencies]
@@ -31,4 +34,6 @@ build-backend = "hatchling.build"
 packages = ["src/harnyx_miner"]
 
 [tool.deptry.package_module_name_map]
+harnyx-commons = "harnyx_commons"
 harnyx-miner-sdk = "harnyx_miner_sdk"
+harnyx-validator = "harnyx_validator"

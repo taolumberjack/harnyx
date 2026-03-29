@@ -50,6 +50,7 @@ class SchedulerConfig:
 
     token_secret_bytes: int
     session_ttl: timedelta
+    artifact_task_parallelism: int = 5
 
 
 class EvaluationScheduler:

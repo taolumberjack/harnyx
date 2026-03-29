@@ -45,7 +45,6 @@ SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunS
 
 logger = logging.getLogger("harnyx_validator.scheduler")
 LOCAL_RETRY_ATTEMPTS = 2
-ARTIFACT_TASK_PARALLELISM = 5
 ARTIFACT_INFRA_FAILURE_THRESHOLD = 2
 PROVIDER_BATCH_MIN_TOTAL_CALLS = 10
 PROVIDER_BATCH_MIN_FAILURE_RATE = 0.95
@@ -189,7 +188,12 @@ class EvaluationRunner:
                     dispatch=dispatch,
                 )
             )
-            for _ in range(min(ARTIFACT_TASK_PARALLELISM, len(indexed_tasks)))
+            for _ in range(
+                min(
+                    max(1, self._config.artifact_task_parallelism),
+                    len(indexed_tasks),
+                )
+            )
         ]
         await asyncio.gather(*workers)
 
@@ -817,7 +821,6 @@ def _exception_type_name(exc: Exception | None) -> str | None:
 
 
 __all__ = [
-    "ARTIFACT_TASK_PARALLELISM",
     "ARTIFACT_INFRA_FAILURE_THRESHOLD",
     "ArtifactExecutionFailedError",
     "AttemptDecisionKind",

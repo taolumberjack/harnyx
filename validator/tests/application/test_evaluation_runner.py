@@ -1108,3 +1108,89 @@ async def test_evaluation_runner_trips_artifact_breaker_after_two_infra_failures
     assert recorded_ids[:5] == [task.task_id for task in tasks[:5]]
     assert tasks[0].task_id in recorded_ids
     assert tasks[1].task_id in recorded_ids
+
+
+async def test_evaluation_runner_supports_serialized_artifact_execution() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_task_parallelism=1,
+        ),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    tasks = tuple(
+        MinerTask(
+            task_id=uuid4(),
+            query=Query(text=f"task-{index}"),
+            reference_answer=ReferenceAnswer(text=f"reference-{index}"),
+        )
+        for index in range(3)
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    class _SerializedOrchestrator:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+            self.max_active = 0
+            self._active = 0
+            self.release_by_text = {task.query.text: asyncio.Event() for task in tasks}
+            self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
+
+        async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+            text = request.task.query.text
+            self.started.append(text)
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+            if len(self.started) == 1:
+                self.first_started.set()
+            if len(self.started) == 2:
+                self.second_started.set()
+            await self.release_by_text[text].wait()
+            self._active -= 1
+            return _successful_outcome(request, score=1.0)
+
+    orchestrator = _SerializedOrchestrator()
+    execution = asyncio.create_task(
+        runner.evaluate_artifact(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=tasks,
+            orchestrator=cast(TaskRunOrchestrator, orchestrator),
+        )
+    )
+
+    try:
+        await asyncio.wait_for(orchestrator.first_started.wait(), timeout=1.0)
+        assert orchestrator.started == ["task-0"]
+        assert not orchestrator.second_started.is_set()
+
+        orchestrator.release_by_text["task-0"].set()
+        await asyncio.wait_for(orchestrator.second_started.wait(), timeout=1.0)
+
+        orchestrator.release_by_text["task-1"].set()
+        orchestrator.release_by_text["task-2"].set()
+        submissions = await asyncio.wait_for(execution, timeout=1.0)
+    finally:
+        for release_event in orchestrator.release_by_text.values():
+            release_event.set()
+
+    assert orchestrator.max_active == 1
+    assert [submission.run.task_id for submission in submissions] == [task.task_id for task in tasks]
+    assert len(evaluation_store.records) == 3

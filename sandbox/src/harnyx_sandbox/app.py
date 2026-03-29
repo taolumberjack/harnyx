@@ -39,12 +39,8 @@ def _tool_factory(config: Mapping[str, object] | None, headers: Mapping[str, str
     base_url = read_host_container_url_header(headers)
     token = read_platform_token_header(headers)
     session_id = read_session_id_header(headers)
-    if not session_id:
-        raise RuntimeError("sandbox request missing x-session-id header")
-    if not base_url:
-        raise RuntimeError("sandbox request missing x-host-container-url header required to enable tools")
-    if not token:
-        raise RuntimeError("sandbox request missing x-platform-token header required to enable tools")
+    if not session_id or not base_url or not token:
+        return None
     return ToolProxy(
         base_url=base_url,
         token=token,

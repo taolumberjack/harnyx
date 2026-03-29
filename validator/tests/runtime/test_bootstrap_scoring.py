@@ -16,6 +16,7 @@ from harnyx_validator.infrastructure.scoring.vertex_embedding import LazyVertexT
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import (
     _build_llm_clients,
+    _build_local_eval_tooling_clients,
     _create_scoring_service,
     _create_search_client,
     close_runtime_resources,
@@ -95,6 +96,31 @@ def test_build_llm_clients_uses_shared_cached_resolver(monkeypatch: pytest.Monke
     assert tool_provider == "provider:chutes"
     assert scoring_provider == "provider:vertex"
     assert calls == ["chutes", "vertex"]
+
+
+def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> None:
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            search_provider=None,
+            tool_llm_provider="chutes",
+            scoring_llm_provider="chutes",
+            chutes_api_key=SecretStr("test-key"),
+        ),
+        vertex=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_maas_gcp_location="us-east5",
+            vertex_timeout_seconds=60.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+    )
+
+    search_client, tool_provider, scoring_provider = _build_local_eval_tooling_clients(settings)
+
+    assert search_client is None
+    assert tool_provider is not None
+    assert scoring_provider is not None
+    assert type(tool_provider).__name__ == "_LazyLlmProvider"
 
 
 def test_build_state_activates_two_parallel_tool_calls_per_token() -> None:

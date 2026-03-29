@@ -11,6 +11,7 @@ from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.seccomp.paths import default_profile_path
 
 DOCKER_BINARY: Final[str] = "/usr/bin/docker"
+HOST_PROBE_ADDRESS: Final[str] = "host.docker.internal"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,13 +45,14 @@ class ContainerSecurity:
 CONTAINER_SECURITY: Final[ContainerSecurity] = ContainerSecurity()
 
 
-def create_sandbox_manager(*, logger_name: str) -> DockerSandboxManager:
+def create_sandbox_manager(*, logger_name: str, host: str = HOST_PROBE_ADDRESS) -> DockerSandboxManager:
     """Create a Docker sandbox manager with standard configuration."""
 
     sandbox_log = logging.getLogger(logger_name)
     return DockerSandboxManager(
         docker_binary=DOCKER_BINARY,
-        host="host.docker.internal",
+        # Published-port health probes must use a service-reachable host address for this runtime.
+        host=host,
         log_consumer=lambda line: sandbox_log.info("%s", line),
     )
 
@@ -65,10 +67,11 @@ def build_sandbox_options(
     container_port: int = 8000,
     volumes: tuple[tuple[str, str, str | None], ...] = (),
     extra_env: dict[str, str] | None = None,
+    host_container_url: str | None = None,
 ) -> SandboxOptions:
     """Build hardened sandbox options shared by platform and validator."""
 
-    host_container_url = resolve_sandbox_host_container_url(
+    resolved_host_container_url = host_container_url or resolve_sandbox_host_container_url(
         docker_binary=DOCKER_BINARY,
         sandbox_network=network,
         rpc_port=rpc_port,
@@ -91,7 +94,7 @@ def build_sandbox_options(
         entrypoint=None,
         command=None,
         network=network,
-        host_container_url=host_container_url,
+        host_container_url=resolved_host_container_url,
         volumes=volumes,
         extra_hosts=(("host.docker.internal", "host-gateway"),),
         startup_delay_seconds=2.0,
@@ -110,6 +113,7 @@ __all__ = [
     "CONTAINER_SECURITY",
     "ContainerSecurity",
     "DOCKER_BINARY",
+    "HOST_PROBE_ADDRESS",
     "build_sandbox_options",
     "create_sandbox_manager",
 ]

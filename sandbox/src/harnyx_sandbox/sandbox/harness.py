@@ -26,6 +26,7 @@ from harnyx_miner_sdk.decorators import (
 )
 from harnyx_miner_sdk.sandbox_headers import read_session_id_header
 from harnyx_sandbox.context.snapshot import ContextSnapshot
+from harnyx_sandbox.sandbox.timeout import ENTRYPOINT_TIMEOUT_SECONDS
 
 ToolConfig = Mapping[str, Any] | None
 ToolHeaders = Mapping[str, str]
@@ -51,26 +52,6 @@ class MpContext(Protocol):
 
 
 logger = logging.getLogger("harnyx_sandbox.sandbox")
-
-ENTRYPOINT_TIMEOUT_ENV_VAR = "ENTRYPOINT_TIMEOUT_SECONDS"
-
-
-def _load_entrypoint_timeout_seconds() -> float:
-    raw_timeout = os.getenv(ENTRYPOINT_TIMEOUT_ENV_VAR, "120")
-    try:
-        timeout_seconds = float(raw_timeout)
-    except ValueError as exc:
-        raise ValueError(
-            f"{ENTRYPOINT_TIMEOUT_ENV_VAR} must be a number > 0, got {raw_timeout!r}",
-        ) from exc
-    if timeout_seconds <= 0:
-        raise ValueError(
-            f"{ENTRYPOINT_TIMEOUT_ENV_VAR} must be > 0, got {raw_timeout!r}",
-        )
-    return timeout_seconds
-
-
-ENTRYPOINT_TIMEOUT_SECONDS = _load_entrypoint_timeout_seconds()
 WORKER_KILL_GRACE_SECONDS = 1.0
 
 
@@ -286,6 +267,10 @@ def _entrypoint_worker(
 ) -> None:
     tool_proxy = None
     try:
+        if tool_factory is not None:
+            # Build the proxy before seccomp so hostname resolution/client setup
+            # cannot trigger blocked task-creation syscalls inside the worker.
+            tool_proxy = tool_factory(tool_config, headers)
         _block_new_tasks_in_this_process()
         if preload is not None:
             preload()
@@ -295,8 +280,6 @@ def _entrypoint_worker(
             _send_worker_error(conn, "MissingEntrypoint", exc)
             return
         context_snapshot = ContextSnapshot(context_data or {})
-        if tool_factory is not None:
-            tool_proxy = tool_factory(tool_config, headers)
         call_kwargs = SandboxHarness._build_call_kwargs(
             func,
             request_payload,

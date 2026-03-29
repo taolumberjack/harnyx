@@ -239,6 +239,8 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
     assert isinstance(wait_ms, float)
 
 
+
+
 async def test_invoke_success_handles_json_safe_vertex_thought_signature_in_raw_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

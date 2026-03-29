@@ -10,12 +10,21 @@ from harnyx_commons.tools.api import LlmChatResult, fetch_page, llm_chat, search
 from harnyx_commons.tools.proxy import ToolInvocationError, ToolProxy
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.sandbox_headers import SESSION_ID_HEADER
+from harnyx_miner_sdk.tools import proxy as proxy_module
 
 TEST_TOKEN = "token-123"  # noqa: S105
 ERROR_TOKEN = "bad-token"  # noqa: S105
 SESSION_ID = "00000000-0000-0000-0000-000000000001"
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+def test_resolve_base_url_host_rewrites_localhost_to_ip_literal() -> None:
+    resolved = proxy_module._resolve_base_url_host("http://localhost:43211")
+
+    assert resolved.startswith("http://")
+    assert ":43211" in resolved
+    assert "localhost" not in resolved
 
 async def test_tool_proxy_invokes_endpoint_with_token() -> None:
     captured = {}

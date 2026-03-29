@@ -93,6 +93,15 @@ class LlmRetryExhaustedError(RuntimeError):
         self.response = response
 
 
+@dataclass(frozen=True)
+class RetryFailureDetail:
+    reason: str
+    exception_type: str | None = None
+    exception_message: str | None = None
+    exception_repr: str | None = None
+    cause_chain: tuple[str, ...] = ()
+
+
 class LlmProviderPort(Protocol):
     """Abstraction over provider/model specific LLM clients."""
 
@@ -331,7 +340,20 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             raise
         except Exception as exc:
             retryable, reason = classify_exception(exc) if classify_exception else (False, str(exc))
-            await self._handle_failure(attempt, ctx, request, "exception", reason, retryable)
+            await self._handle_failure(
+                attempt,
+                ctx,
+                request,
+                "exception",
+                RetryFailureDetail(
+                    reason=reason,
+                    exception_type=type(exc).__name__,
+                    exception_message=str(exc),
+                    exception_repr=repr(exc),
+                    cause_chain=_exception_cause_chain(exc),
+                ),
+                retryable,
+            )
             return None
 
         latency_ms = (time.perf_counter() - start) * 1000
@@ -357,7 +379,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             ctx,
             request,
             "verifier",
-            reason or "verification_failed",
+            RetryFailureDetail(reason=reason or "verification_failed"),
             retryable,
             response=response,
         )
@@ -383,7 +405,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             ctx,
             request,
             "postprocess",
-            result.reason or "postprocess_failed",
+            RetryFailureDetail(reason=result.reason or "postprocess_failed"),
             result.retryable,
             response=response,
         )
@@ -395,16 +417,16 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         ctx: RetryContext,
         request: AbstractLlmRequest,
         phase: str,
-        reason: str,
+        failure: RetryFailureDetail,
         retryable: bool,
         response: LlmResponse | None = None,
     ) -> None:
         """Handle a phase failure - either raise or prepare for retry."""
         response_for_error = response if response is not None else ctx.last_response
         if ctx.is_exhausted(attempt) or not retryable:
-            raise LlmRetryExhaustedError(reason, response=response_for_error)
-        ctx.reasons.append(reason)
-        self._log_retry(phase, request, attempt, reason, ctx.policy)
+            raise LlmRetryExhaustedError(failure.reason, response=response_for_error)
+        ctx.reasons.append(failure.reason)
+        self._log_retry(phase, request, attempt, failure, ctx.policy)
         await asyncio.sleep(backoff_ms(attempt, ctx.policy) / 1000)
 
     def _build_response(
@@ -458,21 +480,34 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         phase: str,
         request: AbstractLlmRequest,
         attempt: int,
-        reason: str,
+        failure: RetryFailureDetail,
         policy: RetryPolicy,
     ) -> None:
         """Unified retry event logger."""
+        data: dict[str, object] = {
+            "provider": self._provider_label,
+            "model": request.model,
+            "attempt": attempt + 1,
+            "reason": failure.reason,
+            "backoff_ms": backoff_ms(attempt, policy),
+        }
+        if failure.exception_type is not None:
+            data["exception_type"] = failure.exception_type
+        if failure.exception_message:
+            data["exception_message"] = failure.exception_message
+        if failure.exception_repr:
+            data["exception_repr"] = failure.exception_repr
+        if failure.cause_chain:
+            data["cause_chain"] = failure.cause_chain
+        message = f"llm.retry.{phase}"
+        if phase == "exception" and failure.exception_type is not None:
+            message = (
+                f"{message}: {failure.exception_type}: "
+                f"{failure.exception_message or failure.reason}"
+            )
         self._llm_logger.warning(
-            f"llm.retry.{phase}",
-            extra={
-                "data": {
-                    "provider": self._provider_label,
-                    "model": request.model,
-                    "attempt": attempt + 1,
-                    "reason": reason,
-                    "backoff_ms": backoff_ms(attempt, policy),
-                },
-            },
+            message,
+            extra={"data": data},
         )
 
 
@@ -495,6 +530,20 @@ def _usage_snapshot(usage: LlmUsage) -> dict[str, object]:
         "reasoning": usage.reasoning_tokens or 0,
         "web_search_calls": usage.web_search_calls or 0,
     }
+
+
+def _exception_cause_chain(exc: BaseException) -> tuple[str, ...]:
+    chain: list[str] = []
+    current = exc.__cause__ or exc.__context__
+    seen: set[int] = set()
+    while current is not None:
+        current_id = id(current)
+        if current_id in seen:
+            break
+        seen.add(current_id)
+        chain.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    return tuple(chain)
 
 
 def _build_raw_payload_metadata(

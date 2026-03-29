@@ -1,0 +1,25 @@
+---
+name: improve-artifact
+description: Change a miner artifact using hypotheses from local-eval reports.
+---
+
+# Improve Artifact
+
+Goal: make a focused change to `./agent.py` based on evidence from a local-eval report.
+
+## Steps
+
+1. Start from one or two specific hypotheses, not a full rewrite.
+2. Keep the public contract stable:
+   - one Python file
+   - `@entrypoint("query")`
+   - `Query -> Response`
+3. Prefer changes that can be tested against the failing or weak tasks you already identified.
+4. Preserve graceful failure behavior for tools and budgets.
+5. Record what changed and what you expect to improve in the next report.
+
+## Output
+
+- updated artifact
+- expected task-level impact
+- risks to watch in the next local-eval run

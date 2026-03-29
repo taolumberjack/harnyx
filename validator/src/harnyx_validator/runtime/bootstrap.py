@@ -20,6 +20,7 @@ from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegi
 from harnyx_commons.json_types import JsonObject
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
+from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
@@ -32,6 +33,14 @@ from harnyx_commons.tools.runtime_invoker import (
     ALLOWED_TOOL_MODELS,
     RuntimeToolInvoker,
     build_miner_sandbox_tool_invoker,
+)
+from harnyx_commons.tools.search_models import (
+    FetchPageRequest,
+    FetchPageResponse,
+    SearchAiSearchRequest,
+    SearchAiSearchResponse,
+    SearchWebSearchRequest,
+    SearchWebSearchResponse,
 )
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -310,6 +319,27 @@ def _build_llm_clients(
     return search_client, tool_llm_provider, scoring_llm_provider
 
 
+def _build_local_eval_tooling_clients(
+    settings: Settings,
+) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort]:
+    resolve_provider = build_cached_llm_provider_resolver(
+        llm_settings=settings.llm,
+        vertex_settings=settings.vertex,
+    )
+    search_client = (
+        _LazySearchProvider(lambda: _create_search_client(settings))
+        if settings.llm.search_provider is not None
+        else None
+    )
+    tool_llm_provider: LlmProviderPort | None
+    if settings.llm.tool_llm_provider is None:
+        tool_llm_provider = None
+    else:
+        tool_llm_provider = _LazyLlmProvider(lambda: resolve_provider(settings.llm.tool_llm_provider))
+    scoring_llm_provider = resolve_provider(settings.llm.scoring_llm_provider)
+    return search_client, tool_llm_provider, scoring_llm_provider
+
+
 def _build_tooling(
     *,
     state: InMemoryState,
@@ -336,6 +366,68 @@ def _build_tooling(
         llm_provider_name=resolved.llm.tool_llm_provider,
     )
     return tool_invoker, tool_executor
+
+
+class _LazyLlmProvider(LlmProviderPort):
+    def __init__(self, factory: Callable[[], LlmProviderPort]) -> None:
+        self._factory = factory
+        self._provider: LlmProviderPort | None = None
+        self._lock = asyncio.Lock()
+
+    async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+        provider = await self._get_provider()
+        return await provider.invoke(request)
+
+    async def aclose(self) -> None:
+        provider = self._provider
+        if provider is not None:
+            await provider.aclose()
+
+    async def _get_provider(self) -> LlmProviderPort:
+        provider = self._provider
+        if provider is not None:
+            return provider
+        async with self._lock:
+            provider = self._provider
+            if provider is None:
+                provider = self._factory()
+                self._provider = provider
+        return provider
+
+
+class _LazySearchProvider(WebSearchProviderPort):
+    def __init__(self, factory: Callable[[], WebSearchProviderPort]) -> None:
+        self._factory = factory
+        self._provider: WebSearchProviderPort | None = None
+        self._lock = asyncio.Lock()
+
+    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
+        provider = await self._get_provider()
+        return await provider.search_web(request)
+
+    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse:
+        provider = await self._get_provider()
+        return await provider.search_ai(request)
+
+    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse:
+        provider = await self._get_provider()
+        return await provider.fetch_page(request)
+
+    async def aclose(self) -> None:
+        provider = self._provider
+        if provider is not None:
+            await provider.aclose()
+
+    async def _get_provider(self) -> WebSearchProviderPort:
+        provider = self._provider
+        if provider is not None:
+            return provider
+        async with self._lock:
+            provider = self._provider
+            if provider is None:
+                provider = self._factory()
+                self._provider = provider
+        return provider
 
 
 def _build_services(

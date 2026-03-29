@@ -94,11 +94,10 @@ sequenceDiagram
 ## Repo layout
 
 ```text
-public/
-  miner/                # miner-facing CLI tooling (test + submit)
-  validator/            # validator runtime + operator docs
-  sandbox/              # sandbox runtime (run by validators, not miners)
-  packages/
-    miner-sdk/          # SDK imported by miner scripts
-    commons/            # shared utilities (sandbox runner, tools, etc.)
+miner/                # miner-facing CLI tooling (dev, local-eval, submit)
+validator/            # validator runtime + operator docs
+sandbox/              # sandbox runtime (run by validators, not miners)
+packages/
+  miner-sdk/          # SDK imported by miner scripts
+  commons/            # shared utilities (sandbox runner, tools, etc.)
 ```

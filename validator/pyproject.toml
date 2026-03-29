@@ -1,6 +1,6 @@
 [project]
 name = "harnyx-validator"
-version = "20260326.post10"
+version = "20260329.post0"
 description = "Validator runtime for the Harnyx Subnet."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
@@ -9,7 +9,7 @@ authors = [
 ]
 dependencies = [
   "pydantic>=2.8",
-  "harnyx-commons>=0.1.0",
+  "harnyx-commons>=0.1.1",
   "fastapi>=0.110.1",
   "uvicorn>=0.30",
   "bittensor==9.9.0",

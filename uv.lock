@@ -636,7 +636,7 @@ wheels = [
 
 [[package]]
 name = "harnyx-commons"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/commons" }
 dependencies = [
     { name = "anthropic" },
@@ -680,7 +680,9 @@ version = "0.1.0"
 source = { editable = "miner" }
 dependencies = [
     { name = "bittensor" },
+    { name = "harnyx-commons" },
     { name = "harnyx-miner-sdk" },
+    { name = "harnyx-validator" },
     { name = "httpx" },
     { name = "python-dotenv" },
 ]
@@ -693,7 +695,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bittensor", specifier = "==9.9.0" },
+    { name = "harnyx-commons", editable = "packages/commons" },
     { name = "harnyx-miner-sdk", editable = "packages/miner-sdk" },
+    { name = "harnyx-validator", editable = "validator" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
     { name = "python-dotenv", specifier = ">=1.1.1" },
@@ -773,7 +777,7 @@ requires-dist = [
 
 [[package]]
 name = "harnyx-validator"
-version = "0.1.0"
+version = "20260329.post0"
 source = { editable = "validator" }
 dependencies = [
     { name = "bittensor" },

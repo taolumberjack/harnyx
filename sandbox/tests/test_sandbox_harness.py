@@ -96,6 +96,75 @@ def test_harness_invokes_entrypoint_and_closes_tools() -> None:
     assert close_flag.value == 1
 
 
+def test_harness_builds_tool_proxy_before_preload() -> None:
+    close_flag = mp.Value("i", 0)
+    order = mp.Value("i", 0)
+    factory_order = mp.Value("i", 0)
+    preload_order = mp.Value("i", 0)
+
+    class FakeToolProxy:
+        async def invoke(
+            self,
+            name: str,
+            *,
+            args: tuple[object, ...] | None = None,
+            kwargs: dict[str, object] | None = None,
+        ) -> dict[str, object]:
+            del name, args, kwargs
+            return {
+                "receipt_id": "tool-1",
+                "response": {"status": "ok", "echo": ""},
+                "results": [],
+                "result_policy": "log_only",
+                "budget": {
+                    "session_budget_usd": 1.0,
+                    "session_hard_limit_usd": 1.0,
+                    "session_used_budget_usd": 0.0,
+                    "session_remaining_budget_usd": 1.0,
+                },
+            }
+
+        async def aclose(self) -> None:
+            with close_flag.get_lock():
+                close_flag.value = 1
+
+    def tool_factory(
+        config: Mapping[str, object] | None,
+        headers: Mapping[str, str],
+    ) -> FakeToolProxy:
+        del config, headers
+        with order.get_lock():
+            order.value += 1
+            factory_order.value = order.value
+        return FakeToolProxy()
+
+    def preload() -> None:
+        with order.get_lock():
+            order.value += 1
+            preload_order.value = order.value
+
+    @entrypoint("miner_factory_then_preload")
+    async def ordered_entrypoint(request: dict[str, object]) -> dict[str, object]:
+        return {"message": request.get("message")}
+
+    harness = SandboxHarness(tool_factory=tool_factory, preload=preload)
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+    client = TestClient(app)
+
+    response = client.post(
+        "/entry/miner_factory_then_preload",
+        json={"payload": {"message": "ok"}, "context": {}},
+        headers={"x-platform-token": "token", "x-session-id": "session-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {"message": "ok"}
+    assert factory_order.value == 1
+    assert preload_order.value == 2
+    assert close_flag.value == 1
+
+
 def test_harness_accepts_neutral_session_header() -> None:
     @entrypoint("neutral_session_echo")
     async def neutral_entrypoint(request: dict[str, object]) -> dict[str, object]:

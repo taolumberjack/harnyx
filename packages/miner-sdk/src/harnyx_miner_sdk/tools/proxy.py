@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import socket
 from collections.abc import Mapping, Sequence
 from typing import cast
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -46,7 +48,10 @@ class ToolProxy:
         self._endpoint = endpoint
         self._timeout = timeout
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
+        resolved_base_url = base_url.rstrip("/")
+        if client is None:
+            resolved_base_url = _resolve_base_url_host(resolved_base_url)
+        self._client = client or httpx.AsyncClient(base_url=resolved_base_url, timeout=timeout)
         self._token = token
         self._session_id = session_id
 
@@ -138,6 +143,41 @@ def _describe_payload(payload: Mapping[str, object]) -> str:
     else:
         kwargs_keys = "?"
     return f"tool={tool!r} args={arg_count} kwargs_keys={kwargs_keys}"
+
+
+def _resolve_base_url_host(base_url: str) -> str:
+    parsed = urlsplit(base_url)
+    host = parsed.hostname
+    if not host or _is_ip_literal(host):
+        return base_url
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        resolved_host = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0][4][0]
+    except OSError:
+        return base_url
+
+    if not isinstance(resolved_host, str) or not resolved_host:
+        return base_url
+
+    if ":" in resolved_host and not resolved_host.startswith("["):
+        resolved_host = f"[{resolved_host}]"
+    netloc = resolved_host if parsed.port is None else f"{resolved_host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+        return True
+    except OSError:
+        pass
+
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
+        return True
+    except OSError:
+        return False
 
 
 __all__ = [
