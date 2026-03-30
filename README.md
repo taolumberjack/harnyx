@@ -91,6 +91,23 @@ sequenceDiagram
     Validator->>Bittensor: 5) submit_weights
 ```
 
+### How champion selection works
+
+Champion selection is not the same as "highest score in the batch wins."
+
+The platform starts from the incumbent champion and compares challengers in batch order. A challenger only replaces the incumbent when it clears the dethroning rule:
+
+- it beats the incumbent by a sufficient score margin, or
+- it is effectively non-regressing and materially better on runtime or cost
+
+Because of that:
+
+- the champion is not always the highest score in the batch
+- challenger order matters
+- small score differences inside the tolerance band do not automatically replace the incumbent
+
+
+
 ## Repo layout
 
 ```text
