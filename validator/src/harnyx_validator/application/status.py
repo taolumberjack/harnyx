@@ -20,6 +20,8 @@ class InMemoryStatus:
     last_weight_error: str | None = None
     platform_registration_ready: bool = False
     platform_registration_error: str | None = None
+    auth_ready: bool = False
+    auth_error: str | None = None
 
 
 class StatusSnapshot(TypedDict):
@@ -72,6 +74,20 @@ class StatusProvider:
 
     def platform_registration_error(self) -> str | None:
         return self.state.platform_registration_error
+
+    def mark_auth_ready(self) -> None:
+        self.state.auth_ready = True
+        self.state.auth_error = None
+
+    def mark_auth_unavailable(self, error: str) -> None:
+        self.state.auth_ready = False
+        self.state.auth_error = error
+
+    def auth_ready(self) -> bool:
+        return self.state.auth_ready
+
+    def auth_error(self) -> str | None:
+        return self.state.auth_error
 
     @staticmethod
     def _iso(value: datetime | None) -> str | None:

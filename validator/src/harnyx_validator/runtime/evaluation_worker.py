@@ -284,6 +284,7 @@ def create_evaluation_worker_from_context(context: RuntimeContext) -> Evaluation
         session_manager=context.session_manager,
         evaluation_records=context.evaluation_records,
         receipt_log=context.receipt_log,
+        blocking_executor=context.batch_blocking_executor,
         orchestrator_factory=context.create_evaluation_orchestrator,
         sandbox_options_factory=context.build_sandbox_options,
         agent_resolver=agent_resolver,

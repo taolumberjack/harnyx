@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     MinerTask,
@@ -165,6 +166,13 @@ async def _allow_all_auth(_: str, __: str, ___: bytes, ____: str | None) -> str:
     return "caller"
 
 
+async def _auth_unavailable(_: str, __: str, ___: bytes, ____: str | None) -> str:
+    raise VerificationError(
+        "auth_unavailable",
+        "inbound auth verifier has not completed initial hotkey warmup",
+    )
+
+
 def test_status_endpoint_awaits_auth_with_request_primitives() -> None:
     batch_id = uuid4()
     snapshot: RunProgressSnapshot = {
@@ -244,6 +252,29 @@ def test_status_endpoint_returns_signed_ownership_proof_when_timestamp_header_is
         )
     ).encode("utf-8")
     assert payload["signature_hex"] == (b"sig:" + expected).hex()
+
+
+def test_control_routes_return_503_when_auth_warmup_is_unavailable() -> None:
+    batch_id = uuid4()
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot, auth=_auth_unavailable)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get("/validator/status")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "inbound auth verifier has not completed initial hotkey warmup",
+    }
 
 
 def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSubmission]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import Executor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -66,6 +67,7 @@ class BatchExecutionPlanner:
         session_manager: SessionManager,
         evaluation_records: EvaluationRecordPort,
         receipt_log: ReceiptLogPort,
+        blocking_executor: Executor,
         orchestrator_factory: OrchestratorFactory,
         sandbox_options_factory: SandboxOptionsFactory,
         agent_resolver: AgentResolver,
@@ -77,6 +79,7 @@ class BatchExecutionPlanner:
         self._session_manager = session_manager
         self._evaluation_records = evaluation_records
         self._receipt_log = receipt_log
+        self._blocking_executor = blocking_executor
         self._orchestrator_factory = orchestrator_factory
         self._sandbox_options_factory = sandbox_options_factory
         self._agent_resolver = agent_resolver
@@ -117,6 +120,7 @@ class BatchExecutionPlanner:
             session_manager=self._session_manager,
             evaluation_records=self._evaluation_records,
             receipt_log=self._receipt_log,
+            blocking_executor=self._blocking_executor,
             orchestrator_factory=self._orchestrator_factory,
             sandbox_options_factory=options_factory,
             clock=lambda: datetime.now(UTC),

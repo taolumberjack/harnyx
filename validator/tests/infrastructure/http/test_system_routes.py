@@ -34,12 +34,39 @@ def test_readyz_returns_starting_until_platform_registration_completes() -> None
 def test_readyz_returns_ok_after_platform_registration() -> None:
     status_provider = StatusProvider()
     status_provider.mark_platform_registration_succeeded()
+    status_provider.mark_auth_ready()
     client = _create_test_client(status_provider)
 
     response = client.get("/readyz")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_readyz_returns_waiting_for_auth_warmup_after_platform_registration() -> None:
+    status_provider = StatusProvider()
+    status_provider.mark_platform_registration_succeeded()
+    client = _create_test_client(status_provider)
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "waiting_for_auth_warmup"}
+
+
+def test_readyz_surfaces_auth_failures() -> None:
+    status_provider = StatusProvider()
+    status_provider.mark_platform_registration_succeeded()
+    status_provider.mark_auth_unavailable("subtensor unavailable")
+    client = _create_test_client(status_provider)
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "auth_unavailable",
+        "detail": "subtensor unavailable",
+    }
 
 
 def test_readyz_surfaces_registration_failures() -> None:

@@ -139,8 +139,14 @@ def add_system_routes(app: FastAPI, status_provider: StatusProvider) -> None:
 
     @app.get("/readyz", description="Validator readiness check.")
     def readyz(response: Response) -> dict[str, str]:
-        if status_provider.platform_registration_ready():
+        if status_provider.platform_registration_ready() and status_provider.auth_ready():
             return {"status": "ok"}
+        if status_provider.platform_registration_ready():
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            error = status_provider.auth_error()
+            if error:
+                return {"status": "auth_unavailable", "detail": error}
+            return {"status": "waiting_for_auth_warmup"}
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         error = status_provider.platform_registration_error()
         if error:
@@ -173,7 +179,12 @@ def add_control_routes(
                 authorization_header,
             )
         except VerificationError as exc:
-            status_code = 403 if exc.code == "caller_not_allowed" else 401
+            if exc.code == "caller_not_allowed":
+                status_code = 403
+            elif exc.code == "auth_unavailable":
+                status_code = 503
+            else:
+                status_code = 401
             raise HTTPException(status_code=status_code, detail=exc.message) from exc
 
     @app.post(

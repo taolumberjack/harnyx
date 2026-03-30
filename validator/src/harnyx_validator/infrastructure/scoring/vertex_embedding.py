@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import math
 from dataclasses import dataclass, field
 
@@ -60,12 +59,9 @@ class VertexTextEmbeddingClient:
         normalized = text.strip()
         if not normalized:
             raise ValueError("embedding input text must not be empty")
-        return await asyncio.to_thread(self._embed_sync, normalized)
-
-    def _embed_sync(self, text: str) -> tuple[float, ...]:
-        response = self.client.models.embed_content(
+        response = await self.client.aio.models.embed_content(
             model=self.model,
-            contents=text,
+            contents=normalized,
             config=types.EmbedContentConfig(output_dimensionality=self.dimensions),
         )
         embeddings = response.embeddings
@@ -80,6 +76,10 @@ class VertexTextEmbeddingClient:
                 f"embedding dimensions mismatch: expected={self.dimensions} actual={len(vector)}"
             )
         return vector
+
+    async def aclose(self) -> None:
+        await self.client.aio.aclose()
+        self.client.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +119,11 @@ class LazyVertexTextEmbeddingClient:
         return await client.embed(text)
 
     async def aclose(self) -> None:
-        return None
+        client = self._client
+        if client is None:
+            return None
+        await client.aclose()
+        self._client = None
 
 
 __all__ = [

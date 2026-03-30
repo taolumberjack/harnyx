@@ -55,15 +55,54 @@ WORKER_STOP_TIMEOUT_SECONDS = 60
 logger = logging.getLogger("harnyx_validator.server")
 
 
+async def _stop_runtime_components(
+    *,
+    evaluation_started: bool,
+    weight_started: bool,
+    auth_started: bool,
+) -> None:
+    if evaluation_started:
+        try:
+            await _evaluation_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("failed stopping evaluation worker during shutdown")
+    if weight_started:
+        try:
+            _weight_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("failed stopping weight worker during shutdown")
+    if auth_started:
+        try:
+            _runtime.inbound_auth_verifier.stop(timeout_seconds=WORKER_STOP_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("failed stopping inbound auth verifier during shutdown")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    _weight_worker.start()
-    _evaluation_worker.start()
-    yield
-    await _evaluation_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
-    _weight_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
-    await close_runtime_resources(_runtime)
-    shutdown_logging()
+    auth_started = False
+    weight_started = False
+    evaluation_started = False
+    try:
+        _runtime.inbound_auth_verifier.start()
+        auth_started = True
+        _weight_worker.start()
+        weight_started = True
+        _evaluation_worker.start()
+        evaluation_started = True
+        yield
+    finally:
+        try:
+            await _stop_runtime_components(
+                evaluation_started=evaluation_started,
+                weight_started=weight_started,
+                auth_started=auth_started,
+            )
+        finally:
+            try:
+                await close_runtime_resources(_runtime)
+            finally:
+                shutdown_logging()
 
 
 def create_app() -> FastAPI:

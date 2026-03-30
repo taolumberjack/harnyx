@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from uuid import UUID, uuid4
 
 import pytest
 
+import harnyx_validator.application.scheduler as scheduler_module
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import (
@@ -39,6 +43,15 @@ from harnyx_validator.runtime.agent_artifact import ArtifactPreparationError
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+@pytest.fixture
+def blocking_executor() -> ThreadPoolExecutor:
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-validator-batch-blocking")
+    try:
+        yield executor
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 class DummySandboxManager(SandboxManager):
@@ -135,7 +148,9 @@ def _sandbox_invocation_error(message: str) -> SandboxInvocationError:
     )
 
 
-async def test_scheduler_runs_all_tasks_for_each_artifact() -> None:
+async def test_scheduler_runs_all_tasks_for_each_artifact(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     tasks = (_task("one"), _task("two"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -179,6 +194,7 @@ async def test_scheduler_runs_all_tasks_for_each_artifact() -> None:
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=orchestrator_factory,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -202,7 +218,160 @@ async def test_scheduler_runs_all_tasks_for_each_artifact() -> None:
     assert len(evaluation_records.records_by_batch) == len(result.runs)
 
 
-async def test_scheduler_records_zero_score_when_sandbox_invocation_errors() -> None:
+async def test_scheduler_avoids_asyncio_to_thread_for_blocking_work(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    tasks = (_task("one"),)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    def orchestrator_factory(_client: object):
+        class StubOrchestrator:
+            async def evaluate(self, request):
+                details = EvaluationDetails(
+                    score_breakdown=ScoreBreakdown(
+                        comparison_score=1.0,
+                        similarity_score=0.5,
+                        total_score=0.75,
+                        scoring_version="v1",
+                    ),
+                    total_tool_usage=ToolUsageSummary.zero(),
+                )
+                run = MinerTaskRun(
+                    session_id=request.session_id,
+                    uid=request.uid,
+                    artifact_id=request.artifact_id,
+                    task_id=request.task.task_id,
+                    response=Response(text="answer one"),
+                    details=details,
+                    completed_at=datetime(2025, 10, 27, tzinfo=UTC),
+                )
+                return TaskRunOutcome(run=run, usage=TokenUsageSummary.empty())
+
+        return StubOrchestrator()
+
+    async def _unexpected_to_thread(*args, **kwargs):
+        raise AssertionError("scheduler should not use asyncio.to_thread")
+
+    monkeypatch.setattr(scheduler_module.asyncio, "to_thread", _unexpected_to_thread)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = (ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert len(result.runs) == 1
+    assert len(sandbox_manager.starts) == 1
+    assert len(sandbox_manager.stops) == 1
+
+
+async def test_scheduler_cancellation_does_not_wait_for_blocking_lane_shutdown(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    task = _task("shutdown")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    stop_started = Event()
+    release_stop = Event()
+    stop_finished = Event()
+
+    class BlockingStopSandboxManager(DummySandboxManager):
+        def stop(self, deployment: SandboxDeployment) -> None:
+            self.stops.append(deployment)
+            stop_started.set()
+            try:
+                release_stop.wait(timeout=5.0)
+            finally:
+                stop_finished.set()
+
+    sandbox_manager = BlockingStopSandboxManager()
+
+    def orchestrator_factory(_client: object):
+        class StubOrchestrator:
+            async def evaluate(self, request):
+                details = EvaluationDetails(
+                    score_breakdown=ScoreBreakdown(
+                        comparison_score=1.0,
+                        similarity_score=0.5,
+                        total_score=0.75,
+                        scoring_version="v1",
+                    ),
+                    total_tool_usage=ToolUsageSummary.zero(),
+                )
+                run = MinerTaskRun(
+                    session_id=request.session_id,
+                    uid=request.uid,
+                    artifact_id=request.artifact_id,
+                    task_id=request.task.task_id,
+                    response=Response(text="answer shutdown"),
+                    details=details,
+                    completed_at=datetime(2025, 10, 27, tzinfo=UTC),
+                )
+                return TaskRunOutcome(run=run, usage=TokenUsageSummary.empty())
+
+        return StubOrchestrator()
+
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    run_task = asyncio.create_task(
+        scheduler.run(
+            batch_id=uuid4(),
+            requested_artifacts=(ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),),
+        )
+    )
+
+    try:
+        assert await asyncio.to_thread(stop_started.wait, 1.0) is True
+        run_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run_task, timeout=0.2)
+        assert release_stop.is_set() is False
+    finally:
+        release_stop.set()
+        assert await asyncio.to_thread(stop_finished.wait, 1.0) is True
+
+
+async def test_scheduler_records_zero_score_when_sandbox_invocation_errors(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     task = _task("unstable")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -231,6 +400,7 @@ async def test_scheduler_records_zero_score_when_sandbox_invocation_errors() -> 
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=orchestrator_factory,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: next(clock_values),
@@ -252,7 +422,9 @@ async def test_scheduler_records_zero_score_when_sandbox_invocation_errors() -> 
     assert evaluation_records.records_by_batch == list(result.runs)
 
 
-async def test_scheduler_retries_only_transient_sandbox_invocation_errors() -> None:
+async def test_scheduler_retries_only_transient_sandbox_invocation_errors(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     tasks = (_task("first"), _task("second"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -298,6 +470,7 @@ async def test_scheduler_retries_only_transient_sandbox_invocation_errors() -> N
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda _client: orchestrator,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -319,7 +492,9 @@ async def test_scheduler_retries_only_transient_sandbox_invocation_errors() -> N
     assert result.runs[1].run.response == Response(text="answer second")
 
 
-async def test_scheduler_fails_batch_for_generic_post_invoke_error() -> None:
+async def test_scheduler_fails_batch_for_generic_post_invoke_error(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     tasks = (_task("first"), _task("second"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -365,6 +540,7 @@ async def test_scheduler_fails_batch_for_generic_post_invoke_error() -> None:
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda _client: orchestrator,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -383,7 +559,9 @@ async def test_scheduler_fails_batch_for_generic_post_invoke_error() -> None:
     assert evaluation_records.records_by_batch == []
 
 
-async def test_scheduler_retries_sandbox_start_once_before_running_tasks() -> None:
+async def test_scheduler_retries_sandbox_start_once_before_running_tasks(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     task = _task("startup")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -432,6 +610,7 @@ async def test_scheduler_retries_sandbox_start_once_before_running_tasks() -> No
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=orchestrator_factory,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -449,7 +628,9 @@ async def test_scheduler_retries_sandbox_start_once_before_running_tasks() -> No
     assert result.runs[0].score == pytest.approx(0.75)
 
 
-async def test_scheduler_records_zero_score_for_terminal_setup_failures() -> None:
+async def test_scheduler_records_zero_score_for_terminal_setup_failures(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     task = _task("startup failure")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -471,6 +652,7 @@ async def test_scheduler_records_zero_score_for_terminal_setup_failures() -> Non
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda _client: _client,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -492,7 +674,9 @@ async def test_scheduler_records_zero_score_for_terminal_setup_failures() -> Non
     assert evaluation_records.records_by_batch == list(result.runs)
 
 
-async def test_scheduler_fails_batch_after_three_sandbox_start_breakers() -> None:
+async def test_scheduler_fails_batch_after_three_sandbox_start_breakers(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     task = _task("startup failure")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -514,6 +698,7 @@ async def test_scheduler_fails_batch_after_three_sandbox_start_breakers() -> Non
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda _client: _client,
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -543,7 +728,9 @@ async def test_scheduler_fails_batch_after_three_sandbox_start_breakers() -> Non
     ]
 
 
-async def test_scheduler_fails_batch_after_three_artifact_fetch_breakers() -> None:
+async def test_scheduler_fails_batch_after_three_artifact_fetch_breakers(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     task = _task("fetch failure")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -559,6 +746,7 @@ async def test_scheduler_fails_batch_after_three_artifact_fetch_breakers() -> No
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda _client: _client,
         sandbox_options_factory=lambda _artifact: (_ for _ in ()).throw(
             ArtifactPreparationError(
@@ -594,7 +782,9 @@ async def test_scheduler_fails_batch_after_three_artifact_fetch_breakers() -> No
     ]
 
 
-async def test_scheduler_keeps_three_hash_mismatch_failures_artifact_scoped() -> None:
+async def test_scheduler_keeps_three_hash_mismatch_failures_artifact_scoped(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     task = _task("hash mismatch")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -610,6 +800,7 @@ async def test_scheduler_keeps_three_hash_mismatch_failures_artifact_scoped() ->
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda _client: _client,
         sandbox_options_factory=lambda _artifact: (_ for _ in ()).throw(
             ArtifactPreparationError(
@@ -640,7 +831,9 @@ async def test_scheduler_keeps_three_hash_mismatch_failures_artifact_scoped() ->
     ]
 
 
-async def test_scheduler_fails_batch_after_three_artifact_breakers() -> None:
+async def test_scheduler_fails_batch_after_three_artifact_breakers(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     task = _task("artifact breaker")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -661,6 +854,7 @@ async def test_scheduler_fails_batch_after_three_artifact_breakers() -> None:
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda _client: object(),
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -725,7 +919,9 @@ async def test_scheduler_fails_batch_after_three_artifact_breakers() -> None:
     assert failing_runner.recorded_artifact_ids == [artifact.artifact_id for artifact in artifacts]
 
 
-async def test_evaluation_runner_issues_session_with_task_budget() -> None:
+async def test_evaluation_runner_issues_session_with_task_budget(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
@@ -738,6 +934,7 @@ async def test_evaluation_runner_issues_session_with_task_budget() -> None:
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda client: client,
         sandbox_options_factory=lambda artifact: artifact,
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -758,7 +955,9 @@ async def test_evaluation_runner_issues_session_with_task_budget() -> None:
     assert issued.session.budget_usd == pytest.approx(0.123)
 
 
-async def test_scheduler_runs_only_remaining_pairs() -> None:
+async def test_scheduler_runs_only_remaining_pairs(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     tasks = (_task("one"), _task("two"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -803,6 +1002,7 @@ async def test_scheduler_runs_only_remaining_pairs() -> None:
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=orchestrator_factory,
         sandbox_options_factory=lambda current_artifact: {"uid": current_artifact.uid},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -821,7 +1021,9 @@ async def test_scheduler_runs_only_remaining_pairs() -> None:
     assert result.runs[0].run.task_id == tasks[1].task_id
 
 
-async def test_scheduler_skips_artifact_when_all_pairs_are_already_recorded() -> None:
+async def test_scheduler_skips_artifact_when_all_pairs_are_already_recorded(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
     tasks = (_task("one"), _task("two"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -869,6 +1071,7 @@ async def test_scheduler_skips_artifact_when_all_pairs_are_already_recorded() ->
         session_manager=session_manager,
         evaluation_records=evaluation_records,
         receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
         orchestrator_factory=orchestrator_factory,
         sandbox_options_factory=lambda current_artifact: {"uid": current_artifact.uid},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),

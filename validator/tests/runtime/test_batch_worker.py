@@ -137,6 +137,15 @@ class PersistentFailureBatchService:
         raise RuntimeError("worker boom")
 
 
+class CloseAwareBatchService(FakeBatchService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_called = False
+
+    def close(self) -> None:
+        self.close_called = True
+
+
 def _completed_submission(batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
     artifact = batch.artifacts[0]
     task = batch.tasks[0]
@@ -296,6 +305,41 @@ async def test_evaluation_worker_does_not_retry_incomplete_batch_after_service_b
     assert accept_batch.lifecycle_for(batch.batch_id) == "failed"
     assert status.state.last_error == "unexpected_batch_failure"
     assert len(inbox) == 0
+
+
+@pytest.mark.anyio
+async def test_evaluation_worker_stop_does_not_close_batch_service_and_restart_is_safe() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    fake_service = CloseAwareBatchService()
+
+    worker = EvaluationWorker(
+        batch_service=fake_service,
+        batch_inbox=inbox,
+        status_provider=status,
+        batch_tracker=accept_batch,
+    )
+
+    first_batch = _sample_batch()
+    accept_batch.execute(first_batch)
+    worker.start()
+    assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+    await worker.stop(timeout=1.0)
+
+    fake_service.processed_event.clear()
+    second_batch = _sample_batch()
+    accept_batch.execute(second_batch)
+    worker.start()
+    assert await asyncio.to_thread(fake_service.processed_event.wait, timeout=1.0)
+    await worker.stop(timeout=1.0)
+
+    assert [batch.batch_id for batch in fake_service.processed] == [
+        first_batch.batch_id,
+        second_batch.batch_id,
+    ]
+    assert fake_service.close_called is False
 
 
 @pytest.mark.anyio

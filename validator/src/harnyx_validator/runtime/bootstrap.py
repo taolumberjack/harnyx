@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, cast
@@ -85,6 +86,7 @@ _SCORING_LLM_MODEL = "openai/gpt-oss-120b-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 TOKEN_MAX_PARALLEL_CALLS = 2
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
+_BATCH_BLOCKING_LANE_NAME = "validator-batch-blocking"
 
 
 class _ScoringEmbeddingClient(TextEmbeddingPort, Protocol):
@@ -161,6 +163,7 @@ class RuntimeContext:
     settings: Settings
     platform_hotkey: bt.Keypair
     sandbox_manager: DockerSandboxManager
+    batch_blocking_executor: Executor
     session_manager: SessionManager
     session_registry: InMemorySessionRegistry
     token_registry: InMemoryTokenRegistry
@@ -186,6 +189,7 @@ class RuntimeContext:
     status_provider: StatusProvider
     tool_route_deps_provider: Callable[[], ToolRouteDeps]
     control_deps_provider: Callable[[], ValidatorControlDeps]
+    inbound_auth_verifier: BittensorSr25519InboundVerifier
 
     def register_with_platform(self) -> None:
         _register_with_platform(
@@ -237,17 +241,23 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         state=state,
         scoring_service=scoring_service,
     )
-    tool_route_provider, control_provider, status_provider = _build_http_dependencies(
+    tool_route_provider, control_provider, status_provider, inbound_auth_verifier = _build_http_dependencies(
         resolved=resolved,
         state=state,
         tool_executor=tool_executor,
         validator_hotkey=platform_hotkey,
     )
 
+    batch_blocking_executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix=_BATCH_BLOCKING_LANE_NAME,
+    )
+
     return RuntimeContext(
         settings=resolved,
         platform_hotkey=platform_hotkey,
         sandbox_manager=sandbox_manager,
+        batch_blocking_executor=batch_blocking_executor,
         session_manager=state.session_manager,
         session_registry=state.session_registry,
         token_registry=state.token_registry,
@@ -273,6 +283,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         status_provider=status_provider,
         tool_route_deps_provider=tool_route_provider,
         control_deps_provider=control_provider,
+        inbound_auth_verifier=inbound_auth_verifier,
     )
 
 
@@ -477,9 +488,14 @@ def _build_http_dependencies(
     state: InMemoryState,
     tool_executor: ToolExecutor,
     validator_hotkey: bt.Keypair,
-) -> tuple[Callable[[], ToolRouteDeps], Callable[[], ValidatorControlDeps], StatusProvider]:
+) -> tuple[
+    Callable[[], ToolRouteDeps],
+    Callable[[], ValidatorControlDeps],
+    StatusProvider,
+    BittensorSr25519InboundVerifier,
+]:
     status_provider = StatusProvider()
-    inbound_auth = _build_inbound_auth(resolved)
+    inbound_auth = _build_inbound_auth(resolved, status_provider=status_provider)
     tool_route_provider = _make_dependency_provider(
         tool_executor,
         state.token_semaphore,
@@ -492,7 +508,7 @@ def _build_http_dependencies(
         state.progress_tracker,
         validator_hotkey,
     )
-    return tool_route_provider, control_provider, status_provider
+    return tool_route_provider, control_provider, status_provider, inbound_auth
 
 
 def _create_platform_client(settings: Settings) -> tuple[PlatformPort, bt.Keypair]:
@@ -675,7 +691,11 @@ def _make_options_factory(resolved: Settings) -> Callable[[], SandboxOptions]:
     return factory
 
 
-def _build_inbound_auth(resolved: Settings) -> BittensorSr25519InboundVerifier:
+def _build_inbound_auth(
+    resolved: Settings,
+    *,
+    status_provider: StatusProvider | None = None,
+) -> BittensorSr25519InboundVerifier:
     subtensor_settings = resolved.subtensor
     endpoint = subtensor_settings.endpoint.strip()
     network_or_endpoint = endpoint or subtensor_settings.network
@@ -707,6 +727,8 @@ def _build_inbound_auth(resolved: Settings) -> BittensorSr25519InboundVerifier:
         netuid=subtensor_settings.netuid,
         network=network_or_endpoint,
         owner_coldkey_ss58=owner_coldkey_ss58,
+        on_refresh_succeeded=status_provider.mark_auth_ready if status_provider is not None else None,
+        on_refresh_failed=status_provider.mark_auth_unavailable if status_provider is not None else None,
     )
 
 
@@ -790,6 +812,8 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
         if obj is None:
             return
         await obj.aclose()
+
+    runtime.batch_blocking_executor.shutdown(wait=False, cancel_futures=True)
 
     for owned in _unique_aclose_targets(
         runtime.search_client,

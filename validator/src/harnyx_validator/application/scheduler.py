@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Sequence
+from concurrent.futures import Executor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from typing import TypeVar
 from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
@@ -36,14 +39,13 @@ from harnyx_validator.runtime.agent_artifact import ArtifactPreparationError
 SandboxOptionsFactory = Callable[[ScriptArtifactSpec], SandboxOptions]
 TaskRunOrchestratorFactory = Callable[[SandboxClient], TaskRunOrchestrator]
 Clock = Callable[[], datetime]
+_T = TypeVar("_T")
 
 logger = logging.getLogger("harnyx_validator.scheduler")
 BATCH_ARTIFACT_BREAKER_THRESHOLD = 3
 _ARTIFACT_PREPARATION_BREAKER_ERROR_CODES = frozenset(
     ("artifact_fetch_failed", "artifact_staging_failed", "artifact_setup_failed")
 )
-
-
 @dataclass(frozen=True)
 class SchedulerConfig:
     """Static configuration used for session issuance."""
@@ -65,6 +67,7 @@ class EvaluationScheduler:
         session_manager: SessionManager,
         evaluation_records: EvaluationRecordPort,
         receipt_log: ReceiptLogPort,
+        blocking_executor: Executor,
         orchestrator_factory: TaskRunOrchestratorFactory,
         sandbox_options_factory: SandboxOptionsFactory,
         clock: Clock,
@@ -77,6 +80,7 @@ class EvaluationScheduler:
         self._sandbox_options = sandbox_options_factory
         self._progress = progress
         self._clock = clock
+        self._blocking_executor = blocking_executor
         self._runner = EvaluationRunner(
             subtensor_client=subtensor_client,
             session_manager=session_manager,
@@ -101,6 +105,21 @@ class EvaluationScheduler:
         if not artifacts:
             raise ValueError("scheduler requires at least one artifact")
 
+        return await self._run_artifacts(
+            batch_id=batch_id,
+            tasks=tasks,
+            artifacts=artifacts,
+            blocking_executor=self._blocking_executor,
+        )
+
+    async def _run_artifacts(
+        self,
+        *,
+        batch_id: UUID,
+        tasks: tuple[MinerTask, ...],
+        artifacts: tuple[ScriptArtifactSpec, ...],
+        blocking_executor: Executor,
+    ) -> MinerTaskBatchRunResult:
         submissions = []
         recorded_pairs = self._progress.recorded_pairs(batch_id) if self._progress is not None else frozenset()
         artifacts_with_breaker: set[UUID] = set()
@@ -122,6 +141,7 @@ class EvaluationScheduler:
                     batch_id=batch_id,
                     artifact=artifact,
                     tasks=remaining_tasks,
+                    blocking_executor=blocking_executor,
                 )
             except ArtifactExecutionFailedError as exc:
                 submissions.extend(
@@ -168,7 +188,7 @@ class EvaluationScheduler:
                             artifacts_with_breaker=artifacts_with_breaker,
                         )
             finally:
-                await asyncio.to_thread(self._sandboxes.stop, deployment)
+                await _run_blocking_call(blocking_executor, self._sandboxes.stop, deployment)
             if batch_breaker_failure is not None:
                 raise batch_breaker_failure
 
@@ -189,9 +209,10 @@ class EvaluationScheduler:
         batch_id: UUID,
         artifact: ScriptArtifactSpec,
         tasks: Sequence[MinerTask],
+        blocking_executor: Executor,
     ) -> SandboxDeployment:
         try:
-            options = await asyncio.to_thread(self._sandbox_options, artifact)
+            options = await _run_blocking_call(blocking_executor, self._sandbox_options, artifact)
         except ArtifactPreparationError as exc:
             logger.error(
                 "failed to prepare sandbox options",
@@ -224,7 +245,7 @@ class EvaluationScheduler:
         last_error_message = ""
         for attempt_number in range(1, LOCAL_RETRY_ATTEMPTS + 1):
             try:
-                return await asyncio.to_thread(self._sandboxes.start, options)
+                return await _run_blocking_call(blocking_executor, self._sandboxes.start, options)
             except Exception as exc:
                 last_error_message = str(exc)
                 if attempt_number < LOCAL_RETRY_ATTEMPTS:
@@ -367,6 +388,16 @@ class EvaluationScheduler:
                 exception_type=failure_detail.exception_type,
             ),
         )
+
+
+async def _run_blocking_call(
+    executor: Executor,
+    func: Callable[..., _T],
+    /,
+    *args: object,
+) -> _T:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, partial(func, *args))
 
 
 __all__ = ["EvaluationScheduler", "SchedulerConfig"]

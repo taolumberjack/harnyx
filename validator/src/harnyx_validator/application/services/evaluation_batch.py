@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from concurrent.futures import Executor
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -95,6 +96,7 @@ class MinerTaskBatchService:
         session_manager: SessionManager,
         evaluation_records: EvaluationRecordPort,
         receipt_log: ReceiptLogPort,
+        blocking_executor: Executor,
         orchestrator_factory: Callable[[SandboxClient], TaskRunOrchestrator],
         sandbox_options_factory: Callable[[], SandboxOptions],
         agent_resolver: AgentResolver,
@@ -123,6 +125,7 @@ class MinerTaskBatchService:
             session_manager=session_manager,
             evaluation_records=evaluation_records,
             receipt_log=receipt_log,
+            blocking_executor=blocking_executor,
             orchestrator_factory=orchestrator_factory,
             sandbox_options_factory=sandbox_options_factory,
             agent_resolver=agent_resolver,

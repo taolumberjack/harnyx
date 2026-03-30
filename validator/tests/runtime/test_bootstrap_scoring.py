@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import SecretStr
 
+import harnyx_validator.infrastructure.scoring.vertex_embedding as vertex_embedding
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.observability import ObservabilitySettings
 from harnyx_commons.config.platform_api import PlatformApiSettings
@@ -392,6 +393,71 @@ def test_create_scoring_service_uses_vertex_maas_region_for_embeddings() -> None
     assert service._embeddings.location == "us-central1"
 
 
+@pytest.mark.anyio
+async def test_lazy_vertex_text_embedding_client_uses_async_sdk_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, object]] = []
+    captured: dict[str, object] = {}
+
+    class _SyncModels:
+        def embed_content(self, *args, **kwargs):
+            raise AssertionError("sync embedding path should not be used")
+
+    class _AsyncModels:
+        async def embed_content(self, *, model: str, contents: str, config: object) -> object:
+            calls.append((model, contents, config))
+            return SimpleNamespace(embeddings=[SimpleNamespace(values=(1.0, 2.0))])
+
+    class _AsyncClient:
+        def __init__(self) -> None:
+            self.models = _AsyncModels()
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class _FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+            self.models = _SyncModels()
+            self.aio = _AsyncClient()
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(vertex_embedding, "prepare_credentials", lambda _path, _b64: (None, None))
+    monkeypatch.setattr(vertex_embedding.genai, "Client", _FakeClient)
+
+    client = LazyVertexTextEmbeddingClient(
+        project="test-project",
+        location="us-central1",
+        service_account_b64=None,
+        model="gemini-embedding-001",
+        timeout_seconds=15.0,
+        dimensions=2,
+    )
+
+    vector = await client.embed("hello world")
+
+    assert vector == (1.0, 2.0)
+    assert captured["vertexai"] is True
+    assert captured["project"] == "test-project"
+    assert captured["location"] == "us-central1"
+    assert len(calls) == 1
+    assert calls[0][0] == "gemini-embedding-001"
+    assert calls[0][1] == "hello world"
+
+    underlying = client._client
+    assert underlying is not None
+
+    await client.aclose()
+
+    assert underlying.client.aio.closed is True
+    assert underlying.client.closed is True
+
+
 class _Closable:
     def __init__(self) -> None:
         self.closed = False
@@ -408,10 +474,20 @@ class _CountingClosable:
         self.close_calls += 1
 
 
+class _ShutdownSpyExecutor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[bool, bool]] = []
+
+    def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+        self.calls.append((wait, cancel_futures))
+
+
 @pytest.mark.anyio
 async def test_close_runtime_resources_closes_scoring_embedding_client() -> None:
     scoring_embedding_client = _Closable()
+    blocking_executor = _ShutdownSpyExecutor()
     runtime = SimpleNamespace(
+        batch_blocking_executor=blocking_executor,
         search_client=None,
         tool_llm_provider=None,
         scoring_llm_provider=None,
@@ -420,13 +496,16 @@ async def test_close_runtime_resources_closes_scoring_embedding_client() -> None
 
     await close_runtime_resources(runtime)
 
+    assert blocking_executor.calls == [(False, True)]
     assert scoring_embedding_client.closed is True
 
 
 @pytest.mark.anyio
 async def test_close_runtime_resources_dedupes_shared_llm_provider() -> None:
     shared_provider = _CountingClosable()
+    blocking_executor = _ShutdownSpyExecutor()
     runtime = SimpleNamespace(
+        batch_blocking_executor=blocking_executor,
         search_client=None,
         tool_llm_provider=shared_provider,
         scoring_llm_provider=shared_provider,
@@ -435,4 +514,5 @@ async def test_close_runtime_resources_dedupes_shared_llm_provider() -> None:
 
     await close_runtime_resources(runtime)
 
+    assert blocking_executor.calls == [(False, True)]
     assert shared_provider.close_calls == 1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -34,6 +35,15 @@ from validator.tests.fixtures.fakes import FakeReceiptLog
 from validator.tests.fixtures.subtensor import FakeSubtensorClient
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+@pytest.fixture
+def blocking_executor() -> ThreadPoolExecutor:
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-validator-batch-blocking")
+    try:
+        yield executor
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 class DummyEvaluationRecordStore:
@@ -109,6 +119,7 @@ def _failure_submission(batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
 async def test_process_async_fails_batch_after_scheduler_escape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
 ) -> None:
     batch = _batch()
     status = StatusProvider()
@@ -119,6 +130,7 @@ async def test_process_async_fails_batch_after_scheduler_escape(
         session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
         evaluation_records=DummyEvaluationRecordStore(),
         receipt_log=FakeReceiptLog(),
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda client: client,
         sandbox_options_factory=lambda: SandboxOptions(image="sandbox:test", container_name="sandbox-base"),
         agent_resolver=lambda *_args: {},
@@ -163,6 +175,7 @@ async def test_process_async_fails_batch_after_scheduler_escape(
 async def test_process_async_fails_from_build_run_context_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
 ) -> None:
     batch = _batch()
     status = StatusProvider()
@@ -182,6 +195,7 @@ async def test_process_async_fails_from_build_run_context_failure(
         session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
         evaluation_records=DummyEvaluationRecordStore(),
         receipt_log=FakeReceiptLog(),
+        blocking_executor=blocking_executor,
         orchestrator_factory=lambda client: client,
         sandbox_options_factory=lambda: SandboxOptions(image="sandbox:test", container_name="sandbox-base"),
         agent_resolver=lambda *_args: {},
