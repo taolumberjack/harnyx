@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import traceback
 from collections.abc import Callable
 from concurrent.futures import Executor
 from datetime import UTC, datetime, timedelta
@@ -150,6 +151,7 @@ class MinerTaskBatchService:
                     error_message=str(exc),
                     occurred_at=datetime.now(UTC),
                     exception_type=type(exc).__name__,
+                    traceback=traceback.format_exc(),
                 ),
             ) from exc
         self._complete_batch(run_ctx.batch_id, batch_result, elapsed)

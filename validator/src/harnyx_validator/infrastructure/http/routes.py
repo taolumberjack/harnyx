@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
-from uuid import UUID
+from datetime import UTC, datetime
+from typing import Any, Protocol, cast
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
 from harnyx_commons.bittensor import VerificationError
@@ -41,9 +44,11 @@ from harnyx_validator.infrastructure.http.schemas import (
     SessionModel,
     UsageModel,
     UsageModelEntry,
+    ValidatorInternalErrorResponse,
     ValidatorModel,
     ValidatorStatusResponse,
 )
+from harnyx_validator.infrastructure.observability.sentry import capture_exception
 from harnyx_validator.infrastructure.state.run_progress import RunProgressSnapshot
 
 logger = logging.getLogger("harnyx_validator.http")
@@ -133,11 +138,17 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
 
 
 def add_system_routes(app: FastAPI, status_provider: StatusProvider) -> None:
-    @app.get("/healthz", description="Validator health check.")
+    @app.get(
+        "/healthz",
+        description="Validator health check.",
+    )
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/readyz", description="Validator readiness check.")
+    @app.get(
+        "/readyz",
+        description="Validator readiness check.",
+    )
     def readyz(response: Response) -> dict[str, str]:
         if status_provider.platform_registration_ready() and status_provider.auth_ready():
             return {"status": "ok"}
@@ -172,7 +183,7 @@ def add_control_routes(
         path_qs = _path_with_query(request)
         authorization_header = request.headers.get("authorization")
         try:
-            return await deps.auth(
+            caller = await deps.auth(
                 request.method,
                 path_qs,
                 body,
@@ -186,17 +197,20 @@ def add_control_routes(
             else:
                 status_code = 401
             raise HTTPException(status_code=status_code, detail=exc.message) from exc
+        return caller
 
     @app.post(
         "/validator/miner-task-batches/batch",
         response_model=BatchAcceptResponse,
+        responses={500: {"model": ValidatorInternalErrorResponse}},
         description="Accept a miner task batch and start processing it.",
     )
     async def accept_batch(
+        request: Request,
         payload: MinerTaskBatchRequestModel,
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
         caller: str = Security(require_bittensor_caller),
-    ) -> BatchAcceptResponse:
+    ) -> BatchAcceptResponse | JSONResponse:
         try:
             batch = payload.to_domain()
             restore_runs = payload.to_domain_restore_runs()
@@ -208,87 +222,103 @@ def add_control_routes(
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            return _control_route_internal_error_response(request, exc)
 
         return BatchAcceptResponse(status="accepted", batch_id=str(batch.batch_id), caller=caller)
 
     @app.get(
         "/validator/miner-task-batches/{batch_id}/progress",
         response_model=ProgressResponse,
+        responses={500: {"model": ValidatorInternalErrorResponse}},
         description="Return progress and results for a miner task batch.",
     )
     def progress(
+        request: Request,
         batch_id: UUID,
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
         _caller: str = Security(require_bittensor_caller),
-    ) -> ProgressResponse:
-        lifecycle = deps.accept_batch.lifecycle_for(batch_id)
-        if lifecycle is None:
+    ) -> ProgressResponse | JSONResponse:
+        try:
+            lifecycle = deps.accept_batch.lifecycle_for(batch_id)
+            if lifecycle is None:
+                return ProgressResponse(
+                    batch_id=str(batch_id),
+                    status="unknown",
+                    error_code=None,
+                    failure_detail=None,
+                    total=0,
+                    completed=0,
+                    remaining=0,
+                    miner_task_runs=[],
+                    provider_model_evidence=[],
+                )
+            snapshot = deps.progress_tracker.snapshot(batch_id)
+            tasks_by_id = {task.task_id: task for task in snapshot["tasks"]}
+            try:
+                runs = [_serialize_run(result, tasks_by_id) for result in snapshot["miner_task_runs"]]
+                provider_model_evidence = [
+                    _serialize_provider_evidence(entry) for entry in snapshot["provider_evidence"]
+                ]
+            except Exception as exc:
+                return _progress_internal_failure(batch_id=batch_id, snapshot=snapshot, exc=exc)
+            if lifecycle == "failed":
+                return ProgressResponse(
+                    batch_id=str(batch_id),
+                    status="failed",
+                    error_code=deps.accept_batch.error_code_for(batch_id),
+                    failure_detail=_serialize_failure_detail(deps.accept_batch.failure_detail_for(batch_id)),
+                    total=snapshot["total"],
+                    completed=snapshot["completed"],
+                    remaining=snapshot["remaining"],
+                    miner_task_runs=runs,
+                    provider_model_evidence=provider_model_evidence,
+                )
             return ProgressResponse(
                 batch_id=str(batch_id),
-                status="unknown",
-                error_code=None,
-                failure_detail=None,
-                total=0,
-                completed=0,
-                remaining=0,
-                miner_task_runs=[],
-                provider_model_evidence=[],
-            )
-        snapshot = deps.progress_tracker.snapshot(batch_id)
-        tasks_by_id = {task.task_id: task for task in snapshot["tasks"]}
-        runs = [_serialize_run(result, tasks_by_id) for result in snapshot["miner_task_runs"]]
-        provider_model_evidence = [_serialize_provider_evidence(entry) for entry in snapshot["provider_evidence"]]
-        if lifecycle == "failed":
-            return ProgressResponse(
-                batch_id=str(batch_id),
-                status="failed",
+                status=lifecycle,
                 error_code=deps.accept_batch.error_code_for(batch_id),
-                failure_detail=_serialize_failure_detail(deps.accept_batch.failure_detail_for(batch_id)),
+                failure_detail=None,
                 total=snapshot["total"],
                 completed=snapshot["completed"],
                 remaining=snapshot["remaining"],
                 miner_task_runs=runs,
                 provider_model_evidence=provider_model_evidence,
             )
-        return ProgressResponse(
-            batch_id=str(batch_id),
-            status=lifecycle,
-            error_code=deps.accept_batch.error_code_for(batch_id),
-            failure_detail=None,
-            total=snapshot["total"],
-            completed=snapshot["completed"],
-            remaining=snapshot["remaining"],
-            miner_task_runs=runs,
-            provider_model_evidence=provider_model_evidence,
-        )
+        except Exception as exc:
+            return _control_route_internal_error_response(request, exc)
 
     @app.get(
         _STATUS_PATH,
         response_model=ValidatorStatusResponse,
+        responses={500: {"model": ValidatorInternalErrorResponse}},
         description="Return a validator status snapshot for platform health checks.",
     )
     def status(
         request: Request,
         deps: ValidatorControlDeps = Depends(get_control_deps),  # noqa: B008
         _caller: str = Security(require_bittensor_caller),
-    ) -> ValidatorStatusResponse:
-        snapshot = deps.status_provider.snapshot()
-        response = ValidatorStatusResponse(
-            **snapshot,
-            hotkey=deps.validator_hotkey.ss58_address,
-        )
-        request_ts = request.headers.get(_STATUS_TIMESTAMP_HEADER)
-        if request_ts is None:
-            return response
-        proof_payload = _build_status_proof_payload(
-            request_ts=request_ts,
-            hotkey=response.hotkey,
-            status=response.status,
-            running=response.running,
-        )
-        return response.model_copy(
-            update={"signature_hex": deps.validator_hotkey.sign(proof_payload).hex()}
-        )
+    ) -> ValidatorStatusResponse | JSONResponse:
+        try:
+            snapshot = deps.status_provider.snapshot()
+            response = ValidatorStatusResponse(
+                **snapshot,
+                hotkey=deps.validator_hotkey.ss58_address,
+            )
+            request_ts = request.headers.get(_STATUS_TIMESTAMP_HEADER)
+            if request_ts is None:
+                return response
+            proof_payload = _build_status_proof_payload(
+                request_ts=request_ts,
+                hotkey=response.hotkey,
+                status=response.status,
+                running=response.running,
+            )
+            return response.model_copy(
+                update={"signature_hex": deps.validator_hotkey.sign(proof_payload).hex()}
+            )
+        except Exception as exc:
+            return _control_route_internal_error_response(request, exc)
 
 
 async def _execute_with_semaphore_async(invocation: ToolInvocationRequest, deps: ToolRouteDeps) -> Any:
@@ -327,6 +357,40 @@ def _public_error_message(exc: Exception) -> str:
     if isinstance(exc, ValueError):
         return "tool response validation failed"
     return "tool execution failed"
+
+
+def _control_route_request_id(request: Request) -> str:
+    state = request.scope.get("state", {})
+    if isinstance(state, dict):
+        request_id = state.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            return request_id
+    header_request_id = request.headers.get("x-request-id")
+    if header_request_id:
+        return header_request_id
+    return uuid4().hex
+
+
+def _unwrap_control_route_exception(exc: Exception) -> Exception:
+    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        first = exc.exceptions[0]
+        if isinstance(first, Exception):
+            return _unwrap_control_route_exception(first)
+        return cast(Exception, first)
+    return exc
+
+
+def _control_route_internal_error_response(request: Request, exc: Exception) -> JSONResponse:
+    exc = _unwrap_control_route_exception(exc)
+    capture_exception(exc)
+    payload = ValidatorInternalErrorResponse(
+        error_code="internal_server_error",
+        error_message=str(exc) or type(exc).__name__,
+        exception_type=type(exc).__name__,
+        request_id=_control_route_request_id(request),
+        traceback="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+    )
+    return JSONResponse(status_code=500, content=payload.model_dump(mode="json"))
 
 
 def _serialize_run(
@@ -369,6 +433,33 @@ def _serialize_provider_evidence(entry: ProviderFailureEvidence) -> ProviderEvid
         model=entry["model"],
         total_calls=entry["total_calls"],
         failed_calls=entry["failed_calls"],
+    )
+
+
+def _progress_internal_failure(
+    *,
+    batch_id: UUID,
+    snapshot: RunProgressSnapshot,
+    exc: Exception,
+) -> ProgressResponse:
+    capture_exception(exc)
+    total = snapshot["total"]
+    return ProgressResponse(
+        batch_id=str(batch_id),
+        status="failed",
+        error_code="progress_snapshot_failed",
+        failure_detail=FailureDetailResponse(
+            error_code="progress_snapshot_failed",
+            error_message=str(exc) or type(exc).__name__,
+            exception_type=type(exc).__name__,
+            traceback="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            occurred_at=datetime.now(UTC).isoformat(),
+        ),
+        total=total,
+        completed=0,
+        remaining=total,
+        miner_task_runs=[],
+        provider_model_evidence=[],
     )
 
 

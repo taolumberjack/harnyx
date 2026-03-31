@@ -169,6 +169,8 @@ async def test_process_async_fails_batch_after_scheduler_escape(
     assert exc_info.value.failure_detail.error_code == "batch_execution_failed"
     assert exc_info.value.failure_detail.error_message == "worker boom"
     assert exc_info.value.failure_detail.exception_type == "RuntimeError"
+    assert exc_info.value.failure_detail.traceback is not None
+    assert "RuntimeError: worker boom" in exc_info.value.failure_detail.traceback
     assert logged == {}
 
 
@@ -216,5 +218,7 @@ async def test_process_async_fails_from_build_run_context_failure(
     assert exc_info.value.failure_detail.error_code == "batch_execution_failed"
     assert exc_info.value.failure_detail.error_message == "setup boom"
     assert exc_info.value.failure_detail.exception_type == "RuntimeError"
+    assert exc_info.value.failure_detail.traceback is not None
+    assert "RuntimeError: setup boom" in exc_info.value.failure_detail.traceback
     assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
     assert progress.recorded_pairs(batch.batch_id) == frozenset()

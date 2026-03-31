@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import harnyx_validator.infrastructure.http.routes as routes_mod
 from harnyx_commons.bittensor import VerificationError
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
@@ -33,6 +34,7 @@ from harnyx_validator.application.dto.evaluation import (
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
+from harnyx_validator.infrastructure.http.middleware import request_logging_middleware
 from harnyx_validator.infrastructure.http.routes import (
     ControlRouteAuth,
     ValidatorControlDeps,
@@ -42,8 +44,11 @@ from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress, RunProgressSnapshot
 
 
-def _create_test_app(provider: DemoControlDependencyProvider) -> FastAPI:
+def _create_test_app(
+    provider: DemoControlDependencyProvider,
+) -> FastAPI:
     app = FastAPI()
+    app.middleware("http")(request_logging_middleware)
     add_control_routes(app, provider)
     return app
 
@@ -103,6 +108,11 @@ class StubStatusProvider:
         return {"status": "ok", "running": False}
 
 
+class _ExplodingStatusProvider:
+    def snapshot(self) -> dict[str, object]:
+        raise RuntimeError("status exploded")
+
+
 class FakeProgressTracker:
     def __init__(self, *, snapshot: RunProgressSnapshot) -> None:
         self._snapshot = snapshot
@@ -121,6 +131,7 @@ class DemoControlDependencyProvider:
         error_code: str | None = None,
         failure_detail: ValidatorBatchFailureDetail | None = None,
         validator_hotkey: _StubHotkey | None = None,
+        status_provider: StatusProvider | None = None,
     ) -> None:
         self.accept_batch = StubAcceptBatch(
             lifecycle=lifecycle,
@@ -129,7 +140,7 @@ class DemoControlDependencyProvider:
         )
         self._deps = ValidatorControlDeps(
             accept_batch=self.accept_batch,
-            status_provider=StubStatusProvider(),
+            status_provider=StubStatusProvider() if status_provider is None else status_provider,
             auth=_allow_all_auth if auth is None else auth,
             progress_tracker=FakeProgressTracker(snapshot=snapshot),
             validator_hotkey=validator_hotkey or _StubHotkey(),
@@ -164,6 +175,10 @@ class RealAcceptBatchDependencyProvider:
 
 async def _allow_all_auth(_: str, __: str, ___: bytes, ____: str | None) -> str:
     return "caller"
+
+
+async def _explode_auth(_: str, __: str, ___: bytes, ____: str | None) -> str:
+    raise RuntimeError("auth exploded")
 
 
 async def _auth_unavailable(_: str, __: str, ___: bytes, ____: str | None) -> str:
@@ -532,6 +547,7 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
             task_id=first_submission.run.task_id,
             uid=first_submission.run.uid,
             exception_type="SandboxInvocationError",
+            traceback="Traceback (most recent call last): ...",
         ),
     )
     app = _create_test_app(provider)
@@ -551,6 +567,7 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
         "task_id": str(first_submission.run.task_id),
         "uid": first_submission.run.uid,
         "exception_type": "SandboxInvocationError",
+        "traceback": "Traceback (most recent call last): ...",
         "occurred_at": "2026-03-26T21:00:00+00:00",
     }
     assert body["total"] == 2
@@ -564,6 +581,104 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
         first_task.query.text,
         second_task.query.text,
     ]
+
+
+def test_progress_endpoint_converts_partial_progress_serialization_failure_to_valid_failed_payload() -> None:
+    batch_id = uuid4()
+    _task, submission = _make_task_submission(batch_id=batch_id)
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 2,
+        "completed": 1,
+        "remaining": 1,
+        "tasks": (),
+        "miner_task_runs": (submission,),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot, lifecycle="processing")
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/progress")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["batch_id"] == str(batch_id)
+    assert body["status"] == "failed"
+    assert body["error_code"] == "progress_snapshot_failed"
+    assert body["failure_detail"]["error_code"] == "progress_snapshot_failed"
+    assert body["failure_detail"]["exception_type"] == "RuntimeError"
+    assert "missing from progress snapshot" in body["failure_detail"]["error_message"]
+    assert "RuntimeError: task" in body["failure_detail"]["traceback"]
+    assert body["total"] == 2
+    assert body["completed"] == 0
+    assert body["remaining"] == 2
+    assert body["miner_task_runs"] == []
+    assert body["provider_model_evidence"] == []
+
+
+def test_signed_validator_route_internal_error_returns_structured_payload_and_captures_sentry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot: RunProgressSnapshot = {
+        "batch_id": uuid4(),
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(
+        snapshot=snapshot,
+        status_provider=_ExplodingStatusProvider(),
+    )
+    captured: list[Exception] = []
+    monkeypatch.setattr(routes_mod, "capture_exception", captured.append)
+    client = TestClient(_create_test_app(provider), raise_server_exceptions=False)
+
+    response = client.get(
+        "/validator/status",
+        headers={
+            "Authorization": 'Bittensor ss58="5demo",sig="00"',
+            "x-request-id": "req-123",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "internal_server_error"
+    assert response.json()["exception_type"] == "RuntimeError"
+    assert response.json()["request_id"] == "req-123"
+    assert response.json()["error_message"] == "status exploded"
+    assert "RuntimeError: status exploded" in response.json()["traceback"]
+    assert len(captured) == 1
+    assert str(captured[0]) == "status exploded"
+
+
+def test_validator_route_internal_error_before_auth_success_falls_back_to_generic_500() -> None:
+    snapshot: RunProgressSnapshot = {
+        "batch_id": uuid4(),
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(
+        snapshot=snapshot,
+        auth=_explode_auth,
+        status_provider=_ExplodingStatusProvider(),
+    )
+    client = TestClient(_create_test_app(provider), raise_server_exceptions=False)
+
+    response = client.get(
+        "/validator/status",
+        headers={"x-request-id": "req-auth-pre"},
+    )
+
+    assert response.status_code == 500
+    assert "auth exploded" not in response.text
 
 
 def test_accept_batch_endpoint_accepts_platform_json_payload() -> None:

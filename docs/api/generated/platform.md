@@ -207,6 +207,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `content_hash` |  | req | `string` |
 |  | `size_bytes` |  | req | `integer` |
+|  | `submitted_at` |  | req | `string` (format: date-time) |
 |  | `uid` |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
 | `champion_artifact_id` |  |  | req | `string` (format: uuid; nullable) |
@@ -299,6 +300,7 @@ Body: [ScriptArtifactModel](#model-scriptartifactmodel)
 | `artifact_id` |  |  | req | `string` (format: uuid) |
 | `content_hash` |  |  | req | `string` |
 | `size_bytes` |  |  | req | `integer` |
+| `submitted_at` |  |  | req | `string` (format: date-time) |
 | `uid` |  |  | req | `integer` |
 
 `422` Validation Error
@@ -1584,6 +1586,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `artifact_id` |  | req | `string` (format: uuid) |
 |  | `content_hash` |  | req | `string` |
 |  | `size_bytes` |  | req | `integer` |
+|  | `submitted_at` |  | req | `string` (format: date-time) |
 |  | `uid` |  | req | `integer` |
 | `batch_id` |  |  | req | `string` (format: uuid) |
 | `champion_artifact_id` |  |  | req | `string` (format: uuid; nullable) |
@@ -1960,6 +1963,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `artifact_id` |  |  | req | `string` (format: uuid) |
 | `content_hash` |  |  | req | `string` |
 | `size_bytes` |  |  | req | `integer` |
+| `submitted_at` |  |  | req | `string` (format: date-time) |
 | `uid` |  |  | req | `integer` |
 
 <details>
@@ -1981,6 +1985,11 @@ Body: [WeightsResponse](#model-weightsresponse)
       "title": "Size Bytes",
       "type": "integer"
     },
+    "submitted_at": {
+      "format": "date-time",
+      "title": "Submitted At",
+      "type": "string"
+    },
     "uid": {
       "title": "Uid",
       "type": "integer"
@@ -1990,7 +1999,8 @@ Body: [WeightsResponse](#model-weightsresponse)
     "uid",
     "artifact_id",
     "content_hash",
-    "size_bytes"
+    "size_bytes",
+    "submitted_at"
   ],
   "title": "ScriptArtifactModel",
   "type": "object"

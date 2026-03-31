@@ -91,6 +91,7 @@ class ValidatorBatchFailureDetail:
     task_id: UUID | None = None
     uid: int | None = None
     exception_type: str | None = None
+    traceback: str | None = None
 
 
 class ValidatorBatchFailedError(RuntimeError):

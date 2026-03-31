@@ -266,6 +266,32 @@ def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> 
     assert stored.failure_code is None
 
 
+def test_execute_tool_endpoint_unexpected_internal_error_uses_generic_500_body() -> None:
+    provider = DemoDependencyProvider()
+    provider.dependencies = ToolRouteDeps(
+        tool_executor=_UnexpectedFailingToolExecutor(),
+        token_semaphore=provider.token_semaphore,
+    )
+    app = create_test_app(provider)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "search_web",
+            "args": ["demo"],
+            "kwargs": {"query": "demo"},
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 500
+    assert "tool secret" not in response.text
+
+
 def test_execute_tool_endpoint_rejects_repo_tools() -> None:
     provider = DemoDependencyProvider()
     app = create_test_app(provider)
@@ -379,6 +405,11 @@ class _FailingToolExecutor:
 class _ProviderFailingToolExecutor:
     async def execute(self, _: object) -> object:
         raise ToolProviderError("provider failed")
+
+
+class _UnexpectedFailingToolExecutor:
+    async def execute(self, _: object) -> object:
+        raise AssertionError("tool secret exploded")
 
 
 def test_execute_tool_endpoint_rejects_missing_token_header() -> None:

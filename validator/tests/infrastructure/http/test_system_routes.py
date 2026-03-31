@@ -4,13 +4,33 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from harnyx_validator.application.status import StatusProvider
+from harnyx_validator.infrastructure.http.middleware import request_logging_middleware
 from harnyx_validator.infrastructure.http.routes import add_system_routes
 
 
-def _create_test_client(status_provider: StatusProvider) -> TestClient:
+class _ExplodingReadyStatusProvider:
+    def platform_registration_ready(self) -> bool:
+        raise RuntimeError("ready exploded")
+
+    def auth_ready(self) -> bool:
+        return False
+
+    def auth_error(self) -> str | None:
+        return None
+
+    def platform_registration_error(self) -> str | None:
+        return None
+
+
+def _create_test_client(
+    status_provider: StatusProvider,
+    *,
+    raise_server_exceptions: bool = True,
+) -> TestClient:
     app = FastAPI()
+    app.middleware("http")(request_logging_middleware)
     add_system_routes(app, status_provider)
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 def test_healthz_returns_ok() -> None:
@@ -81,3 +101,15 @@ def test_readyz_surfaces_registration_failures() -> None:
         "status": "registration_failed",
         "detail": "platform rejected validator",
     }
+
+
+def test_readyz_internal_error_uses_generic_500_body() -> None:
+    client = _create_test_client(
+        _ExplodingReadyStatusProvider(),  # type: ignore[arg-type]
+        raise_server_exceptions=False,
+    )
+
+    response = client.get("/readyz", headers={"x-request-id": "req-456"})
+
+    assert response.status_code == 500
+    assert "ready exploded" not in response.text

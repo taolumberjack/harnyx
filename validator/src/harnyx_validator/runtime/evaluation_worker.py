@@ -81,6 +81,8 @@ def _serialize_failure_detail(detail: ValidatorBatchFailureDetail) -> dict[str, 
         payload["uid"] = detail.uid
     if detail.exception_type is not None:
         payload["exception_type"] = detail.exception_type
+    if detail.traceback is not None:
+        payload["traceback"] = detail.traceback
     return payload
 
 

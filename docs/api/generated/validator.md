@@ -132,6 +132,7 @@ Body: [ProgressResponse](#model-progressresponse)
 |  | `exception_type` |  | opt | `string` (nullable) |
 |  | `occurred_at` |  | req | `string` |
 |  | `task_id` |  | opt | `string` (nullable) |
+|  | `traceback` |  | opt | `string` (nullable) |
 |  | `uid` |  | opt | `integer` (nullable) |
 | `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
@@ -212,6 +213,18 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 | `running` |  |  | opt | `boolean` (default: False) |
 | `signature_hex` |  |  | opt | `string` (nullable) |
 | `status` |  |  | req | `string` |
+
+`500` Internal Server Error
+Content-Type: `application/json`
+Body: [ValidatorInternalErrorResponse](#model-validatorinternalerrorresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `error_message` |  |  | req | `string` |
+| `exception_type` |  |  | req | `string` |
+| `request_id` |  |  | req | `string` |
+| `traceback` |  |  | opt | `string` (nullable) |
 
 
 
@@ -532,6 +545,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `exception_type` |  |  | opt | `string` (nullable) |
 | `occurred_at` |  |  | req | `string` |
 | `task_id` |  |  | opt | `string` (nullable) |
+| `traceback` |  |  | opt | `string` (nullable) |
 | `uid` |  |  | opt | `integer` (nullable) |
 
 <details>
@@ -588,6 +602,17 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
         }
       ],
       "title": "Task Id"
+    },
+    "traceback": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Traceback"
     },
     "uid": {
       "anyOf": [
@@ -1220,6 +1245,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `exception_type` |  | opt | `string` (nullable) |
 |  | `occurred_at` |  | req | `string` |
 |  | `task_id` |  | opt | `string` (nullable) |
+|  | `traceback` |  | opt | `string` (nullable) |
 |  | `uid` |  | opt | `integer` (nullable) |
 | `miner_task_runs` |  |  | req | array[[MinerTaskRunSubmissionModel](#model-minertaskrunsubmissionmodel)] |
 |  | `batch_id` |  | req | `string` |
@@ -2426,6 +2452,69 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "type"
   ],
   "title": "ValidationError",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-validatorinternalerrorresponse"></a>
+### Model: ValidatorInternalErrorResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `error_code` |  |  | req | `string` |
+| `error_message` |  |  | req | `string` |
+| `exception_type` |  |  | req | `string` |
+| `request_id` |  |  | req | `string` |
+| `traceback` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "error_code": {
+      "minLength": 1,
+      "title": "Error Code",
+      "type": "string"
+    },
+    "error_message": {
+      "minLength": 1,
+      "title": "Error Message",
+      "type": "string"
+    },
+    "exception_type": {
+      "minLength": 1,
+      "title": "Exception Type",
+      "type": "string"
+    },
+    "request_id": {
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "traceback": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Traceback"
+    }
+  },
+  "required": [
+    "error_code",
+    "error_message",
+    "exception_type",
+    "request_id"
+  ],
+  "title": "ValidatorInternalErrorResponse",
   "type": "object"
 }
 ```

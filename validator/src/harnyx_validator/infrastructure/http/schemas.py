@@ -292,6 +292,7 @@ class FailureDetailResponse(BaseModel):
     task_id: str | None = None
     uid: int | None = Field(default=None, ge=0)
     exception_type: str | None = None
+    traceback: str | None = None
     occurred_at: str = Field(min_length=1)
 
     @classmethod
@@ -303,8 +304,19 @@ class FailureDetailResponse(BaseModel):
             task_id=None if detail.task_id is None else str(detail.task_id),
             uid=detail.uid,
             exception_type=detail.exception_type,
+            traceback=detail.traceback,
             occurred_at=detail.occurred_at.isoformat(),
         )
+
+
+class ValidatorInternalErrorResponse(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    error_code: str = Field(min_length=1)
+    error_message: str = Field(min_length=1)
+    exception_type: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    traceback: str | None = None
 
 
 class ProviderEvidenceModel(BaseModel):
@@ -370,5 +382,6 @@ __all__ = [
     "UsageModel",
     "UsageModelEntry",
     "ValidatorModel",
+    "ValidatorInternalErrorResponse",
     "ValidatorStatusResponse",
 ]
