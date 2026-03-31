@@ -201,8 +201,18 @@ uv run --package harnyx-miner harnyx-miner-submit \
 
 - Calls `POST ${PLATFORM_BASE_URL}/v1/miners/scripts`
 - Payload: `{ "script_b64": "...", "sha256": "..." }`
+- Success response includes `content_hash`
 - Signed with: `Authorization: Bittensor ss58="…",sig="…"`
 - Signature is over: `METHOD + "\n" + PATH_QS + "\n" + sha256(body_bytes)`
+
+Verify the returned hash against your local file:
+
+```bash
+uv run --package harnyx-miner harnyx-miner-hash --agent-path ./agent.py
+```
+
+That command computes the same SHA-256 the platform validates for upload, so it should
+match the response field `content_hash`.
 
 ---
 
