@@ -42,6 +42,7 @@ from harnyx_validator.infrastructure.http.routes import (
 )
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress, RunProgressSnapshot
+from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
 
 
 def _create_test_app(
@@ -108,9 +109,28 @@ class StubStatusProvider:
         return {"status": "ok", "running": False}
 
 
+class StubResourceUsageProvider:
+    def snapshot(self) -> ValidatorResourceUsageSnapshot:
+        return ValidatorResourceUsageSnapshot(
+            captured_at=datetime(2026, 3, 31, 6, 42, tzinfo=UTC),
+            cpu_percent=12.5,
+            memory_used_bytes=512,
+            memory_total_bytes=2048,
+            memory_percent=25.0,
+            disk_used_bytes=4096,
+            disk_total_bytes=8192,
+            disk_percent=50.0,
+        )
+
+
 class _ExplodingStatusProvider:
     def snapshot(self) -> dict[str, object]:
         raise RuntimeError("status exploded")
+
+
+class _ExplodingResourceUsageProvider:
+    def snapshot(self) -> ValidatorResourceUsageSnapshot:
+        raise RuntimeError("resource usage exploded")
 
 
 class FakeProgressTracker:
@@ -132,6 +152,7 @@ class DemoControlDependencyProvider:
         failure_detail: ValidatorBatchFailureDetail | None = None,
         validator_hotkey: _StubHotkey | None = None,
         status_provider: StatusProvider | None = None,
+        resource_usage_provider: object | None = None,
     ) -> None:
         self.accept_batch = StubAcceptBatch(
             lifecycle=lifecycle,
@@ -144,6 +165,9 @@ class DemoControlDependencyProvider:
             auth=_allow_all_auth if auth is None else auth,
             progress_tracker=FakeProgressTracker(snapshot=snapshot),
             validator_hotkey=validator_hotkey or _StubHotkey(),
+            resource_usage_provider=(
+                StubResourceUsageProvider() if resource_usage_provider is None else resource_usage_provider
+            ),
         )
 
     def __call__(self) -> ValidatorControlDeps:
@@ -167,6 +191,7 @@ class RealAcceptBatchDependencyProvider:
             auth=_allow_all_auth,
             progress_tracker=self.progress_tracker,
             validator_hotkey=self.validator_hotkey,
+            resource_usage_provider=StubResourceUsageProvider(),
         )
 
     def __call__(self) -> ValidatorControlDeps:
@@ -222,6 +247,16 @@ def test_status_endpoint_awaits_auth_with_request_primitives() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert response.json()["hotkey"] == "5validator"
+    assert response.json()["resource_usage"] == {
+        "captured_at": "2026-03-31T06:42:00+00:00",
+        "cpu_percent": 12.5,
+        "memory_used_bytes": 512,
+        "memory_total_bytes": 2048,
+        "memory_percent": 25.0,
+        "disk_used_bytes": 4096,
+        "disk_total_bytes": 8192,
+        "disk_percent": 50.0,
+    }
     assert auth_calls == [(
         "GET",
         "/validator/status?verbose=1",
@@ -653,6 +688,42 @@ def test_signed_validator_route_internal_error_returns_structured_payload_and_ca
     assert "RuntimeError: status exploded" in response.json()["traceback"]
     assert len(captured) == 1
     assert str(captured[0]) == "status exploded"
+
+
+def test_status_route_tolerates_resource_usage_sampling_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot: RunProgressSnapshot = {
+        "batch_id": uuid4(),
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(
+        snapshot=snapshot,
+        resource_usage_provider=_ExplodingResourceUsageProvider(),
+    )
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        routes_mod.logger,
+        "exception",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+    client = TestClient(_create_test_app(provider), raise_server_exceptions=False)
+
+    response = client.get(
+        "/validator/status",
+        headers={"Authorization": 'Bittensor ss58="5demo",sig="00"'},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["hotkey"] == "5validator"
+    assert response.json()["resource_usage"] is None
+    assert len(captured) == 1
 
 
 def test_validator_route_internal_error_before_auth_success_falls_back_to_generic_500() -> None:

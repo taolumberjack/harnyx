@@ -516,3 +516,29 @@ async def test_make_control_provider_verifies_request_inline(monkeypatch: pytest
         "authorization_header": 'Bittensor ss58="5demo",sig="00"',
         },
     )]
+
+
+def test_make_control_provider_reuses_fallback_resource_usage_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[object] = []
+
+    class _StubResourceUsageProvider:
+        def __init__(self) -> None:
+            created.append(self)
+
+    monkeypatch.setattr(bootstrap, "ValidatorResourceUsageProvider", _StubResourceUsageProvider)
+
+    provider = bootstrap._make_control_provider(
+        AcceptEvaluationBatch(InMemoryBatchInbox(), StatusProvider(), InMemoryRunProgress()),
+        StatusProvider(),
+        object(),
+        InMemoryRunProgress(),
+        _StubHotkey(),
+    )
+
+    first = provider()
+    second = provider()
+
+    assert len(created) == 1
+    assert first.resource_usage_provider is second.resource_usage_provider

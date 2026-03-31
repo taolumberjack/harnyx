@@ -210,6 +210,15 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 | `last_weight_error` |  |  | opt | `string` (nullable) |
 | `last_weight_submission_at` |  |  | opt | `string` (nullable) |
 | `queued_batches` |  |  | opt | `integer` (default: 0) |
+| `resource_usage` |  |  | opt | [ValidatorResourceUsageResponse](#model-validatorresourceusageresponse) (nullable) |
+|  | `captured_at` |  | req | `string` |
+|  | `cpu_percent` |  | req | `number` |
+|  | `disk_percent` |  | req | `number` |
+|  | `disk_total_bytes` |  | req | `integer` |
+|  | `disk_used_bytes` |  | req | `integer` |
+|  | `memory_percent` |  | req | `number` |
+|  | `memory_total_bytes` |  | req | `integer` |
+|  | `memory_used_bytes` |  | req | `integer` |
 | `running` |  |  | opt | `boolean` (default: False) |
 | `signature_hex` |  |  | opt | `string` (nullable) |
 | `status` |  |  | req | `string` |
@@ -2551,6 +2560,85 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 </details>
 
+<a id="model-validatorresourceusageresponse"></a>
+### Model: ValidatorResourceUsageResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `captured_at` |  |  | req | `string` |
+| `cpu_percent` |  |  | req | `number` |
+| `disk_percent` |  |  | req | `number` |
+| `disk_total_bytes` |  |  | req | `integer` |
+| `disk_used_bytes` |  |  | req | `integer` |
+| `memory_percent` |  |  | req | `number` |
+| `memory_total_bytes` |  |  | req | `integer` |
+| `memory_used_bytes` |  |  | req | `integer` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "captured_at": {
+      "minLength": 1,
+      "title": "Captured At",
+      "type": "string"
+    },
+    "cpu_percent": {
+      "minimum": 0.0,
+      "title": "Cpu Percent",
+      "type": "number"
+    },
+    "disk_percent": {
+      "minimum": 0.0,
+      "title": "Disk Percent",
+      "type": "number"
+    },
+    "disk_total_bytes": {
+      "minimum": 0.0,
+      "title": "Disk Total Bytes",
+      "type": "integer"
+    },
+    "disk_used_bytes": {
+      "minimum": 0.0,
+      "title": "Disk Used Bytes",
+      "type": "integer"
+    },
+    "memory_percent": {
+      "minimum": 0.0,
+      "title": "Memory Percent",
+      "type": "number"
+    },
+    "memory_total_bytes": {
+      "minimum": 0.0,
+      "title": "Memory Total Bytes",
+      "type": "integer"
+    },
+    "memory_used_bytes": {
+      "minimum": 0.0,
+      "title": "Memory Used Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "captured_at",
+    "cpu_percent",
+    "memory_used_bytes",
+    "memory_total_bytes",
+    "memory_percent",
+    "disk_used_bytes",
+    "disk_total_bytes",
+    "disk_percent"
+  ],
+  "title": "ValidatorResourceUsageResponse",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-validatorstatusresponse"></a>
 ### Model: ValidatorStatusResponse
 
@@ -2564,6 +2652,15 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `last_weight_error` |  |  | opt | `string` (nullable) |
 | `last_weight_submission_at` |  |  | opt | `string` (nullable) |
 | `queued_batches` |  |  | opt | `integer` (default: 0) |
+| `resource_usage` |  |  | opt | [ValidatorResourceUsageResponse](#model-validatorresourceusageresponse) (nullable) |
+|  | `captured_at` |  | req | `string` |
+|  | `cpu_percent` |  | req | `number` |
+|  | `disk_percent` |  | req | `number` |
+|  | `disk_total_bytes` |  | req | `integer` |
+|  | `disk_used_bytes` |  | req | `integer` |
+|  | `memory_percent` |  | req | `number` |
+|  | `memory_total_bytes` |  | req | `integer` |
+|  | `memory_used_bytes` |  | req | `integer` |
 | `running` |  |  | opt | `boolean` (default: False) |
 | `signature_hex` |  |  | opt | `string` (nullable) |
 | `status` |  |  | req | `string` |
@@ -2651,6 +2748,16 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minimum": 0.0,
       "title": "Queued Batches",
       "type": "integer"
+    },
+    "resource_usage": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ValidatorResourceUsageResponse"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "running": {
       "default": false,

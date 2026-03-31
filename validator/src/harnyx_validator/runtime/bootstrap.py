@@ -76,6 +76,7 @@ from harnyx_validator.infrastructure.subtensor.client import RuntimeSubtensorCli
 from harnyx_validator.infrastructure.subtensor.hotkey import create_wallet
 from harnyx_validator.infrastructure.tools.platform_client import HttpPlatformClient
 from harnyx_validator.runtime.registration_metadata import resolve_validator_registration_metadata
+from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageProvider
 from harnyx_validator.runtime.settings import Settings
 
 logger = logging.getLogger("harnyx_validator.runtime")
@@ -495,6 +496,7 @@ def _build_http_dependencies(
     BittensorSr25519InboundVerifier,
 ]:
     status_provider = StatusProvider()
+    resource_usage_provider = ValidatorResourceUsageProvider()
     inbound_auth = _build_inbound_auth(resolved, status_provider=status_provider)
     tool_route_provider = _make_dependency_provider(
         tool_executor,
@@ -507,6 +509,7 @@ def _build_http_dependencies(
         inbound_auth,
         state.progress_tracker,
         validator_hotkey,
+        resource_usage_provider,
     )
     return tool_route_provider, control_provider, status_provider, inbound_auth
 
@@ -615,7 +618,10 @@ def _make_control_provider(
     inbound_auth: BittensorSr25519InboundVerifier,
     progress_tracker: InMemoryRunProgress,
     validator_hotkey: bt.Keypair,
+    resource_usage_provider: ValidatorResourceUsageProvider | None = None,
 ) -> Callable[[], ValidatorControlDeps]:
+    effective_resource_usage_provider = resource_usage_provider or ValidatorResourceUsageProvider()
+
     async def auth(
         method: str,
         path_qs: str,
@@ -638,6 +644,7 @@ def _make_control_provider(
             auth=auth,
             progress_tracker=progress_tracker,
             validator_hotkey=cast(StatusSigner, validator_hotkey),
+            resource_usage_provider=effective_resource_usage_provider,
         )
 
     return provider

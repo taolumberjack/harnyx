@@ -46,10 +46,12 @@ from harnyx_validator.infrastructure.http.schemas import (
     UsageModelEntry,
     ValidatorInternalErrorResponse,
     ValidatorModel,
+    ValidatorResourceUsageResponse,
     ValidatorStatusResponse,
 )
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 from harnyx_validator.infrastructure.state.run_progress import RunProgressSnapshot
+from harnyx_validator.runtime.resource_usage import ValidatorResourceUsageSnapshot
 
 logger = logging.getLogger("harnyx_validator.http")
 _STATUS_PATH = "/validator/status"
@@ -72,6 +74,7 @@ class ValidatorControlDeps:
     auth: ControlRouteAuth
     progress_tracker: ProgressTracker
     validator_hotkey: StatusSigner
+    resource_usage_provider: ResourceUsageProvider
 
 
 class ProgressTracker(Protocol):
@@ -83,6 +86,11 @@ class StatusSigner(Protocol):
     ss58_address: str
 
     def sign(self, payload: bytes) -> bytes:
+        ...
+
+
+class ResourceUsageProvider(Protocol):
+    def snapshot(self) -> ValidatorResourceUsageSnapshot:
         ...
 
 
@@ -304,6 +312,7 @@ def add_control_routes(
             response = ValidatorStatusResponse(
                 **snapshot,
                 hotkey=deps.validator_hotkey.ss58_address,
+                resource_usage=_safe_resource_usage_response(deps.resource_usage_provider),
             )
             request_ts = request.headers.get(_STATUS_TIMESTAMP_HEADER)
             if request_ts is None:
@@ -471,6 +480,31 @@ def _serialize_usage_block(usage: TokenUsageSummary) -> UsageModel:
         call_count=usage.call_count,
         by_provider=_serialize_usage_providers(usage),
     )
+
+
+def _serialize_resource_usage(
+    snapshot: ValidatorResourceUsageSnapshot,
+) -> ValidatorResourceUsageResponse:
+    return ValidatorResourceUsageResponse(
+        captured_at=snapshot.captured_at.isoformat(),
+        cpu_percent=snapshot.cpu_percent,
+        memory_used_bytes=snapshot.memory_used_bytes,
+        memory_total_bytes=snapshot.memory_total_bytes,
+        memory_percent=snapshot.memory_percent,
+        disk_used_bytes=snapshot.disk_used_bytes,
+        disk_total_bytes=snapshot.disk_total_bytes,
+        disk_percent=snapshot.disk_percent,
+    )
+
+
+def _safe_resource_usage_response(
+    provider: ResourceUsageProvider,
+) -> ValidatorResourceUsageResponse | None:
+    try:
+        return _serialize_resource_usage(provider.snapshot())
+    except Exception:
+        logger.exception("validator resource usage sampling failed")
+        return None
 
 
 def _build_status_proof_payload(

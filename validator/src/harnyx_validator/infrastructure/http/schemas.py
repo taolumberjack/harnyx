@@ -350,6 +350,19 @@ class ProgressResponse(BaseModel):
     provider_model_evidence: list[ProviderEvidenceModel] = Field(default_factory=list)
 
 
+class ValidatorResourceUsageResponse(BaseModel):
+    model_config = VALIDATOR_STRICT_CONFIG
+
+    captured_at: str = Field(min_length=1)
+    cpu_percent: float = Field(ge=0.0)
+    memory_used_bytes: int = Field(ge=0)
+    memory_total_bytes: int = Field(ge=0)
+    memory_percent: float = Field(ge=0.0)
+    disk_used_bytes: int = Field(ge=0)
+    disk_total_bytes: int = Field(ge=0)
+    disk_percent: float = Field(ge=0.0)
+
+
 class ValidatorStatusResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
@@ -363,6 +376,7 @@ class ValidatorStatusResponse(BaseModel):
     last_error: str | None = None
     last_weight_submission_at: str | None = None
     last_weight_error: str | None = None
+    resource_usage: ValidatorResourceUsageResponse | None = None
     signature_hex: str | None = None
 
 
@@ -382,6 +396,7 @@ __all__ = [
     "UsageModel",
     "UsageModelEntry",
     "ValidatorModel",
+    "ValidatorResourceUsageResponse",
     "ValidatorInternalErrorResponse",
     "ValidatorStatusResponse",
 ]
