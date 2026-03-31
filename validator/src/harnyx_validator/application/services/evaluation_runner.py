@@ -12,6 +12,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+import httpx
+
 from harnyx_commons.application.dto.session import SessionEnvelope, SessionIssued, SessionTokenRequest
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.session_manager import SessionManager
@@ -334,6 +336,20 @@ class EvaluationRunner:
                     )
                     continue
 
+                if classification.kind is FailureKind.TASK_FAILURE:
+                    return _submission_decision(
+                        self._record_task_failure(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            session_id=issued.session.session_id,
+                            error_code=classification.error_code,
+                            error_message=classification.error_message,
+                            log_message=classification.log_message,
+                            exc=_retry_exception_for_classification(classification),
+                        )
+                    )
+
                 if classification.kind is FailureKind.ARTIFACT_FAILURE:
                     return _artifact_failure_decision(
                         classification=classification,
@@ -595,6 +611,8 @@ class EvaluationRunner:
             exc=exc,
             provider_failures=provider_failures,
         )
+        if classification.retryable:
+            return _failure_decision(classification)
         if classification.kind is FailureKind.TASK_FAILURE:
             return _submission_decision(
                 self._record_task_failure(
@@ -632,6 +650,15 @@ class EvaluationRunner:
                 error_code="scoring_llm_retry_exhausted",
                 error_message=str(exc),
                 log_message="validator scoring provider retries exhausted",
+                exc=exc,
+            )
+        if isinstance(exc, httpx.TimeoutException):
+            return FailureClassification(
+                kind=FailureKind.TASK_FAILURE,
+                error_code="validator_internal_timeout",
+                error_message=str(exc) or type(exc).__name__,
+                log_message="validator internal timeout during task evaluation",
+                retryable=True,
                 exc=exc,
             )
         if isinstance(exc, MinerResponseValidationError):

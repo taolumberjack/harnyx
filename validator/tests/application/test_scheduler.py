@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from threading import Event
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 
 import harnyx_validator.application.scheduler as scheduler_module
@@ -557,6 +558,60 @@ async def test_scheduler_fails_batch_for_generic_post_invoke_error(
     assert exc_info.value.error_code == "unexpected_validator_failure"
     assert orchestrator.calls == 1
     assert evaluation_records.records_by_batch == []
+
+
+async def test_scheduler_records_retry_exhausted_internal_timeout_as_task_failure(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    tasks = (_task("first"),)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+
+    class AlwaysTimeoutOrchestrator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate(self, request):
+            self.calls += 1
+            raise httpx.ReadTimeout(
+                "embedding timed out",
+                request=httpx.Request("POST", "https://validator.invalid/scoring"),
+            )
+
+    orchestrator = AlwaysTimeoutOrchestrator()
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: orchestrator,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifacts = (ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+
+    assert orchestrator.calls == 2
+    assert len(result.runs) == 1
+    assert result.runs[0].score == 0.0
+    assert result.runs[0].run.response is None
+    assert result.runs[0].run.details.error is not None
+    assert result.runs[0].run.details.error.code == "validator_internal_timeout"
+    assert result.runs[0].run.details.error.message == "embedding timed out"
+    assert evaluation_records.records_by_batch == list(result.runs)
 
 
 async def test_scheduler_retries_sandbox_start_once_before_running_tasks(

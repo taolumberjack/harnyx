@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from harnyx_commons.application.session_manager import SessionManager
@@ -303,6 +304,50 @@ class _GenericFailureOrchestrator:
         raise RuntimeError("scoring failed")
 
 
+class _TimeoutThenSuccessOrchestrator:
+    def __init__(
+        self,
+        *,
+        sessions: FakeSessionRegistry,
+    ) -> None:
+        self._sessions = sessions
+        self.calls = 0
+        self.session_ids: list = []
+
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        self.calls += 1
+        self.session_ids.append(request.session_id)
+        session = self._sessions.get(request.session_id)
+        assert session is not None
+        if self.calls == 1:
+            raise httpx.ReadTimeout(
+                "embedding timed out",
+                request=httpx.Request("POST", "https://validator.invalid/scoring"),
+            )
+        return _successful_outcome(request)
+
+
+class _AlwaysTimeoutOrchestrator:
+    def __init__(
+        self,
+        *,
+        sessions: FakeSessionRegistry,
+    ) -> None:
+        self._sessions = sessions
+        self.calls = 0
+        self.session_ids: list = []
+
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        self.calls += 1
+        self.session_ids.append(request.session_id)
+        session = self._sessions.get(request.session_id)
+        assert session is not None
+        raise httpx.ReadTimeout(
+            "embedding timed out",
+            request=httpx.Request("POST", "https://validator.invalid/scoring"),
+        )
+
+
 class _RetryThenExhaustedOrchestrator:
     def __init__(
         self,
@@ -582,6 +627,103 @@ async def test_evaluation_runner_fails_batch_on_generic_post_invoke_failure() ->
     assert exc_info.value.error_code == "unexpected_validator_failure"
     assert orchestrator.calls == 1
     assert evaluation_store.records == []
+
+
+async def test_evaluation_runner_retries_internal_timeout_with_same_session() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="timeout retry"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    orchestrator = _TimeoutThenSuccessOrchestrator(
+        sessions=session_registry,
+    )
+
+    submissions = await runner.evaluate_artifact(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, orchestrator),
+    )
+
+    assert orchestrator.calls == 2
+    assert len(set(orchestrator.session_ids)) == 1
+    assert len(submissions) == 1
+    submission = submissions[0]
+    assert submission.run.session_id == orchestrator.session_ids[0]
+    assert submission.score == pytest.approx(0.75)
+    assert submission.run.response is not None
+    assert evaluation_store.records == [submission]
+
+
+async def test_evaluation_runner_records_timeout_submission_after_retry_exhaustion() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="timeout exhausted"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    orchestrator = _AlwaysTimeoutOrchestrator(
+        sessions=session_registry,
+    )
+
+    submissions = await runner.evaluate_artifact(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, orchestrator),
+    )
+
+    assert orchestrator.calls == 2
+    assert len(set(orchestrator.session_ids)) == 1
+    assert len(submissions) == 1
+    submission = submissions[0]
+    assert submission.run.session_id == orchestrator.session_ids[0]
+    assert submission.score == 0.0
+    assert submission.run.response is None
+    assert submission.run.details.error is not None
+    assert submission.run.details.error.code == "validator_internal_timeout"
+    assert submission.run.details.error.message == "embedding timed out"
+    assert evaluation_store.records == [submission]
 
 
 async def test_evaluation_runner_records_budget_exhausted_when_retry_starts_near_limit() -> None:
