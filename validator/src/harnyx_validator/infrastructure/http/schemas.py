@@ -283,6 +283,17 @@ class MinerTaskRunSubmissionModel(BaseModel):
     specifics: EvaluationDetails
 
 
+def _serialize_failure_detail_message(detail: ValidatorBatchFailureDetail) -> str:
+    error_message = detail.error_message.strip()
+    if error_message:
+        return error_message
+    if detail.exception_type is not None:
+        exception_type = detail.exception_type.strip()
+        if exception_type:
+            return exception_type
+    return detail.error_code
+
+
 class FailureDetailResponse(BaseModel):
     model_config = VALIDATOR_STRICT_CONFIG
 
@@ -299,7 +310,7 @@ class FailureDetailResponse(BaseModel):
     def from_domain(cls, detail: ValidatorBatchFailureDetail) -> FailureDetailResponse:
         return cls(
             error_code=detail.error_code,
-            error_message=detail.error_message,
+            error_message=_serialize_failure_detail_message(detail),
             artifact_id=None if detail.artifact_id is None else str(detail.artifact_id),
             task_id=None if detail.task_id is None else str(detail.task_id),
             uid=detail.uid,

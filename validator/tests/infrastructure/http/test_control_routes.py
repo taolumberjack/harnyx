@@ -618,6 +618,59 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
     ]
 
 
+def test_progress_endpoint_replaces_blank_failure_message_at_transport_boundary() -> None:
+    batch_id = uuid4()
+    task, submission = _make_task_submission(batch_id=batch_id)
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 1,
+        "completed": 1,
+        "remaining": 0,
+        "tasks": (task,),
+        "miner_task_runs": (submission,),
+        "provider_evidence": (),
+    }
+
+    provider = DemoControlDependencyProvider(
+        snapshot=snapshot,
+        lifecycle="failed",
+        error_code="unexpected_validator_failure",
+        failure_detail=ValidatorBatchFailureDetail(
+            error_code="unexpected_validator_failure",
+            error_message="",
+            occurred_at=datetime(2026, 3, 31, 9, 26, tzinfo=UTC),
+            artifact_id=submission.run.artifact_id,
+            task_id=submission.run.task_id,
+            uid=submission.run.uid,
+            exception_type="ReadTimeout",
+            traceback=None,
+        ),
+    )
+    app = _create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/progress")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["batch_id"] == str(batch_id)
+    assert body["status"] == "failed"
+    assert body["error_code"] == "unexpected_validator_failure"
+    assert body["failure_detail"] == {
+        "error_code": "unexpected_validator_failure",
+        "error_message": "ReadTimeout",
+        "artifact_id": str(submission.run.artifact_id),
+        "task_id": str(submission.run.task_id),
+        "uid": submission.run.uid,
+        "exception_type": "ReadTimeout",
+        "traceback": None,
+        "occurred_at": "2026-03-31T09:26:00+00:00",
+    }
+    assert body["total"] == 1
+    assert body["completed"] == 1
+    assert body["remaining"] == 0
+
+
 def test_progress_endpoint_converts_partial_progress_serialization_failure_to_valid_failed_payload() -> None:
     batch_id = uuid4()
     _task, submission = _make_task_submission(batch_id=batch_id)
