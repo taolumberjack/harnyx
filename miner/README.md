@@ -96,6 +96,73 @@ async def query(query: Query) -> Response:
 
 The `query` entrypoint must stay `async def`, accept exactly one parameter annotated as `Query`, and return `Response`. The parameter name itself does not matter.
 
+`Response.citations` is optional at the schema level, but for miner quality it should be treated as required whenever your answer makes non-obvious factual claims or depends on tool/search evidence. Answers without citations only make sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are material to the response. When present, `Response.citations` is capped at 50 refs; if you return more than 50, the response is invalid.
+
+When your answer depends on a tool result that should be carried forward into scoring or monitoring, return receipt refs rather than freeform URLs:
+
+```python
+from harnyx_miner_sdk.query import CitationRef, Query, Response
+
+
+@entrypoint("query")
+async def query(query: Query) -> Response:
+    return Response(
+        text="...",
+        citations=[CitationRef(receipt_id="receipt-123", result_id="result-abc")],
+    )
+```
+
+Keep citations targeted at the claims your argument materially depends on. They are not a citation-count contest, and answers for obvious questions can still omit them.
+
+#### How to extract `receipt_id` and `result_id`
+
+Hosted tools return a tool-call envelope plus referenceable results. You need both pieces:
+
+- `receipt_id`: the tool call
+- `result_id`: the specific result that supports the claim
+
+Example with `search_web`:
+
+```python
+from harnyx_miner_sdk.api import search_web
+from harnyx_miner_sdk.query import CitationRef, Query, Response
+
+
+@entrypoint("query")
+async def query(query: Query) -> Response:
+    search = await search_web(query.text, num=5)
+    result = search.results[0]
+    return Response(
+        text=f"{result.title}: {result.note}",
+        citations=[
+            CitationRef(
+                receipt_id=search.receipt_id,
+                result_id=result.result_id,
+            )
+        ],
+    )
+```
+
+The fields to read are:
+
+```python
+search.receipt_id
+search.results[i].result_id
+search.results[i].url
+search.results[i].title
+search.results[i].note
+```
+
+Workflow:
+
+1. Call a hosted tool.
+2. Pick the result that actually supports the claim you are making.
+3. Use the tool call's `receipt_id`.
+4. Use that supporting result's `result_id`.
+5. Return only the targeted supporting refs in `Response.citations`, keeping the list at 50 or fewer.
+
+Do not cite every tool result you saw. Cite only the specific results that carry the load-bearing facts in your answer. Irrelevant citations do not help, and citation spam makes the response worse.
+
 #### Tools and budgeting
 
 Miner evaluations run under a per-session budget, and that budget **may vary between evaluations** — don’t assume a fixed value.

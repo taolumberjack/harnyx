@@ -8,14 +8,21 @@ import pytest
 
 from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.miner_task import Query, Response
-from harnyx_commons.domain.tool_call import ReceiptMetadata, ToolCall, ToolCallOutcome
+from harnyx_commons.domain.miner_task import AnswerCitation, Query, Response
+from harnyx_commons.domain.tool_call import (
+    ReceiptMetadata,
+    SearchToolResult,
+    ToolCall,
+    ToolCallOutcome,
+    ToolResultPolicy,
+)
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.sandbox.client import SandboxInvokeError
 from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest
 from harnyx_validator.application.invoke_entrypoint import (
     EntrypointInvoker,
+    MinerResponseValidationError,
     SandboxClient,
     SandboxInvocationError,
 )
@@ -141,6 +148,91 @@ async def test_invoke_entrypoint_returns_tool_receipts() -> None:
     assert result.tool_receipts == (receipt,)
 
 
+async def test_invoke_entrypoint_hydrates_same_session_citations() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, receipt_log = _build_invoker(token)
+    receipt = ToolCall(
+        receipt_id="receipt-1",
+        session_id=session_id,
+        uid=42,
+        tool="search_web",
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        metadata=ReceiptMetadata(
+            request_hash="req",
+            response_hash="res",
+            result_policy=ToolResultPolicy.REFERENCEABLE,
+            results=(
+                SearchToolResult(
+                    index=0,
+                    result_id="result-1",
+                    url="https://example.com/source",
+                    note="Primary source",
+                    title="Example source",
+                ),
+            ),
+        ),
+    )
+    receipt_log.record(receipt)
+    sandbox.response = {
+        "text": "Answer",
+        "citations": [{"receipt_id": "receipt-1", "result_id": "result-1"}],
+    }
+
+    result = await invoker.invoke(
+        EntrypointInvocationRequest(
+            session_id=session_id,
+            token=token,
+            uid=42,
+            query=Query(text="hello"),
+        ),
+    )
+
+    assert result.response == Response(
+        text="Answer",
+        citations=(
+            AnswerCitation(
+                url="https://example.com/source",
+                note="Primary source",
+                title="Example source",
+            ),
+        ),
+    )
+
+
+async def test_invoke_entrypoint_normalizes_null_citations_to_absent() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
+    sandbox.response = {"text": "Answer", "citations": None}
+
+    result = await invoker.invoke(
+        EntrypointInvocationRequest(
+            session_id=session_id,
+            token=token,
+            uid=42,
+            query=Query(text="hello"),
+        ),
+    )
+
+    assert result.response == Response(text="Answer")
+
+
+async def test_invoke_entrypoint_rejects_extra_top_level_response_fields() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
+    sandbox.response = {"text": "Answer", "unexpected": "field"}
+
+    with pytest.raises(MinerResponseValidationError):
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                query=Query(text="hello"),
+            ),
+        )
+
+
 async def test_invoke_entrypoint_rejects_invalid_token() -> None:
     valid_token = uuid4().hex
     invalid_token = uuid4().hex
@@ -153,6 +245,44 @@ async def test_invoke_entrypoint_rejects_invalid_token() -> None:
                 token=invalid_token,
                 uid=42,
                 query=Query(text="demo"),
+            ),
+        )
+
+
+async def test_invoke_entrypoint_rejects_whitespace_only_response_text() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
+    sandbox.response = {"text": "   "}
+
+    with pytest.raises(MinerResponseValidationError):
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                query=Query(text="hello"),
+            ),
+        )
+
+
+async def test_invoke_entrypoint_rejects_more_than_fifty_citations() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
+    sandbox.response = {
+        "text": "Answer",
+        "citations": [
+            {"receipt_id": f"receipt-{index}", "result_id": f"result-{index}"}
+            for index in range(51)
+        ],
+    }
+
+    with pytest.raises(MinerResponseValidationError):
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                query=Query(text="hello"),
             ),
         )
 

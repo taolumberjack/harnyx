@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from harnyx_commons.application.miner_response_hydration import hydrate_miner_response_payload
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.application.ports.token_registry import TokenRegistryPort
@@ -67,7 +68,11 @@ class EntrypointInvoker:
         self._raise_if_session_exhausted(session.session_id)
         receipts = tuple(self._receipts.for_session(session.session_id))
         try:
-            response = Response.model_validate(payload, strict=True)
+            response = _hydrate_miner_response(
+                payload,
+                session_id=session.session_id,
+                receipt_log=self._receipts,
+            )
         except ValidationError as exc:
             raise MinerResponseValidationError("miner returned invalid response payload") from exc
         return EntrypointInvocationResult(
@@ -146,6 +151,19 @@ class EntrypointInvoker:
         if session is None:
             raise LookupError(f"session {session_id} not found after entrypoint invocation")
         return session
+
+
+def _hydrate_miner_response(
+    payload: object,
+    *,
+    session_id: UUID,
+    receipt_log: ReceiptLogPort,
+) -> Response:
+    return hydrate_miner_response_payload(
+        payload,
+        session_id=session_id,
+        receipt_log=receipt_log,
+    )
 
 
 __all__ = [

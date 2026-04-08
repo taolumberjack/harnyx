@@ -9,7 +9,13 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
-from harnyx_commons.domain.miner_task import MinerTask, Response, ScoreBreakdown
+from harnyx_commons.domain.miner_task import (
+    AnswerCitation,
+    MinerTask,
+    ReferenceAnswer,
+    Response,
+    ScoreBreakdown,
+)
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import LlmProviderName
@@ -17,10 +23,16 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 
 _COMPARISON_WEIGHT = 0.5
 _SIMILARITY_WEIGHT = 0.5
+_MAX_RENDERED_CITATIONS = 8
 _PAIRWISE_SYSTEM_PROMPT = (
     "You are a strict evaluator comparing two answers to the same query. "
     "Choose the answer that better answers the query with stronger factual correctness, "
-    "coverage, and directness. Ignore writing style unless it affects correctness. "
+    "coverage, and directness. Where an answer's argument depends on a factual claim "
+    "or non-obvious connection, treat the presence or absence of supporting evidence "
+    "for that claim as part of its factual correctness. Too many irrelevant citations "
+    "should count against answer quality; if two answers are otherwise similar and "
+    "well supported, prefer the one whose citations are more targeted and relevant. "
+    "Ignore writing style unless it affects correctness. "
     "Do not explain your choice. Return JSON only."
 )
 
@@ -70,8 +82,8 @@ class EvaluationScoringService:
         )
         comparison_score = await self._score_pairwise(
             query_text=task.query.text,
-            miner_response=response.text,
-            reference_response=task.reference_answer.text,
+            miner_response=response,
+            reference_response=task.reference_answer,
         )
         total_score = self._combine_scores(
             comparison_score=comparison_score,
@@ -100,8 +112,8 @@ class EvaluationScoringService:
         self,
         *,
         query_text: str,
-        miner_response: str,
-        reference_response: str,
+        miner_response: Response,
+        reference_response: ReferenceAnswer,
     ) -> float:
         miner_first = await self._judge_pair(
             query_text=query_text,
@@ -124,13 +136,13 @@ class EvaluationScoringService:
         self,
         *,
         query_text: str,
-        first_answer: str,
-        second_answer: str,
+        first_answer: Response | ReferenceAnswer,
+        second_answer: Response | ReferenceAnswer,
     ) -> _PairwisePreference:
         user_prompt = (
             f"Query:\n{query_text}\n\n"
-            f"Answer 1:\n{first_answer}\n\n"
-            f"Answer 2:\n{second_answer}\n\n"
+            f"Answer 1:\n{_render_answer_for_judge(first_answer)}\n\n"
+            f"Answer 2:\n{_render_answer_for_judge(second_answer)}\n\n"
             'Return JSON with {"preferred_position":"first"} or {"preferred_position":"second"}.'
         )
         request = LlmRequest(
@@ -208,6 +220,41 @@ def _cosine_similarity(left: tuple[float, ...], right: tuple[float, ...]) -> flo
 def _normalize_similarity(cosine_similarity: float) -> float:
     normalized_similarity = (cosine_similarity + 1.0) / 2.0
     return round(max(0.0, min(1.0, normalized_similarity)), 6)
+
+
+def _render_answer_for_judge(answer: Response | ReferenceAnswer) -> str:
+    citations = _bounded_unique_citations(answer.citations)
+    if not citations:
+        return answer.text
+    lines = [answer.text, "", "Citations:"]
+    for index, citation in enumerate(citations, start=1):
+        lines.append(_render_citation_line(index=index, citation=citation))
+    return "\n".join(lines)
+
+
+def _bounded_unique_citations(
+    citations: tuple[AnswerCitation, ...] | None,
+) -> tuple[AnswerCitation, ...]:
+    if not citations:
+        return ()
+    unique: list[AnswerCitation] = []
+    seen_urls: set[str] = set()
+    for citation in citations:
+        if citation.url in seen_urls:
+            continue
+        seen_urls.add(citation.url)
+        unique.append(citation)
+        if len(unique) == _MAX_RENDERED_CITATIONS:
+            break
+    return tuple(unique)
+
+
+def _render_citation_line(*, index: int, citation: AnswerCitation) -> str:
+    line = f"{index}. {citation.url}"
+    extras = [value for value in (citation.title, citation.note) if value]
+    if extras:
+        line += f" - {' | '.join(extras)}"
+    return line
 
 
 __all__ = [

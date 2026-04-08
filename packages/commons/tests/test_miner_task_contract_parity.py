@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from harnyx_commons.domain.miner_task import AnswerCitation
 from harnyx_commons.domain.miner_task import Query as CommonsQuery
 from harnyx_commons.domain.miner_task import Response as CommonsResponse
+from harnyx_miner_sdk.query import CitationRef
 from harnyx_miner_sdk.query import Query as MinerSdkQuery
 from harnyx_miner_sdk.query import Response as MinerSdkResponse
 
@@ -22,5 +24,13 @@ def test_query_contract_matches_miner_sdk_boundary() -> None:
 
 
 def test_response_contract_matches_miner_sdk_boundary() -> None:
-    assert CommonsResponse.model_json_schema() == MinerSdkResponse.model_json_schema()
+    commons_schema = CommonsResponse.model_json_schema()
+    sdk_schema = MinerSdkResponse.model_json_schema()
+
+    assert commons_schema != sdk_schema
     assert _relevant_model_config(CommonsResponse) == _relevant_model_config(MinerSdkResponse)
+    assert CommonsResponse(text="hello", citations=(AnswerCitation(url="https://example.com"),))
+    assert MinerSdkResponse(
+        text="hello",
+        citations=[CitationRef(receipt_id="receipt-1", result_id="result-1")],
+    )

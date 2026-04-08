@@ -133,6 +133,7 @@ def _submission(
     task: MinerTask,
     score: float,
     answer_text: str,
+    citations: tuple[dict[str, str], ...] | None = None,
     attempt_count: int = 1,
 ) -> MinerTaskRunSubmission:
     usage_totals = _usage_totals()
@@ -145,7 +146,7 @@ def _submission(
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task_id=task.task_id,
-            response=Response(text=answer_text),
+            response=Response(text=answer_text, citations=citations),
             details=EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
                     comparison_score=score,
@@ -375,6 +376,13 @@ class _FakeRuntime:
                     task=task,
                     score=score,
                     answer_text=f"{prefix} answer {index}",
+                    citations=(
+                        {
+                            "url": f"https://example.com/{prefix}/{index}",
+                            "title": f"{prefix.title()} source {index}",
+                            "note": f"{prefix.title()} note {index}",
+                        },
+                    ),
                     attempt_count=2 if prefix == "target" and index == 0 else 1,
                 )
                 for index, (task, score) in enumerate(zip(tasks, scores, strict=True))
@@ -514,7 +522,21 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     batch_id = uuid4()
     champion_artifact_id = uuid4()
     tasks = (
-        _task(uuid4(), "task one"),
+        MinerTask(
+            task_id=uuid4(),
+            query=Query(text="task one"),
+            reference_answer=ReferenceAnswer(
+                text="reference for task one",
+                citations=(
+                    {
+                        "url": "https://example.com/reference",
+                        "title": "Reference source",
+                        "note": "Reference support",
+                    },
+                ),
+            ),
+            budget_usd=0.5,
+        ),
         _task(uuid4(), "task two"),
     )
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
@@ -576,12 +598,49 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     assert report["local_result_summary"]["head_to_head"]["winner_by_total_score"] == "target"
     assert len(report["local_result_summary"]["leaderboard"]) == 2
     assert len(report["tasks"]) == 2
+    assert report["tasks"][0]["reference_answer"]["citations"] == [
+        {
+            "url": "https://example.com/reference",
+            "title": "Reference source",
+            "note": "Reference support",
+        }
+    ]
     assert report["tasks"][0]["target"]["answer"]["text"] == "target answer 0"
     assert report["tasks"][0]["opponent"]["answer"]["text"] == "champion answer 0"
     assert report["tasks"][0]["target"]["attempt_count"] == 2
     assert report["recorded_platform_context"]["results"][0]["payload_json"] == {"source": "platform"}
     assert runtime.closed is True
     assert monitoring.closed is True
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "- Reference citations:" in markdown
+    assert "Reference source - https://example.com/reference - Reference support" in markdown
+    assert "- Target citations:" in markdown
+    assert "Target source 0 - https://example.com/target/0 - Target note 0" in markdown
+    assert "- Opponent citations:" in markdown
+    assert "Champion source 0 - https://example.com/champion/0 - Champion note 0" in markdown
+
+
+def test_render_answer_markdown_uses_shared_models_and_ignores_empty_optional_citation_fields() -> None:
+    lines = local_eval._render_answer_markdown(
+        "Target",
+        {
+            "text": "answer",
+            "citations": [
+                {
+                    "url": "https://example.com/source",
+                    "title": "",
+                    "note": "",
+                }
+            ],
+        },
+        model_type=Response,
+    )
+
+    assert lines == [
+        "- Target answer: answer",
+        "- Target citations:",
+        "  - https://example.com/source",
+    ]
 
 
 def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(

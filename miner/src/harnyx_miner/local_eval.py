@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from harnyx_commons.domain.miner_task import MinerTask
+from harnyx_commons.domain.miner_task import AnswerCitation, MinerTask, ReferenceAnswer, Response
 from harnyx_commons.domain.tool_usage import LlmModelUsageCost
 from harnyx_commons.miner_task_ranking import (
     ArtifactRankingRow,
@@ -821,9 +821,9 @@ def _task_report(
     return {
         "task_id": str(task.task_id),
         "question": task.query.text,
-        "reference_answer": task.reference_answer.text,
+        "reference_answer": _serialize_answer(task.reference_answer),
         "reference_context": {
-            "reference_answer": task.reference_answer.text,
+            "reference_answer": _serialize_answer(task.reference_answer),
             "budget_usd": task.budget_usd,
         },
         "target": _submission_detail(target_submission),
@@ -839,7 +839,7 @@ def _submission_detail(submission: MinerTaskRunSubmission | None) -> dict[str, o
     return {
         "artifact_id": str(run.artifact_id),
         "uid": run.uid,
-        "answer": run.response.model_dump(mode="json") if run.response is not None else None,
+        "answer": _serialize_answer(run.response) if run.response is not None else None,
         "score": submission.score,
         "score_details": run.details.model_dump(mode="json"),
         "cost_and_usage": {
@@ -852,6 +852,13 @@ def _submission_detail(submission: MinerTaskRunSubmission | None) -> dict[str, o
         "session_status": submission.session.status.value,
         "error": run.details.error.model_dump(mode="json") if run.details.error is not None else None,
     }
+
+
+def _serialize_answer(answer: object) -> dict[str, object]:
+    model_dump = getattr(answer, "model_dump", None)
+    if not callable(model_dump):
+        raise RuntimeError("answer payload must support model_dump()")
+    return model_dump(mode="json", exclude_none=True)
 
 
 def _artifact_summary_entry(
@@ -1154,8 +1161,14 @@ def _render_markdown_report(report: Mapping[str, object]) -> str:
                 "",
                 f"### Task `{task['task_id']}`",
                 f"- Question: {task['question']}",
-                f"- Reference answer: {task['reference_answer']}",
             ]
+        )
+        lines.extend(
+            _render_answer_markdown(
+                "Reference",
+                task.get("reference_answer"),
+                model_type=ReferenceAnswer,
+            )
         )
         target = _require_mapping(task.get("target"), label="task target")
         lines.extend(_render_submission_markdown("Target", target))
@@ -1173,17 +1186,56 @@ def _render_markdown_report(report: Mapping[str, object]) -> str:
 def _render_submission_markdown(label: str, submission: Mapping[str, object]) -> list[str]:
     cost_and_usage = _require_mapping(submission.get("cost_and_usage"), label=f"{label} cost and usage")
     cost_totals = _require_mapping(cost_and_usage.get("cost_totals"), label=f"{label} cost totals")
-    answer = submission.get("answer")
-    answer_text = None
-    if isinstance(answer, Mapping):
-        answer_text = _require_mapping(answer, label=f"{label} answer").get("text")
-    return [
+    lines = [
         f"- {label} score: {submission['score']}",
         f"- {label} attempts: {submission['attempt_count']}",
         f"- {label} elapsed ms: {submission['elapsed_ms']}",
         f"- {label} total cost USD: {cost_totals['total_cost_usd']}",
-        f"- {label} answer: {answer_text if answer_text is not None else '(none)'}",
     ]
+    lines.extend(_render_answer_markdown(label, submission.get("answer"), model_type=Response))
+    return lines
+
+
+def _render_answer_markdown(
+    label: str,
+    raw_answer: object,
+    *,
+    model_type: type[ReferenceAnswer] | type[Response],
+) -> list[str]:
+    if raw_answer is None:
+        return [f"- {label} answer: (none)"]
+    answer = model_type.model_validate(raw_answer, strict=True)
+    lines = [f"- {label} answer: {answer.text}"]
+    lines.extend(_render_citations_markdown(label, answer.citations))
+    return lines
+
+
+def _render_citations_markdown(label: str, citations: tuple[AnswerCitation, ...] | None) -> list[str]:
+    if citations is None:
+        return []
+    if not citations:
+        return []
+    lines = [f"- {label} citations:"]
+    for citation in citations:
+        lines.append(f"  - {_citation_markdown_line(citation)}")
+    return lines
+
+
+def _citation_markdown_line(citation: AnswerCitation) -> str:
+    parts = [citation.title or citation.url]
+    if citation.title:
+        parts.append(citation.url)
+    if citation.note:
+        parts.append(citation.note)
+    return " - ".join(parts)
+
+
+def _answer_text(raw_answer: object, *, label: str) -> str:
+    answer = _require_mapping(raw_answer, label=label)
+    text = answer.get("text")
+    if not isinstance(text, str):
+        raise RuntimeError(f"{label} text must be a string")
+    return text
 
 
 def _require_mapping(value: object, *, label: str) -> Mapping[str, object]:

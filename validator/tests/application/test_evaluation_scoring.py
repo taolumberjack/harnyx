@@ -6,8 +6,15 @@ from uuid import uuid4
 
 import pytest
 
-from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
+from harnyx_commons.domain.miner_task import (
+    AnswerCitation,
+    MinerTask,
+    Query,
+    ReferenceAnswer,
+    Response,
+)
 from harnyx_validator.application.services.evaluation_scoring import (
+    _MAX_RENDERED_CITATIONS,
     EvaluationScoringConfig,
     EvaluationScoringService,
     _validate_score_weights,
@@ -171,3 +178,84 @@ async def test_scoring_service_embeds_miner_and_reference_concurrently() -> None
 def test_validate_score_weights_requires_sum_of_one() -> None:
     with pytest.raises(RuntimeError, match="scoring weights must sum to 1.0"):
         _validate_score_weights(0.5, 0.6)
+
+
+async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Which answer is better?"),
+        reference_answer=ReferenceAnswer(
+            text="Reference answer.",
+            citations=(
+                AnswerCitation(url="https://ref.example.com", title="Reference title"),
+            ),
+        ),
+    )
+    llm = StubLlmProvider(["first", "second"])
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        embedding_client=StubEmbeddingClient(
+            {
+                "Miner answer.": (1.0, 0.0),
+                "Reference answer.": (1.0, 0.0),
+            },
+        ),
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    await service.score(
+        task=task,
+        response=Response(
+            text="Miner answer.",
+            citations=(AnswerCitation(url="https://miner.example.com", note="Miner note"),),
+        ),
+    )
+
+    prompt = llm.requests[0].messages[1].content[0].text
+    system_prompt = llm.requests[0].messages[0].content[0].text
+    assert "Citations:" in prompt
+    assert "https://miner.example.com" in prompt
+    assert "https://ref.example.com" in prompt
+    assert "argument depends on a factual claim or non-obvious connection" in system_prompt
+    assert "part of its factual correctness" in system_prompt
+    assert "Too many irrelevant citations should count against answer quality" in system_prompt
+    assert "citations are more targeted and relevant" in system_prompt
+
+
+async def test_scoring_service_deduplicates_and_caps_citations_in_pairwise_prompt() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Which answer is better?"),
+        reference_answer=ReferenceAnswer(text="Reference answer."),
+    )
+    llm = StubLlmProvider(["first", "second"])
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        embedding_client=StubEmbeddingClient(
+            {
+                "Miner answer.": (1.0, 0.0),
+                "Reference answer.": (1.0, 0.0),
+            },
+        ),
+        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
+    )
+
+    citations = [
+        AnswerCitation(url="https://same-source.example.com", title="Title A", note="Note A"),
+        AnswerCitation(url="https://same-source.example.com", title="Title B", note="Note B"),
+        AnswerCitation(url="https://miner.example.com", note="Miner note"),
+    ]
+    citations.extend(
+        AnswerCitation(url=f"https://extra-{index}.example.com")
+        for index in range(_MAX_RENDERED_CITATIONS + 3)
+    )
+
+    await service.score(task=task, response=Response(text="Miner answer.", citations=tuple(citations)))
+
+    prompt = llm.requests[0].messages[1].content[0].text
+    assert prompt.count("https://same-source.example.com") == 1
+    assert prompt.count("https://miner.example.com") == 1
+    assert prompt.count("\n1. ") == 1
+    assert prompt.count("\n2. ") == 1
+    assert prompt.count("\n3. ") == 1
+    assert prompt.count(". https://") == _MAX_RENDERED_CITATIONS

@@ -15,7 +15,14 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
 from harnyx_commons.bittensor import VerificationError
-from harnyx_commons.domain.miner_task import MinerTask
+from harnyx_commons.domain.miner_task import (
+    MinerTask,
+    Query,
+    ReferenceAnswer,
+)
+from harnyx_commons.domain.miner_task import (
+    Response as MinerTaskResponse,
+)
 from harnyx_commons.domain.session import Session
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
@@ -250,16 +257,18 @@ def add_control_routes(
         try:
             lifecycle = deps.accept_batch.lifecycle_for(batch_id)
             if lifecycle is None:
-                return ProgressResponse(
-                    batch_id=str(batch_id),
-                    status="unknown",
-                    error_code=None,
-                    failure_detail=None,
-                    total=0,
-                    completed=0,
-                    remaining=0,
-                    miner_task_runs=[],
-                    provider_model_evidence=[],
+                return _progress_json_response(
+                    ProgressResponse(
+                        batch_id=str(batch_id),
+                        status="unknown",
+                        error_code=None,
+                        failure_detail=None,
+                        total=0,
+                        completed=0,
+                        remaining=0,
+                        miner_task_runs=[],
+                        provider_model_evidence=[],
+                    )
                 )
             snapshot = deps.progress_tracker.snapshot(batch_id)
             tasks_by_id = {task.task_id: task for task in snapshot["tasks"]}
@@ -271,27 +280,31 @@ def add_control_routes(
             except Exception as exc:
                 return _progress_internal_failure(batch_id=batch_id, snapshot=snapshot, exc=exc)
             if lifecycle == "failed":
-                return ProgressResponse(
+                return _progress_json_response(
+                    ProgressResponse(
+                        batch_id=str(batch_id),
+                        status="failed",
+                        error_code=deps.accept_batch.error_code_for(batch_id),
+                        failure_detail=_serialize_failure_detail(deps.accept_batch.failure_detail_for(batch_id)),
+                        total=snapshot["total"],
+                        completed=snapshot["completed"],
+                        remaining=snapshot["remaining"],
+                        miner_task_runs=runs,
+                        provider_model_evidence=provider_model_evidence,
+                    )
+                )
+            return _progress_json_response(
+                ProgressResponse(
                     batch_id=str(batch_id),
-                    status="failed",
+                    status=lifecycle,
                     error_code=deps.accept_batch.error_code_for(batch_id),
-                    failure_detail=_serialize_failure_detail(deps.accept_batch.failure_detail_for(batch_id)),
+                    failure_detail=None,
                     total=snapshot["total"],
                     completed=snapshot["completed"],
                     remaining=snapshot["remaining"],
                     miner_task_runs=runs,
                     provider_model_evidence=provider_model_evidence,
                 )
-            return ProgressResponse(
-                batch_id=str(batch_id),
-                status=lifecycle,
-                error_code=deps.accept_batch.error_code_for(batch_id),
-                failure_detail=None,
-                total=snapshot["total"],
-                completed=snapshot["completed"],
-                remaining=snapshot["remaining"],
-                miner_task_runs=runs,
-                provider_model_evidence=provider_model_evidence,
             )
         except Exception as exc:
             return _control_route_internal_error_response(request, exc)
@@ -426,6 +439,26 @@ def _serialize_run(
         session=_serialize_session_block(submission.session),
         specifics=submission.run.details,
     )
+
+
+def _progress_json_response(response: ProgressResponse) -> JSONResponse:
+    payload = response.model_dump(mode="json")
+    serialized_runs = payload.get("miner_task_runs")
+    if isinstance(serialized_runs, list):
+        for serialized_run, domain_run in zip(serialized_runs, response.miner_task_runs, strict=True):
+            if not isinstance(serialized_run, dict):
+                continue
+            run_payload = serialized_run.get("run")
+            if not isinstance(run_payload, dict):
+                continue
+            run_payload["reference_answer"] = _serialize_answer_payload(domain_run.run.reference_answer)
+            if domain_run.run.response is not None:
+                run_payload["response"] = _serialize_answer_payload(domain_run.run.response)
+    return JSONResponse(content=payload)
+
+
+def _serialize_answer_payload(answer: Query | ReferenceAnswer | MinerTaskResponse) -> dict[str, object]:
+    return answer.model_dump(mode="json", exclude_none=True)
 
 
 def _serialize_failure_detail(

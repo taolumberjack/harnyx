@@ -23,12 +23,44 @@ class Query(_TextModel):
     pass
 
 
+class AnswerCitation(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    url: str = Field(min_length=1)
+    note: str | None = None
+    title: str | None = None
+
+
 class ReferenceAnswer(_TextModel):
-    pass
+    citations: tuple[AnswerCitation, ...] | None = None
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _normalize_citations(
+        cls,
+        value: object,
+    ) -> object:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return tuple(value)
+        return value
 
 
 class Response(_TextModel):
-    pass
+    citations: tuple[AnswerCitation, ...] | None = None
+
+    @field_validator("citations", mode="before")
+    @classmethod
+    def _normalize_citations(
+        cls,
+        value: object,
+    ) -> object:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return tuple(value)
+        return value
 
 
 class ScoreBreakdown(BaseModel):
@@ -79,6 +111,7 @@ class MinerTask(BaseModel):
 
 
 __all__ = [
+    "AnswerCitation",
     "DEFAULT_MINER_TASK_BUDGET_USD",
     "EvaluationDetails",
     "EvaluationError",

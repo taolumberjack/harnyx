@@ -592,7 +592,9 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
     assert run["score"] == pytest.approx(0.9)
     assert run["run"]["query"]["text"] == "What happened?"
     assert run["run"]["reference_answer"]["text"] == "The reference answer."
+    assert "citations" not in run["run"]["reference_answer"]
     assert run["run"]["response"]["text"] == "The miner answer."
+    assert "citations" not in run["run"]["response"]
 
     specifics = run["specifics"]
     assert specifics["total_tool_usage"]["search_tool_cost"] == pytest.approx(0.005)

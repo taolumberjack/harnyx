@@ -31,12 +31,16 @@ from harnyx_validator.application.dto.evaluation import (
     TokenUsageSummary,
 )
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator, UsageSummarizer
-from harnyx_validator.application.invoke_entrypoint import SandboxInvocationError
+from harnyx_validator.application.invoke_entrypoint import (
+    MinerResponseValidationError,
+    SandboxInvocationError,
+)
 from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
 from harnyx_validator.application.scheduler import SchedulerConfig
 from harnyx_validator.application.services.evaluation_runner import (
     ArtifactExecutionFailedError,
     EvaluationRunner,
+    FailureKind,
     ValidatorBatchFailedError,
 )
 from harnyx_validator.domain.evaluation import MinerTaskRun
@@ -475,6 +479,27 @@ class _UnhandledMinerCrashOrchestrator:
             detail_exception="KeyError",
             detail_error="missing key",
         )
+
+
+def test_evaluation_runner_classifies_miner_response_validation_as_task_failure() -> None:
+    subtensor = FakeSubtensorClient()
+    session_registry = FakeSessionRegistry()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=SessionManager(session_registry, InMemoryTokenRegistry()),
+        evaluation_records=_RecordingEvaluationStore(),
+        receipt_log=FakeReceiptLog(),
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=datetime.now,
+    )
+
+    classification = runner._classify_attempt_failure(
+        exc=MinerResponseValidationError("miner returned invalid response payload"),
+        provider_failures=(),
+    )
+
+    assert classification.kind is FailureKind.TASK_FAILURE
+    assert classification.error_code == "miner_response_invalid"
 
 
 async def test_evaluation_runner_records_exhausted_submission() -> None:

@@ -32,7 +32,7 @@ def _build_request(*, request_path: Path | None, query_text: str | None) -> dict
 
 
 def _serialize_response(response: Response) -> str:
-    return json.dumps(response.model_dump(mode="json"))
+    return json.dumps(response.model_dump(mode="json", exclude_none=True))
 
 
 def _existing_path(raw_path: str, *, label: str) -> Path:
