@@ -26,6 +26,7 @@ from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
 _REPO_ROOT = Path(__file__).resolve().parents[5]
+_PUBLIC_PACKAGES_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_IMAGE = os.getenv("SANDBOX_IMAGE", "local/harnyx-sandbox:0.1.0-dev")
 
 
@@ -94,7 +95,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     def _start(agent_module: str):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
-        module_path = _REPO_ROOT / module_rel_path
+        module_path = _PUBLIC_PACKAGES_ROOT / module_rel_path
         if not module_path.exists():
             raise RuntimeError(f"agent module file not found: module={agent_module} path={module_path}")
         artifact = stage_agent_source(
