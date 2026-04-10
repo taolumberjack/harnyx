@@ -73,6 +73,7 @@ Body: [MinerTaskBatchRequestModel](#model-minertaskbatchrequestmodel)
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` |
 
@@ -306,6 +307,60 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 ## Models
 
+<a id="model-answercitation"></a>
+### Model: AnswerCitation
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `note` |  |  | opt | `string` (nullable) |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Note"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
+    },
+    "url": {
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "title": "AnswerCitation",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-batchacceptresponse"></a>
 ### Model: BatchAcceptResponse
 
@@ -361,6 +416,9 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `message` |  | req | `string` |
 | `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  | `comparison_score` |  | req | `number` |
+|  | `reasoning` |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
+|  |  | `reasoning_tokens` | opt | `integer` (nullable) |
+|  |  | `text` | opt | `string` (nullable) |
 |  | `scoring_version` |  | req | `string` |
 |  | `similarity_score` |  | req | `number` |
 |  | `total_score` |  | req | `number` |
@@ -439,6 +497,9 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `message` |  | req | `string` |
 | `score_breakdown` |  |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  | `comparison_score` |  | req | `number` |
+|  | `reasoning` |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
+|  |  | `reasoning_tokens` | opt | `integer` (nullable) |
+|  |  | `text` | opt | `string` (nullable) |
 |  | `scoring_version` |  | req | `string` |
 |  | `similarity_score` |  | req | `number` |
 |  | `total_score` |  | req | `number` |
@@ -943,6 +1004,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` |
 
@@ -1021,6 +1083,10 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | req | `string` |
 |  | `text` |  | req | `string` |
 | `task_id` |  |  | req | `string` |
 
@@ -1071,8 +1137,16 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | req | `string` |
 |  | `text` |  | req | `string` |
 | `response` |  |  | opt | [Response](#model-response) (nullable) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | req | `string` |
 |  | `text` |  | req | `string` |
 | `task_id` |  |  | req | `string` |
 | `uid` |  |  | req | `integer` |
@@ -1153,8 +1227,10 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `text` | req | `string` |
 |  | `response` |  | opt | [Response](#model-response) (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` |
 |  | `uid` |  | req | `integer` |
@@ -1172,6 +1248,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `message` | req | `string` |
 |  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `comparison_score` | req | `number` |
+|  |  | `reasoning` | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  |  | `scoring_version` | req | `string` |
 |  |  | `similarity_score` | req | `number` |
 |  |  | `total_score` | req | `number` |
@@ -1470,6 +1547,10 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
 | `text` |  |  | req | `string` |
 
 <details>
@@ -1479,6 +1560,20 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 {
   "additionalProperties": false,
   "properties": {
+    "citations": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/components/schemas/AnswerCitation"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Citations"
+    },
     "text": {
       "minLength": 1,
       "title": "Text",
@@ -1500,6 +1595,10 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
 | `text` |  |  | req | `string` |
 
 <details>
@@ -1509,6 +1608,20 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 {
   "additionalProperties": false,
   "properties": {
+    "citations": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/components/schemas/AnswerCitation"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Citations"
+    },
     "text": {
       "minLength": 1,
       "title": "Text",
@@ -1533,6 +1646,10 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `artifact_id` |  |  | req | `string` |
 | `completed_at` |  |  | opt | `string` (nullable) |
 | `response` |  |  | opt | [Response](#model-response) (nullable) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | req | `string` |
 |  | `text` |  | req | `string` |
 | `task_id` |  |  | req | `string` |
 
@@ -1596,6 +1713,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `artifact_id` |  | req | `string` |
 |  | `completed_at` |  | opt | `string` (nullable) |
 |  | `response` |  | opt | [Response](#model-response) (nullable) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` |
 | `score` |  |  | req | `number` |
@@ -1612,6 +1730,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `message` | req | `string` |
 |  | `score_breakdown` |  | opt | [ScoreBreakdown](#model-scorebreakdown) (nullable) |
 |  |  | `comparison_score` | req | `number` |
+|  |  | `reasoning` | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  |  | `scoring_version` | req | `string` |
 |  |  | `similarity_score` | req | `number` |
 |  |  | `total_score` | req | `number` |
@@ -1685,6 +1804,9 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `comparison_score` |  |  | req | `number` |
+| `reasoning` |  |  | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
+|  | `reasoning_tokens` |  | opt | `integer` (nullable) |
+|  | `text` |  | opt | `string` (nullable) |
 | `scoring_version` |  |  | req | `string` |
 | `similarity_score` |  |  | req | `number` |
 | `total_score` |  |  | req | `number` |
@@ -1701,6 +1823,16 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minimum": 0.0,
       "title": "Comparison Score",
       "type": "number"
+    },
+    "reasoning": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/ScorerReasoning"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "scoring_version": {
       "minLength": 1,
@@ -1727,6 +1859,53 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "scoring_version"
   ],
   "title": "ScoreBreakdown",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-scorerreasoning"></a>
+### Model: ScorerReasoning
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `reasoning_tokens` |  |  | opt | `integer` (nullable) |
+| `text` |  |  | opt | `string` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "reasoning_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoning Tokens"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Text"
+    }
+  },
+  "title": "ScorerReasoning",
   "type": "object"
 }
 ```

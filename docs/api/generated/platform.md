@@ -220,6 +220,7 @@ Body: [MinerTaskBatchModel](#model-minertaskbatchmodel)
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 
@@ -675,12 +676,67 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 </details>
 
+<a id="model-answercitation"></a>
+### Model: AnswerCitation
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `note` |  |  | opt | `string` (nullable) |
+| `title` |  |  | opt | `string` (nullable) |
+| `url` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Note"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
+    },
+    "url": {
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "title": "AnswerCitation",
+  "type": "object"
+}
+```
+
+</details>
+
 <a id="model-citationmodel"></a>
 ### Model: CitationModel
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
-| `note` |  |  | req | `string` |
+| `note` |  |  | opt | `string` (nullable) |
+| `title` |  |  | opt | `string` (nullable) |
 | `url` |  |  | req | `string` |
 
 <details>
@@ -690,8 +746,26 @@ Body: [WeightsResponse](#model-weightsresponse)
 {
   "properties": {
     "note": {
-      "title": "Note",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Note"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
     },
     "url": {
       "title": "Url",
@@ -699,8 +773,7 @@ Body: [WeightsResponse](#model-weightsresponse)
     }
   },
   "required": [
-    "url",
-    "note"
+    "url"
   ],
   "title": "CitationModel",
   "type": "object"
@@ -796,7 +869,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `aggregate_score` |  |  | req | `number` |
 | `criterion_evaluations` |  |  | req | array[[CriterionEvaluationModel](#model-criterionevaluationmodel)] |
 |  | `citations` |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
-|  |  | `note` | req | `string` |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `title` | opt | `string` (nullable) |
 |  |  | `url` | req | `string` |
 |  | `internal_metadata` |  | opt | `object` (nullable) |
 |  | `justification` |  | req | `string` |
@@ -865,7 +939,8 @@ Body: [WeightsResponse](#model-weightsresponse)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `citations` |  |  | opt | array[[CitationModel](#model-citationmodel)] (default: []) |
-|  | `note` |  | req | `string` |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `title` |  | opt | `string` (nullable) |
 |  | `url` |  | req | `string` |
 | `internal_metadata` |  |  | opt | `object` (nullable) |
 | `justification` |  |  | req | `string` |
@@ -1537,6 +1612,10 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | req | `string` |
 |  | `text` |  | req | `string` |
 | `task_id` |  |  | req | `string` (format: uuid) |
 
@@ -1599,6 +1678,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 
@@ -1698,6 +1778,10 @@ Body: [WeightsResponse](#model-weightsresponse)
 | `query` |  |  | req | [Query](#model-query) |
 |  | `text` |  | req | `string` |
 | `reference_answer` |  |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  | `citations` |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  |  | `note` | opt | `string` (nullable) |
+|  |  | `title` | opt | `string` (nullable) |
+|  |  | `url` | req | `string` |
 |  | `text` |  | req | `string` |
 | `task_id` |  |  | req | `string` (format: uuid) |
 
@@ -1748,6 +1832,7 @@ Body: [WeightsResponse](#model-weightsresponse)
 |  | `query` |  | req | [Query](#model-query) |
 |  |  | `text` | req | `string` |
 |  | `reference_answer` |  | req | [ReferenceAnswer](#model-referenceanswer) |
+|  |  | `citations` | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
 |  |  | `text` | req | `string` |
 |  | `task_id` |  | req | `string` (format: uuid) |
 
@@ -1812,6 +1897,10 @@ Body: [WeightsResponse](#model-weightsresponse)
 
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
+| `citations` |  |  | opt | array[[AnswerCitation](#model-answercitation)] (nullable) |
+|  | `note` |  | opt | `string` (nullable) |
+|  | `title` |  | opt | `string` (nullable) |
+|  | `url` |  | req | `string` |
 | `text` |  |  | req | `string` |
 
 <details>
@@ -1821,6 +1910,20 @@ Body: [WeightsResponse](#model-weightsresponse)
 {
   "additionalProperties": false,
   "properties": {
+    "citations": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/components/schemas/AnswerCitation"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Citations"
+    },
     "text": {
       "minLength": 1,
       "title": "Text",
