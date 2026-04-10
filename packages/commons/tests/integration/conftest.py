@@ -25,7 +25,7 @@ from harnyx_commons.sandbox.seccomp.paths import default_profile_path
 from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 
 _DOCKER_CLI = os.getenv("DOCKER_CLI", "docker")
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[5]
 _DEFAULT_IMAGE = os.getenv("SANDBOX_IMAGE", "local/harnyx-sandbox:0.1.0-dev")
 
 
@@ -67,6 +67,11 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _create_runner_visible_state_dir() -> Path:
+    workspace_root = Path(os.getenv("HOST_WORKSPACE", str(_REPO_ROOT)))
+    return Path(tempfile.mkdtemp(prefix=".harnyx-commons-int-state-", dir=workspace_root))
+
+
 @pytest.fixture
 def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
     """Start a sandbox container for the provided agent module and clean it up afterward."""
@@ -85,7 +90,7 @@ def sandbox_launcher() -> Callable[[str], SandboxDeployment]:
 
     manager = DockerSandboxManager(docker_binary=docker_bin, host="127.0.0.1")
     deployments = []
-    state_dir = Path(tempfile.mkdtemp(prefix="harnyx-commons-int-state-"))
+    state_dir = _create_runner_visible_state_dir()
 
     def _start(agent_module: str):
         module_rel_path = Path(*agent_module.split(".")).with_suffix(".py")
