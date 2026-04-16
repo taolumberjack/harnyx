@@ -1,0 +1,150 @@
+"""Shared provider-route resolution for LLM surfaces."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from typing import Literal, cast
+
+from harnyx_commons.llm.provider import LlmProviderPort, parse_provider_name
+from harnyx_commons.llm.provider_types import LlmProviderName
+from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
+
+LlmRouteSurface = Literal["generator", "digest", "reference", "content_review", "tool", "scoring"]
+LlmModelProviderOverrides = dict[LlmRouteSurface, dict[str, LlmProviderName]]
+
+_ALLOWED_ROUTE_SURFACES: tuple[LlmRouteSurface, ...] = (
+    "generator",
+    "digest",
+    "reference",
+    "content_review",
+    "tool",
+    "scoring",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedLlmRoute:
+    surface: LlmRouteSurface
+    provider: LlmProviderName
+    model: str
+
+
+def parse_llm_model_provider_overrides(raw: str | None) -> LlmModelProviderOverrides:
+    if raw is None:
+        return {}
+    normalized_raw = raw.strip()
+    if not normalized_raw:
+        return {}
+    try:
+        payload = json.loads(normalized_raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("LLM_MODEL_PROVIDER_OVERRIDES_JSON must be valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("LLM_MODEL_PROVIDER_OVERRIDES_JSON must decode to a JSON object")
+
+    overrides: LlmModelProviderOverrides = {}
+    for surface_raw, models_raw in payload.items():
+        surface = _parse_route_surface(surface_raw)
+        if not isinstance(models_raw, dict):
+            raise ValueError(
+                f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface} must decode to a JSON object "
+                "of model-to-provider mappings"
+            )
+        model_overrides: dict[str, LlmProviderName] = {}
+        for model_raw, provider_raw in models_raw.items():
+            if not isinstance(model_raw, str):
+                raise ValueError(f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface} model keys must be strings")
+            model = model_raw.strip()
+            if not model:
+                raise ValueError(f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface} model keys must be non-empty")
+            if model in model_overrides:
+                raise ValueError(f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model} is duplicated")
+            if not isinstance(provider_raw, str):
+                raise ValueError(
+                    f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model} provider labels must be strings"
+                )
+            model_overrides[model] = parse_provider_name(
+                provider_raw,
+                component=f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model}",
+            )
+        if model_overrides:
+            overrides[surface] = model_overrides
+    return overrides
+
+
+def resolve_llm_route(
+    *,
+    surface: LlmRouteSurface,
+    default_provider: LlmProviderName,
+    model: str,
+    overrides: LlmModelProviderOverrides,
+    allowed_providers: set[LlmProviderName],
+) -> ResolvedLlmRoute:
+    normalized_model = model.strip()
+    override_provider = overrides.get(surface, {}).get(normalized_model)
+    if override_provider is None:
+        return ResolvedLlmRoute(surface=surface, provider=default_provider, model=normalized_model)
+    if override_provider not in allowed_providers:
+        raise ValueError(f"{surface} override provider {override_provider!r} is not supported")
+    return ResolvedLlmRoute(surface=surface, provider=override_provider, model=normalized_model)
+
+
+def with_effective_route_metadata(response: LlmResponse, route: ResolvedLlmRoute) -> LlmResponse:
+    metadata = dict(response.metadata or {})
+    metadata["effective_provider"] = route.provider
+    metadata["effective_model"] = route.model
+    return replace(response, metadata=metadata)
+
+
+class RoutedLlmProvider(LlmProviderPort):
+    def __init__(
+        self,
+        *,
+        surface: LlmRouteSurface,
+        default_provider: LlmProviderName,
+        overrides: LlmModelProviderOverrides,
+        allowed_providers: set[LlmProviderName],
+        resolve_provider: Callable[[str], LlmProviderPort],
+    ) -> None:
+        self._surface = surface
+        self._default_provider = default_provider
+        self._overrides = overrides
+        self._allowed_providers = allowed_providers
+        self._resolve_provider = resolve_provider
+
+    async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+        route = resolve_llm_route(
+            surface=self._surface,
+            default_provider=self._default_provider,
+            model=request.model,
+            overrides=self._overrides,
+            allowed_providers=self._allowed_providers,
+        )
+        routed_request = replace(request, provider=route.provider, model=route.model)
+        response = await self._resolve_provider(route.provider).invoke(routed_request)
+        return with_effective_route_metadata(response, route)
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _parse_route_surface(raw: object) -> LlmRouteSurface:
+    if not isinstance(raw, str):
+        raise ValueError("LLM_MODEL_PROVIDER_OVERRIDES_JSON surface keys must be strings")
+    value = raw.strip()
+    if value not in _ALLOWED_ROUTE_SURFACES:
+        raise ValueError(f"LLM_MODEL_PROVIDER_OVERRIDES_JSON surface {value!r} is not supported")
+    return cast(LlmRouteSurface, value)
+
+
+__all__ = [
+    "LlmModelProviderOverrides",
+    "LlmRouteSurface",
+    "ResolvedLlmRoute",
+    "RoutedLlmProvider",
+    "parse_llm_model_provider_overrides",
+    "resolve_llm_route",
+    "with_effective_route_metadata",
+]

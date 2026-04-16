@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from harnyx_commons.config.sandbox import SandboxSettings
 from harnyx_commons.config.subtensor import SubtensorSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.errors import ConcurrencyLimitError
+from harnyx_commons.llm.routing import ResolvedLlmRoute
 from harnyx_validator.infrastructure.scoring.vertex_embedding import LazyVertexTextEmbeddingClient
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import (
@@ -61,7 +63,7 @@ def test_create_search_client_uses_configured_parallel_base_url(monkeypatch: pyt
     assert captured["max_concurrent"] == 7
 
 
-def test_build_llm_clients_uses_shared_cached_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
             search_provider="parallel",
@@ -82,23 +84,28 @@ def test_build_llm_clients_uses_shared_cached_resolver(monkeypatch: pytest.Monke
     )
     calls: list[str] = []
 
-    def fake_build_cached_llm_provider_resolver(*, llm_settings, bedrock_settings, vertex_settings):
-        assert llm_settings is settings.llm
-        assert bedrock_settings is settings.bedrock
-        assert vertex_settings is settings.vertex
-
-        def resolve(name: str):
+    class _FakeRegistry:
+        def resolve(self, name: str) -> str:
             calls.append(name)
             return f"provider:{name}"
 
-        return resolve
+    def fake_build_cached_llm_provider_registry(*, llm_settings, bedrock_settings, vertex_settings):
+        assert llm_settings is settings.llm
+        assert bedrock_settings is settings.bedrock
+        assert vertex_settings is settings.vertex
+        return _FakeRegistry()
 
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_resolver", fake_build_cached_llm_provider_resolver)
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", fake_build_cached_llm_provider_registry)
 
-    _, tool_provider, scoring_provider = _build_llm_clients(settings)
+    _, tool_provider, scoring_provider, scoring_route = _build_llm_clients(settings)
 
     assert tool_provider == "provider:chutes"
     assert scoring_provider == "provider:vertex"
+    assert scoring_route == ResolvedLlmRoute(
+        surface="scoring",
+        provider="vertex",
+        model=bootstrap._SCORING_LLM_MODEL,
+    )
     assert calls == ["chutes", "vertex"]
 
 
@@ -120,12 +127,17 @@ def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> No
         ),
     )
 
-    search_client, tool_provider, scoring_provider = _build_local_eval_tooling_clients(settings)
+    search_client, tool_provider, scoring_provider, scoring_route = _build_local_eval_tooling_clients(settings)
 
     assert search_client is None
     assert tool_provider is not None
     assert scoring_provider is not None
     assert type(tool_provider).__name__ == "_LazyLlmProvider"
+    assert scoring_route == ResolvedLlmRoute(
+        surface="scoring",
+        provider="chutes",
+        model=bootstrap._SCORING_LLM_MODEL,
+    )
 
 
 def test_build_state_activates_two_parallel_tool_calls_per_token() -> None:
@@ -185,7 +197,15 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
         ),
     )
 
-    service = _create_scoring_service(settings, provider=SimpleNamespace())
+    service = _create_scoring_service(
+        settings,
+        provider=SimpleNamespace(),
+        scoring_route=ResolvedLlmRoute(
+            surface="scoring",
+            provider="chutes",
+            model=bootstrap._SCORING_LLM_MODEL,
+        ),
+    )
 
     assert service is not None
     assert service._config.provider == "chutes"
@@ -238,7 +258,15 @@ def test_create_scoring_service_uses_chutes_embeddings_for_chutes_provider() -> 
         ),
     )
 
-    service = _create_scoring_service(settings, provider=SimpleNamespace())
+    service = _create_scoring_service(
+        settings,
+        provider=SimpleNamespace(),
+        scoring_route=ResolvedLlmRoute(
+            surface="scoring",
+            provider="chutes",
+            model=bootstrap._SCORING_LLM_MODEL,
+        ),
+    )
 
     assert service._embeddings.__class__.__name__ == "ChutesTextEmbeddingClient"
     assert service._embeddings.model == "Qwen/Qwen3-Embedding-0.6B"
@@ -294,7 +322,15 @@ def test_create_scoring_service_fails_when_chutes_embedding_model_is_unmapped(
     monkeypatch.setattr(bootstrap, "_SCORING_CHUTES_EMBEDDING_MODEL", "Unknown/Embedding-Model")
 
     with pytest.raises(RuntimeError, match="no chutes embedding base_url configured"):
-        _create_scoring_service(settings, provider=SimpleNamespace())
+        _create_scoring_service(
+            settings,
+            provider=SimpleNamespace(),
+            scoring_route=ResolvedLlmRoute(
+                surface="scoring",
+                provider="chutes",
+                model=bootstrap._SCORING_LLM_MODEL,
+            ),
+        )
 
 
 def test_create_scoring_service_requires_chutes_api_key_for_chutes_embeddings() -> None:
@@ -343,7 +379,15 @@ def test_create_scoring_service_requires_chutes_api_key_for_chutes_embeddings() 
     )
 
     with pytest.raises(RuntimeError, match="CHUTES_API_KEY must be configured"):
-        _create_scoring_service(settings, provider=SimpleNamespace())
+        _create_scoring_service(
+            settings,
+            provider=SimpleNamespace(),
+            scoring_route=ResolvedLlmRoute(
+                surface="scoring",
+                provider="chutes",
+                model=bootstrap._SCORING_LLM_MODEL,
+            ),
+        )
 
 
 def test_create_scoring_service_uses_vertex_maas_region_for_embeddings() -> None:
@@ -391,10 +435,61 @@ def test_create_scoring_service_uses_vertex_maas_region_for_embeddings() -> None
         ),
     )
 
-    service = _create_scoring_service(settings, provider=SimpleNamespace())
+    service = _create_scoring_service(
+        settings,
+        provider=SimpleNamespace(),
+        scoring_route=ResolvedLlmRoute(
+            surface="scoring",
+            provider="vertex-maas",
+            model=bootstrap._SCORING_LLM_MODEL,
+        ),
+    )
 
     assert isinstance(service._embeddings, LazyVertexTextEmbeddingClient)
     assert service._embeddings.location == "us-central1"
+
+
+def test_build_llm_clients_allows_bedrock_scoring_route_while_embeddings_stay_on_default_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            search_provider="parallel",
+            parallel_base_url="https://proxy.parallel.test",
+            parallel_api_key=SecretStr("parallel-key"),
+            parallel_max_concurrent=7,
+            tool_llm_provider="chutes",
+            scoring_llm_provider="vertex",
+            llm_model_provider_overrides_json=json.dumps(
+                {"scoring": {bootstrap._SCORING_LLM_MODEL: "bedrock"}}
+            ),
+        ),
+        vertex=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_maas_gcp_location="us-east5",
+            vertex_timeout_seconds=60.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+        bedrock=BedrockSettings.model_construct(region="us-east-1"),
+    )
+
+    class _FakeRegistry:
+        def resolve(self, name: str) -> str:
+            return f"provider:{name}"
+
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
+
+    _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
+    embedding_client = bootstrap._create_scoring_embedding_client(settings)
+
+    assert scoring_provider == "provider:bedrock"
+    assert scoring_route == ResolvedLlmRoute(
+        surface="scoring",
+        provider="bedrock",
+        model=bootstrap._SCORING_LLM_MODEL,
+    )
+    assert isinstance(embedding_client, LazyVertexTextEmbeddingClient)
 
 
 @pytest.mark.anyio

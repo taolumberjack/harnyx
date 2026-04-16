@@ -19,8 +19,9 @@ from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmProviderPort
-from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
+from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry
 from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
+from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
@@ -221,7 +222,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     state = _build_state()
     platform_client, platform_hotkey, subtensor_client = _build_external_clients(resolved)
 
-    search_client, tool_llm_provider, scoring_llm_provider = _build_llm_clients(resolved)
+    search_client, tool_llm_provider, scoring_llm_provider, scoring_route = _build_llm_clients(resolved)
     tool_invoker, tool_executor = _build_tooling(
         state=state,
         resolved=resolved,
@@ -232,6 +233,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     scoring_service, weight_submission_service, scoring_embedding_client = _build_services(
         resolved=resolved,
         scoring_llm_provider=scoring_llm_provider,
+        scoring_route=scoring_route,
         subtensor_client=subtensor_client,
         platform_client=platform_client,
     )
@@ -319,34 +321,34 @@ def _build_external_clients(settings: Settings) -> tuple[PlatformPort, bt.Keypai
 
 def _build_llm_clients(
     settings: Settings,
-) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort | None]:
+) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort | None, ResolvedLlmRoute]:
     search_client = _create_search_client(settings)
     if settings.llm.tool_llm_provider == BEDROCK_PROVIDER:
         raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
-    if settings.llm.scoring_llm_provider == BEDROCK_PROVIDER:
-        raise ValueError("SCORING_LLM_PROVIDER='bedrock' is not supported")
-    resolve_provider = build_cached_llm_provider_resolver(
+    provider_registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
     )
-    tool_llm_provider = resolve_provider(settings.llm.tool_llm_provider)
-    scoring_llm_provider = resolve_provider(settings.llm.scoring_llm_provider)
-    return search_client, tool_llm_provider, scoring_llm_provider
+    _validate_validator_override_policy(settings)
+    scoring_route = _resolve_scoring_judge_route(settings)
+    tool_llm_provider = provider_registry.resolve(settings.llm.tool_llm_provider)
+    scoring_llm_provider = provider_registry.resolve(scoring_route.provider)
+    return search_client, tool_llm_provider, scoring_llm_provider, scoring_route
 
 
 def _build_local_eval_tooling_clients(
     settings: Settings,
-) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort]:
+) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort, ResolvedLlmRoute]:
     if settings.llm.tool_llm_provider == BEDROCK_PROVIDER:
         raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
-    if settings.llm.scoring_llm_provider == BEDROCK_PROVIDER:
-        raise ValueError("SCORING_LLM_PROVIDER='bedrock' is not supported")
-    resolve_provider = build_cached_llm_provider_resolver(
+    provider_registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
     )
+    _validate_validator_override_policy(settings)
+    scoring_route = _resolve_scoring_judge_route(settings)
     search_client = (
         _LazySearchProvider(lambda: _create_search_client(settings))
         if settings.llm.search_provider is not None
@@ -356,9 +358,27 @@ def _build_local_eval_tooling_clients(
     if settings.llm.tool_llm_provider is None:
         tool_llm_provider = None
     else:
-        tool_llm_provider = _LazyLlmProvider(lambda: resolve_provider(settings.llm.tool_llm_provider))
-    scoring_llm_provider = resolve_provider(settings.llm.scoring_llm_provider)
-    return search_client, tool_llm_provider, scoring_llm_provider
+        tool_llm_provider = _LazyLlmProvider(lambda: provider_registry.resolve(settings.llm.tool_llm_provider))
+    scoring_llm_provider = provider_registry.resolve(scoring_route.provider)
+    return search_client, tool_llm_provider, scoring_llm_provider, scoring_route
+
+
+def _validate_validator_override_policy(settings: Settings) -> None:
+    for provider_name in settings.llm.llm_model_provider_overrides.get("tool", {}).values():
+        if provider_name == BEDROCK_PROVIDER:
+            raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
+
+
+def _resolve_scoring_judge_route(settings: Settings) -> ResolvedLlmRoute:
+    if settings.llm.scoring_llm_provider == BEDROCK_PROVIDER:
+        raise ValueError("SCORING_LLM_PROVIDER='bedrock' is not supported")
+    return resolve_llm_route(
+        surface="scoring",
+        default_provider=settings.llm.scoring_llm_provider,
+        model=_SCORING_LLM_MODEL,
+        overrides=settings.llm.llm_model_provider_overrides,
+        allowed_providers={"bedrock", "chutes", "vertex", "vertex-maas"},
+    )
 
 
 def _build_tooling(
@@ -455,6 +475,7 @@ def _build_services(
     *,
     resolved: Settings,
     scoring_llm_provider: LlmProviderPort | None,
+    scoring_route: ResolvedLlmRoute,
     subtensor_client: SubtensorClientPort,
     platform_client: PlatformPort,
 ) -> tuple[EvaluationScoringService, WeightSubmissionService, _ScoringEmbeddingClient]:
@@ -462,6 +483,7 @@ def _build_services(
     scoring_service = _create_scoring_service(
         resolved,
         scoring_llm_provider,
+        scoring_route=scoring_route,
         embedding_client=scoring_embedding_client,
     )
     weight_submission_service = _build_weight_service(
@@ -774,14 +796,15 @@ def _create_scoring_service(
     settings: Settings,
     provider: LlmProviderPort | None,
     *,
+    scoring_route: ResolvedLlmRoute,
     embedding_client: TextEmbeddingPort | None = None,
 ) -> EvaluationScoringService:
     if provider is None:
         raise ValueError("scoring_llm_provider must be configured")
     resolved_embedding_client = embedding_client or _create_scoring_embedding_client(settings)
     config = EvaluationScoringConfig(
-        provider=settings.llm.scoring_llm_provider,
-        model=_SCORING_LLM_MODEL,
+        provider=scoring_route.provider,
+        model=scoring_route.model,
         temperature=settings.llm.scoring_llm_temperature,
         max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
         reasoning_effort=_SCORING_LLM_REASONING_EFFORT,

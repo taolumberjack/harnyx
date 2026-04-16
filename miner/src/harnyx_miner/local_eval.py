@@ -257,7 +257,7 @@ class LocalEvaluationRuntime:
     def create(cls, *, progress_reporter: _CliProgressReporter | None = None) -> LocalEvaluationRuntime:
         settings = Settings.load()
         state = _build_state()
-        search_client, tool_llm_provider, scoring_llm_provider = _build_local_eval_tooling_clients(
+        search_client, tool_llm_provider, scoring_llm_provider, scoring_route = _build_local_eval_tooling_clients(
             settings
         )
         _, tool_executor = _build_tooling(
@@ -270,6 +270,7 @@ class LocalEvaluationRuntime:
         scoring_service = _create_scoring_service(
             settings,
             scoring_llm_provider,
+            scoring_route=scoring_route,
             embedding_client=scoring_embedding_client,
         )
         scoring_config = cast(EvaluationScoringConfig, scoring_service._config)
