@@ -8,11 +8,13 @@ from uuid import uuid4
 import httpx
 import pytest
 
+import harnyx_validator.application.services.evaluation_runner as evaluation_runner_module
 from harnyx_commons.application.session_manager import SessionManager
 from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     EvaluationError,
     MinerTask,
+    MinerTaskErrorCode,
     Query,
     ReferenceAnswer,
     Response,
@@ -50,6 +52,7 @@ from harnyx_validator.application.services.evaluation_runner import (
     ArtifactFailure,
     EvaluationRunner,
     TimeoutObservationEvidence,
+    UnexpectedArtifactExecutionError,
     ValidatorBatchFailedError,
     ValidatorBatchFailureDetail,
 )
@@ -78,6 +81,19 @@ class _RecordingEvaluationStore:
 
     def record(self, result: MinerTaskRunSubmission) -> None:
         self.records.append(result)
+
+
+class _FailOnNthRecordEvaluationStore(_RecordingEvaluationStore):
+    def __init__(self, *, fail_on_call: int) -> None:
+        super().__init__()
+        self._fail_on_call = fail_on_call
+        self._call_count = 0
+
+    def record(self, result: MinerTaskRunSubmission) -> None:
+        self._call_count += 1
+        if self._call_count == self._fail_on_call:
+            raise RuntimeError("evaluation record write failed")
+        super().record(result)
 
 
 def _record_receipt(
@@ -682,6 +698,11 @@ class _EmbeddingRetryExhaustedOrchestrator:
         raise VertexEmbeddingRetryExhaustedError("embedding retries exhausted")
 
 
+class _SuccessfulOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        return _successful_outcome(request)
+
+
 async def test_evaluation_runner_records_exhausted_submission() -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -1123,12 +1144,17 @@ async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaus
             },
         )
 
-    assert exc_info.value.error_code == "timeout_inconclusive"
-    assert evaluation_store.records[-1].run.details.error == EvaluationError(
+    exc = exc_info.value
+    recorded_submission = evaluation_store.records[-1]
+
+    assert exc.error_code == "timeout_inconclusive"
+    assert exc.completed_submissions == (recorded_submission,)
+    assert exc.remaining_tasks == ()
+    assert recorded_submission.run.details.error == EvaluationError(
         code="timeout_inconclusive",
         message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
     )
-    assert evaluation_store.records[-1].session.status is SessionStatus.ERROR
+    assert recorded_submission.session.status is SessionStatus.ERROR
 
 
 async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_timeout() -> None:
@@ -1366,6 +1392,194 @@ async def test_evaluation_runner_records_zero_score_for_scoring_retry_exhaustion
         message="embedding retries exhausted",
     )
     assert evaluation_store.records == [submission]
+
+
+async def test_evaluation_runner_logs_session_summary_for_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(evaluation_runner_module.measurement_logger, "info", capture_info)
+
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="successful session log"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    batch_id = uuid4()
+
+    result = await runner.evaluate_artifact(
+        batch_id=batch_id,
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, _SuccessfulOrchestrator()),
+    )
+
+    assert len(result.submissions) == 1
+    session_logs = [extra for message, extra in captured_logs if message == "miner-task session finished"]
+    assert len(session_logs) == 1
+    payload = session_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["session_id"] == str(result.submissions[0].run.session_id)
+    assert payload["artifact_id"] == str(artifact.artifact_id)
+    assert payload["task_id"] == str(task.task_id)
+    assert payload["uid"] == artifact.uid
+    assert payload["attempt_count"] == 1
+    assert payload["session_ms"] >= 0.0
+    assert payload["terminal_outcome"] == "submission"
+    assert payload["error_code"] is None
+
+
+async def test_evaluation_runner_logs_session_summary_for_scoring_retry_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(evaluation_runner_module.measurement_logger, "info", capture_info)
+
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="scoring retry exhausted"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    batch_id = uuid4()
+
+    result = await runner.evaluate_artifact(
+        batch_id=batch_id,
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, _ScoringRetryExhaustedOrchestrator()),
+    )
+
+    assert len(result.submissions) == 1
+    session_logs = [extra for message, extra in captured_logs if message == "miner-task session finished"]
+    assert len(session_logs) == 1
+    payload = session_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["session_id"] == str(result.submissions[0].run.session_id)
+    assert payload["artifact_id"] == str(artifact.artifact_id)
+    assert payload["task_id"] == str(task.task_id)
+    assert payload["uid"] == artifact.uid
+    assert payload["attempt_count"] == 1
+    assert payload["session_ms"] >= 0.0
+    assert payload["terminal_outcome"] == "submission"
+    assert payload["error_code"] == "scoring_llm_retry_exhausted"
+
+
+async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(evaluation_runner_module.measurement_logger, "info", capture_info)
+
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="timeout inconclusive"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    batch_id = uuid4()
+
+    with pytest.raises(ValidatorBatchFailedError, match="terminal timeout"):
+        await runner.evaluate_artifact_with_state(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(
+                TaskRunOrchestrator,
+                _AlwaysMinerTimeoutOrchestrator(
+                    sessions=session_registry,
+                    receipt_log=receipt_log,
+                    total_tokens=100,
+                    elapsed_ms=4000.0,
+                ),
+            ),
+            successful_baseline_tps=100.0,
+            timeout_observations_by_pair={
+                (artifact.artifact_id, task.task_id): (_timeout_observation(), _timeout_observation())
+            },
+        )
+
+    session_logs = [extra for message, extra in captured_logs if message == "miner-task session finished"]
+    assert len(session_logs) == 1
+    payload = session_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["artifact_id"] == str(artifact.artifact_id)
+    assert payload["task_id"] == str(task.task_id)
+    assert payload["uid"] == artifact.uid
+    assert payload["attempt_count"] == 1
+    assert payload["session_ms"] >= 0.0
+    assert payload["terminal_outcome"] == "validator_batch_failure"
+    assert payload["error_code"] == "timeout_inconclusive"
 
 
 async def test_evaluation_runner_records_embedding_retry_exhausted_submission() -> None:
@@ -2078,6 +2292,195 @@ async def test_evaluate_artifact_with_state_counts_breaker_failures_from_earlier
     assert result.artifact_failure is not None
     assert result.artifact_failure.error_code == "sandbox_invocation_failed"
     assert result.submissions[0] == earlier_failure
+
+
+async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_validator_batch_failure() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_task_parallelism=1,
+        ),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    batch_id = uuid4()
+    completed_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="completed"),
+        reference_answer=ReferenceAnswer(text="reference completed"),
+    )
+    pending_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="pending"),
+        reference_answer=ReferenceAnswer(text="reference pending"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    completed_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=completed_task,
+    )
+
+    async def run_artifact_worker(**kwargs) -> None:
+        dispatch = kwargs["dispatch"]
+        dispatch.submissions_by_index[0] = completed_submission
+        dispatch.validator_failure = ValidatorBatchFailedError(
+            error_code="validator_internal_timeout",
+            message="validator timeout",
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code="validator_internal_timeout",
+                error_message="validator timeout",
+                occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+                artifact_id=artifact.artifact_id,
+                uid=artifact.uid,
+            ),
+        )
+
+    runner._run_artifact_worker = run_artifact_worker  # type: ignore[method-assign]
+
+    with pytest.raises(ValidatorBatchFailedError, match="validator timeout") as exc_info:
+        await runner.evaluate_artifact_with_state(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=(completed_task, pending_task),
+            orchestrator=cast(TaskRunOrchestrator, object()),
+            successful_baseline_tps=None,
+            timeout_observations_by_pair={},
+        )
+
+    exc = exc_info.value
+    assert exc.completed_submissions == (completed_submission,)
+    assert exc.remaining_tasks == (pending_task,)
+
+
+async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_unexpected_failure() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_task_parallelism=1,
+        ),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    batch_id = uuid4()
+    completed_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="completed"),
+        reference_answer=ReferenceAnswer(text="reference completed"),
+    )
+    pending_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="pending"),
+        reference_answer=ReferenceAnswer(text="reference pending"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    completed_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=completed_task,
+    )
+
+    async def record_then_fail(**kwargs) -> None:
+        dispatch = kwargs["dispatch"]
+        dispatch.submissions_by_index[0] = completed_submission
+        dispatch.unexpected_failure = RuntimeError("progress store failed")
+
+    runner._run_artifact_worker = record_then_fail  # type: ignore[method-assign]
+
+    with pytest.raises(UnexpectedArtifactExecutionError, match="progress store failed") as exc_info:
+        await runner.evaluate_artifact_with_state(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=(completed_task, pending_task),
+            orchestrator=cast(TaskRunOrchestrator, object()),
+            successful_baseline_tps=None,
+            timeout_observations_by_pair={},
+        )
+
+    exc = exc_info.value
+    assert exc.completed_submissions == (completed_submission,)
+    assert exc.remaining_tasks == (pending_task,)
+    assert isinstance(exc.cause, RuntimeError)
+
+
+async def test_record_failure_for_artifact_preserves_partial_submissions_when_recording_fails() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _FailOnNthRecordEvaluationStore(fail_on_call=2)
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    first_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="first"),
+        reference_answer=ReferenceAnswer(text="reference first"),
+    )
+    second_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="second"),
+        reference_answer=ReferenceAnswer(text="reference second"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    with pytest.raises(UnexpectedArtifactExecutionError, match="evaluation record write failed") as exc_info:
+        await runner.record_failure_for_artifact(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(first_task, second_task),
+            error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+            error_message="artifact setup failed",
+        )
+
+    exc = exc_info.value
+    assert len(exc.completed_submissions) == 1
+    assert exc.completed_submissions[0].run.task_id == first_task.task_id
+    assert exc.remaining_tasks == (second_task,)
+    assert isinstance(exc.cause, RuntimeError)
 
 
 async def test_evaluation_runner_supports_serialized_artifact_execution() -> None:

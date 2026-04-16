@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
-from harnyx_commons.domain.miner_task import EvaluationDetails
+from harnyx_commons.domain.miner_task import EvaluationDetails, MinerTaskErrorCode
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import (
@@ -19,6 +20,7 @@ from harnyx_commons.domain.tool_usage import (
     ToolUsageSummary,
 )
 from harnyx_commons.llm.pricing import ALLOWED_TOOL_MODELS, parse_tool_model, price_llm, price_search
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.tools.types import SearchToolName, is_search_tool
 from harnyx_validator.application.dto.evaluation import (
@@ -32,10 +34,59 @@ from harnyx_validator.application.services.evaluation_scoring import EvaluationS
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
 logger = logging.getLogger("harnyx_validator.task_run")
+measurement_logger = logging.getLogger("harnyx_validator.measurement")
 
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
     return (completed_at - issued_at).total_seconds() * 1000.0
+
+
+def _monotonic_elapsed_ms(*, started_at: float, completed_at: float) -> float:
+    return round((completed_at - started_at) * 1000.0, 3)
+
+
+def _log_scoring_finished(
+    *,
+    batch_id: UUID,
+    session_id: UUID,
+    artifact_id: UUID,
+    task_id: UUID,
+    uid: int,
+    invocation_ms: float,
+    scoring_ms: float,
+    orchestration_ms: float,
+    comparison_score: float | None,
+    similarity_score: float | None,
+    total_score: float | None,
+    outcome: str,
+    error_code: str | None,
+) -> None:
+    measurement_logger.info(
+        "miner-task scoring finished",
+        extra={
+            "data": {
+                "batch_id": str(batch_id),
+                "session_id": str(session_id),
+                "artifact_id": str(artifact_id),
+                "task_id": str(task_id),
+                "uid": uid,
+                "invocation_ms": invocation_ms,
+                "scoring_ms": scoring_ms,
+                "orchestration_ms": orchestration_ms,
+                "comparison_score": comparison_score,
+                "similarity_score": similarity_score,
+                "total_score": total_score,
+                "outcome": outcome,
+                "error_code": error_code,
+            }
+        },
+    )
+
+
+def _scoring_error_code(exc: Exception) -> str:
+    if isinstance(exc, LlmRetryExhaustedError):
+        return str(MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED)
+    return str(MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE)
 
 
 class UsageSummarizer:
@@ -163,6 +214,8 @@ class TaskRunOrchestrator:
         self._usage = usage_summarizer or UsageSummarizer()
 
     async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        orchestration_started_at = time.monotonic()
+        invocation_started_at = orchestration_started_at
         invocation = await self._invoker.invoke(
             EntrypointInvocationRequest(
                 session_id=request.session_id,
@@ -171,10 +224,43 @@ class TaskRunOrchestrator:
                 query=request.task.query,
             ),
         )
+        invocation_ms = _monotonic_elapsed_ms(
+            started_at=invocation_started_at,
+            completed_at=time.monotonic(),
+        )
         invocation_completed_at = self._clock()
-        score_breakdown = await self._scoring.score(
-            task=request.task,
-            response=invocation.response,
+        scoring_started_at = time.monotonic()
+        try:
+            score_breakdown = await self._scoring.score(
+                task=request.task,
+                response=invocation.response,
+            )
+        except Exception as exc:
+            _log_scoring_finished(
+                batch_id=request.batch_id,
+                session_id=request.session_id,
+                artifact_id=request.artifact_id,
+                task_id=request.task.task_id,
+                uid=request.uid,
+                invocation_ms=invocation_ms,
+                scoring_ms=_monotonic_elapsed_ms(
+                    started_at=scoring_started_at,
+                    completed_at=time.monotonic(),
+                ),
+                orchestration_ms=_monotonic_elapsed_ms(
+                    started_at=orchestration_started_at,
+                    completed_at=time.monotonic(),
+                ),
+                comparison_score=None,
+                similarity_score=None,
+                total_score=None,
+                outcome="error",
+                error_code=_scoring_error_code(exc),
+            )
+            raise
+        scoring_ms = _monotonic_elapsed_ms(
+            started_at=scoring_started_at,
+            completed_at=time.monotonic(),
         )
         session = self._require_session(request.session_id)
         completed_at = self._clock()
@@ -192,6 +278,24 @@ class TaskRunOrchestrator:
             response=invocation.response,
             details=details,
             completed_at=completed_at,
+        )
+        _log_scoring_finished(
+            batch_id=request.batch_id,
+            session_id=request.session_id,
+            artifact_id=request.artifact_id,
+            task_id=request.task.task_id,
+            uid=request.uid,
+            invocation_ms=invocation_ms,
+            scoring_ms=scoring_ms,
+            orchestration_ms=_monotonic_elapsed_ms(
+                started_at=orchestration_started_at,
+                completed_at=time.monotonic(),
+            ),
+            comparison_score=score_breakdown.comparison_score,
+            similarity_score=score_breakdown.similarity_score,
+            total_score=score_breakdown.total_score,
+            outcome="ok",
+            error_code=None,
         )
         self._receipts.clear_session(request.session_id)
         return TaskRunOutcome(

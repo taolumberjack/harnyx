@@ -8,6 +8,7 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from harnyx_commons.llm.provider_types import LlmProviderName
+from harnyx_commons.llm.routing import LlmModelProviderOverrides, parse_llm_model_provider_overrides
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 
@@ -60,6 +61,7 @@ class LlmSettings(BaseSettings):
     digest_llm_reasoning_effort: str | None = Field(default=None, alias="DIGEST_LLM_REASONING_EFFORT")
     digest_llm_temperature: float | None = Field(default=None, alias="DIGEST_LLM_TEMPERATURE")
     digest_llm_max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, alias="DIGEST_LLM_MAX_OUTPUT_TOKENS")
+    llm_model_provider_overrides_json: str | None = Field(default=None, alias="LLM_MODEL_PROVIDER_OVERRIDES_JSON")
 
     # --- Timeouts ---
     llm_timeout_seconds: float = Field(default=60.0, alias="PLATFORM_LLM_TIMEOUT_SECONDS")
@@ -117,6 +119,10 @@ class LlmSettings(BaseSettings):
     @property
     def chutes_api_key_value(self) -> str:
         return self.chutes_api_key.get_secret_value()
+
+    @property
+    def llm_model_provider_overrides(self) -> LlmModelProviderOverrides:
+        return parse_llm_model_provider_overrides(self.llm_model_provider_overrides_json)
 
 
 __all__ = ["LlmSettings", "DEFAULT_MAX_OUTPUT_TOKENS"]

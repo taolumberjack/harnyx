@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import os
+
 from harnyx_commons.observability.logging import build_log_config as _build_log_config
 from harnyx_commons.observability.logging import configure_logging as _configure_logging
 
-_VALIDATOR_EXTRA_LOGGERS = {
-    "harnyx_validator.tools": {"level": "INFO"},
-    "harnyx_validator.infrastructure.sandbox": {"level": "INFO"},
-    "harnyx_validator.sandbox": {"level": "INFO"},
-}
+
+def _validator_extra_loggers() -> dict[str, dict[str, str]]:
+    return {
+        "harnyx_validator.tools": {"level": "INFO"},
+        "harnyx_validator.infrastructure.sandbox": {"level": "INFO"},
+        "harnyx_validator.sandbox": {"level": "INFO"},
+        "harnyx_validator.measurement": {
+            "level": os.getenv("VALIDATOR_MEASUREMENT_LOG_LEVEL", "WARNING").upper()
+        },
+    }
 
 __all__ = ["build_log_config", "configure_logging", "init_logging", "enable_cloud_logging"]
 
@@ -20,7 +27,7 @@ def init_logging() -> None:
     _configure_logging(
         root_level_env="LOG_LEVEL",
         root_default="INFO",
-        extra_loggers=_VALIDATOR_EXTRA_LOGGERS,
+        extra_loggers=_validator_extra_loggers(),
         cloud_logging_enabled=False,
         gcp_project=None,
         cloud_log_labels=None,
@@ -36,7 +43,7 @@ def build_log_config(
     return _build_log_config(
         root_level_env="LOG_LEVEL",
         root_default="INFO",
-        extra_loggers=_VALIDATOR_EXTRA_LOGGERS,
+        extra_loggers=_validator_extra_loggers(),
         cloud_logging_enabled=cloud_logging_enabled,
         gcp_project=gcp_project,
         cloud_log_labels=cloud_log_labels,
@@ -52,7 +59,7 @@ def configure_logging(
     _configure_logging(
         root_level_env="LOG_LEVEL",
         root_default="INFO",
-        extra_loggers=_VALIDATOR_EXTRA_LOGGERS,
+        extra_loggers=_validator_extra_loggers(),
         cloud_logging_enabled=cloud_logging_enabled,
         gcp_project=gcp_project,
         cloud_log_labels=cloud_log_labels,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from harnyx_validator.application.services.evaluation_runner import (
     ArtifactFailure,
     EvaluationRunner,
     TimeoutObservationEvidence,
+    UnexpectedArtifactExecutionError,
     ValidatorBatchFailedError,
     ValidatorBatchFailureDetail,
 )
@@ -45,6 +47,7 @@ Clock = Callable[[], datetime]
 _T = TypeVar("_T")
 
 logger = logging.getLogger("harnyx_validator.scheduler")
+measurement_logger = logging.getLogger("harnyx_validator.measurement")
 BATCH_ARTIFACT_BREAKER_THRESHOLD = 3
 _ARTIFACT_PREPARATION_BREAKER_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
     (
@@ -67,6 +70,97 @@ class SchedulerConfig:
     token_secret_bytes: int
     session_ttl: timedelta
     artifact_task_parallelism: int = 5
+
+
+def _monotonic_elapsed_ms(*, started_at: float, completed_at: float) -> float:
+    return round((completed_at - started_at) * 1000.0, 3)
+
+
+def _count_submission_outcomes(
+    submissions: Sequence[MinerTaskRunSubmission],
+) -> tuple[int, int]:
+    success_count = 0
+    failure_count = 0
+    for submission in submissions:
+        if submission.run.details.error is None:
+            success_count += 1
+            continue
+        failure_count += 1
+    return success_count, failure_count
+
+
+def _has_primary_artifact_outcome(
+    *,
+    outcome: str,
+    primary_failure_raised: bool,
+    batch_breaker_failure: ValidatorBatchFailedError | None,
+) -> bool:
+    if primary_failure_raised or batch_breaker_failure is not None:
+        return True
+    return outcome == "artifact_failed"
+
+
+def _log_batch_execution_started(
+    *,
+    batch_id: UUID,
+    artifact_count: int,
+    task_count: int,
+    artifact_task_parallelism: int,
+    recorded_pair_count: int,
+) -> None:
+    measurement_logger.info(
+        "miner-task batch execution started",
+        extra={
+            "data": {
+                "batch_id": str(batch_id),
+                "artifact_count": artifact_count,
+                "task_count": task_count,
+                "artifact_task_parallelism": artifact_task_parallelism,
+                "recorded_pair_count": recorded_pair_count,
+            }
+        },
+    )
+
+
+def _log_artifact_execution_finished(
+    *,
+    batch_id: UUID,
+    artifact: ScriptArtifactSpec,
+    artifact_index: int,
+    artifact_count: int,
+    planned_task_count: int,
+    success_count: int,
+    failure_count: int,
+    unresolved_count: int,
+    setup_ms: float,
+    evaluation_ms: float,
+    teardown_ms: float,
+    total_ms: float,
+    outcome: str,
+    error_code: str | None,
+) -> None:
+    measurement_logger.info(
+        "miner-task artifact execution finished",
+        extra={
+            "data": {
+                "batch_id": str(batch_id),
+                "artifact_id": str(artifact.artifact_id),
+                "uid": artifact.uid,
+                "artifact_index": artifact_index,
+                "artifact_count": artifact_count,
+                "planned_task_count": planned_task_count,
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "unresolved_count": unresolved_count,
+                "setup_ms": setup_ms,
+                "evaluation_ms": evaluation_ms,
+                "teardown_ms": teardown_ms,
+                "total_ms": total_ms,
+                "outcome": outcome,
+                "error_code": error_code,
+            }
+        },
+    )
 
 
 class EvaluationScheduler:
@@ -95,6 +189,7 @@ class EvaluationScheduler:
         self._progress = progress
         self._clock = clock
         self._blocking_executor = blocking_executor
+        self._config = config
         self._runner = EvaluationRunner(
             subtensor_client=subtensor_client,
             session_manager=session_manager,
@@ -139,7 +234,14 @@ class EvaluationScheduler:
         artifacts_with_breaker: set[UUID] = set()
         successful_baseline_tps: float | None = None
         timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState] = {}
-        for artifact in artifacts:
+        _log_batch_execution_started(
+            batch_id=batch_id,
+            artifact_count=len(artifacts),
+            task_count=len(tasks),
+            artifact_task_parallelism=self._config.artifact_task_parallelism,
+            recorded_pair_count=len(recorded_pairs),
+        )
+        for artifact_index, artifact in enumerate(artifacts, start=1):
             remaining_tasks = tuple(
                 task
                 for task in tasks
@@ -148,24 +250,86 @@ class EvaluationScheduler:
             if not remaining_tasks:
                 continue
 
-            logger.debug(
-                "starting miner task run for artifact",
-                extra={"uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
-            )
+            artifact_started_at = time.monotonic()
+            setup_ms = 0.0
+            evaluation_ms = 0.0
+            teardown_ms = 0.0
+            artifact_submissions: tuple[MinerTaskRunSubmission, ...] = ()
+            unresolved_count = len(remaining_tasks)
+            outcome = "completed"
+            error_code: str | None = None
+            backfill_primary_outcome: tuple[str, str] | None = None
             try:
+                setup_started_at = time.monotonic()
                 deployment = await self._start_artifact_with_retry(
                     batch_id=batch_id,
                     artifact=artifact,
                     tasks=remaining_tasks,
                     blocking_executor=blocking_executor,
                 )
+                setup_ms = _monotonic_elapsed_ms(
+                    started_at=setup_started_at,
+                    completed_at=time.monotonic(),
+                )
             except ArtifactExecutionFailedError as exc:
-                submissions.extend(
-                    await self._record_artifact_failure(
+                setup_ms = _monotonic_elapsed_ms(
+                    started_at=setup_started_at,
+                    completed_at=time.monotonic(),
+                )
+                try:
+                    failed_submissions = tuple(
+                        await self._record_artifact_failure(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            failure=exc,
+                        )
+                    )
+                    setup_unresolved_count = 0
+                except UnexpectedArtifactExecutionError as backfill_exc:
+                    failed_submissions = backfill_exc.completed_submissions
+                    setup_unresolved_count = len(backfill_exc.remaining_tasks)
+                    submissions.extend(failed_submissions)
+                    success_count, failure_count = _count_submission_outcomes(failed_submissions)
+                    _log_artifact_execution_finished(
                         batch_id=batch_id,
                         artifact=artifact,
-                        failure=exc,
+                        artifact_index=artifact_index,
+                        artifact_count=len(artifacts),
+                        planned_task_count=len(remaining_tasks),
+                        success_count=success_count,
+                        failure_count=failure_count,
+                        unresolved_count=setup_unresolved_count,
+                        setup_ms=setup_ms,
+                        evaluation_ms=0.0,
+                        teardown_ms=0.0,
+                        total_ms=_monotonic_elapsed_ms(
+                            started_at=artifact_started_at,
+                            completed_at=time.monotonic(),
+                        ),
+                        outcome="setup_failed",
+                        error_code=str(exc.error_code),
                     )
+                    raise backfill_exc.cause from backfill_exc
+                submissions.extend(failed_submissions)
+                success_count, failure_count = _count_submission_outcomes(failed_submissions)
+                _log_artifact_execution_finished(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    artifact_index=artifact_index,
+                    artifact_count=len(artifacts),
+                    planned_task_count=len(remaining_tasks),
+                    success_count=success_count,
+                    failure_count=failure_count,
+                    unresolved_count=setup_unresolved_count,
+                    setup_ms=setup_ms,
+                    evaluation_ms=0.0,
+                    teardown_ms=0.0,
+                    total_ms=_monotonic_elapsed_ms(
+                        started_at=artifact_started_at,
+                        completed_at=time.monotonic(),
+                    ),
+                    outcome="setup_failed",
+                    error_code=str(exc.error_code),
                 )
                 if exc.artifact_breaker_tripped:
                     self._raise_if_batch_breaker_tripped(
@@ -177,8 +341,11 @@ class EvaluationScheduler:
                 continue
 
             batch_breaker_failure: ValidatorBatchFailedError | None = None
+            primary_failure_raised = False
+            evaluation_started_at: float | None = None
             try:
                 orchestrator = self._make_orchestrator(deployment.client)
+                evaluation_started_at = time.monotonic()
                 artifact_result = await self._evaluate_artifact_with_timeout_state(
                     batch_id=batch_id,
                     artifact=artifact,
@@ -187,21 +354,49 @@ class EvaluationScheduler:
                     successful_baseline_tps=successful_baseline_tps,
                     timeout_retry_state_by_pair=timeout_retry_state_by_pair,
                 )
-                submissions.extend(artifact_result.submissions)
+                evaluation_ms = _monotonic_elapsed_ms(
+                    started_at=evaluation_started_at,
+                    completed_at=time.monotonic(),
+                )
+                artifact_submissions = tuple(artifact_result.submissions)
+                submissions.extend(artifact_submissions)
                 successful_baseline_tps = artifact_result.slowest_successful_tps
                 timeout_retry_state_by_pair = {
                     pair_key: TimeoutRetryState(prior_observations=observations)
                     for pair_key, observations in artifact_result.timeout_observations_by_pair.items()
                 }
+                unresolved_count = len(artifact_result.unresolved_tasks)
                 if artifact_result.artifact_failure is not None:
-                    submissions.extend(
-                        await self._record_remaining_tasks_for_artifact_failure(
-                            batch_id=batch_id,
-                            artifact=artifact,
-                            failure=artifact_result.artifact_failure,
-                            remaining_tasks=artifact_result.unresolved_tasks,
+                    try:
+                        remaining_failure_submissions = tuple(
+                            await self._record_remaining_tasks_for_artifact_failure(
+                                batch_id=batch_id,
+                                artifact=artifact,
+                                failure=artifact_result.artifact_failure,
+                                remaining_tasks=artifact_result.unresolved_tasks,
+                            )
                         )
-                    )
+                        submissions.extend(remaining_failure_submissions)
+                        artifact_submissions = (*artifact_submissions, *remaining_failure_submissions)
+                        unresolved_count = 0
+                    except UnexpectedArtifactExecutionError as backfill_exc:
+                        submissions.extend(backfill_exc.completed_submissions)
+                        artifact_submissions = (*artifact_submissions, *backfill_exc.completed_submissions)
+                        unresolved_count = len(backfill_exc.remaining_tasks)
+                        backfill_primary_outcome = (
+                            "artifact_failed",
+                            str(artifact_result.artifact_failure.error_code),
+                        )
+                        if artifact_result.artifact_failure.artifact_breaker_tripped:
+                            batch_breaker_failure = self._batch_breaker_failure(
+                                batch_id=batch_id,
+                                artifact=artifact,
+                                failure_detail=artifact_result.artifact_failure.failure_detail,
+                                artifacts_with_breaker=artifacts_with_breaker,
+                            )
+                        raise backfill_exc.cause from backfill_exc
+                    outcome = "artifact_failed"
+                    error_code = str(artifact_result.artifact_failure.error_code)
                     if artifact_result.artifact_failure.artifact_breaker_tripped:
                         batch_breaker_failure = self._batch_breaker_failure(
                             batch_id=batch_id,
@@ -209,15 +404,107 @@ class EvaluationScheduler:
                             failure_detail=artifact_result.artifact_failure.failure_detail,
                             artifacts_with_breaker=artifacts_with_breaker,
                         )
+            except ValidatorBatchFailedError as exc:
+                primary_failure_raised = True
+                if evaluation_started_at is not None:
+                    evaluation_ms = _monotonic_elapsed_ms(
+                        started_at=evaluation_started_at,
+                        completed_at=time.monotonic(),
+                    )
+                if exc.completed_submissions is not None:
+                    artifact_submissions = exc.completed_submissions
+                if exc.remaining_tasks is not None:
+                    unresolved_count = len(exc.remaining_tasks)
+                outcome = "validator_batch_failure"
+                error_code = str(exc.error_code)
+                raise
+            except UnexpectedArtifactExecutionError as exc:
+                primary_failure_raised = True
+                if evaluation_started_at is not None:
+                    evaluation_ms = _monotonic_elapsed_ms(
+                        started_at=evaluation_started_at,
+                        completed_at=time.monotonic(),
+                    )
+                artifact_submissions = exc.completed_submissions
+                unresolved_count = len(exc.remaining_tasks)
+                outcome = "unexpected_failure"
+                raise exc.cause from exc
+            except Exception:
+                primary_failure_raised = True
+                if evaluation_started_at is not None:
+                    evaluation_ms = _monotonic_elapsed_ms(
+                        started_at=evaluation_started_at,
+                        completed_at=time.monotonic(),
+                    )
+                if backfill_primary_outcome is None:
+                    outcome = "unexpected_failure"
+                else:
+                    outcome, error_code = backfill_primary_outcome
+                raise
             finally:
-                await _run_blocking_call(blocking_executor, self._sandboxes.stop, deployment)
+                teardown_started_at = time.monotonic()
+                teardown_exc: Exception | None = None
+                try:
+                    await _run_blocking_call(blocking_executor, self._sandboxes.stop, deployment)
+                except Exception as exc:
+                    teardown_exc = exc
+                    teardown_ms = _monotonic_elapsed_ms(
+                        started_at=teardown_started_at,
+                        completed_at=time.monotonic(),
+                    )
+                    if not _has_primary_artifact_outcome(
+                        outcome=outcome,
+                        primary_failure_raised=primary_failure_raised,
+                        batch_breaker_failure=batch_breaker_failure,
+                    ):
+                        outcome = "teardown_failed"
+                        error_code = str(MinerTaskErrorCode.SANDBOX_FAILED)
+                    else:
+                        logger.warning(
+                            "artifact teardown failed after primary failure",
+                            extra={
+                                "data": {
+                                    "batch_id": str(batch_id),
+                                    "uid": artifact.uid,
+                                    "artifact_id": str(artifact.artifact_id),
+                                    "primary_outcome": outcome,
+                                    "primary_error_code": error_code,
+                                }
+                            },
+                        )
+                else:
+                    teardown_ms = _monotonic_elapsed_ms(
+                        started_at=teardown_started_at,
+                        completed_at=time.monotonic(),
+                    )
+                success_count, failure_count = _count_submission_outcomes(artifact_submissions)
+                _log_artifact_execution_finished(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    artifact_index=artifact_index,
+                    artifact_count=len(artifacts),
+                    planned_task_count=len(remaining_tasks),
+                    success_count=success_count,
+                    failure_count=failure_count,
+                    unresolved_count=unresolved_count,
+                    setup_ms=setup_ms,
+                    evaluation_ms=evaluation_ms,
+                    teardown_ms=teardown_ms,
+                    total_ms=_monotonic_elapsed_ms(
+                        started_at=artifact_started_at,
+                        completed_at=time.monotonic(),
+                    ),
+                    outcome=outcome,
+                    error_code=error_code,
+                )
+                if teardown_exc is not None and not _has_primary_artifact_outcome(
+                    outcome=outcome,
+                    primary_failure_raised=primary_failure_raised,
+                    batch_breaker_failure=batch_breaker_failure,
+                ):
+                    raise teardown_exc
             if batch_breaker_failure is not None:
                 raise batch_breaker_failure
-
-            logger.debug(
-                "finished miner task run for artifact",
-                extra={"uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
-            )
 
         return MinerTaskBatchRunResult(
             batch_id=batch_id,

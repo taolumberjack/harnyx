@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pytest
+
+from harnyx_commons.llm.routing import (
+    ResolvedLlmRoute,
+    RoutedLlmProvider,
+    parse_llm_model_provider_overrides,
+    resolve_llm_route,
+)
+from harnyx_commons.llm.schema import (
+    LlmChoice,
+    LlmChoiceMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmResponse,
+    LlmUsage,
+)
+
+
+def test_parse_llm_model_provider_overrides_accepts_surface_scoped_json() -> None:
+    parsed = parse_llm_model_provider_overrides(
+        '{"generator":{"sample-routed-model":"bedrock"},"scoring":{"openai/gpt-oss-120b-TEE":"bedrock"}}'
+    )
+
+    assert parsed == {
+        "generator": {"sample-routed-model": "bedrock"},
+        "scoring": {"openai/gpt-oss-120b-TEE": "bedrock"},
+    }
+
+
+def test_parse_llm_model_provider_overrides_rejects_unknown_surface() -> None:
+    with pytest.raises(ValueError, match="surface 'unknown' is not supported"):
+        parse_llm_model_provider_overrides('{"unknown":{"sample-routed-model":"bedrock"}}')
+
+
+def test_resolve_llm_route_falls_back_to_default_provider() -> None:
+    route = resolve_llm_route(
+        surface="generator",
+        default_provider="vertex",
+        model="sample-routed-model",
+        overrides={},
+        allowed_providers={"bedrock", "vertex"},
+    )
+
+    assert route == ResolvedLlmRoute(surface="generator", provider="vertex", model="sample-routed-model")
+
+
+def test_resolve_llm_route_rejects_provider_not_allowed_for_surface() -> None:
+    with pytest.raises(ValueError, match="reference override provider 'bedrock' is not supported"):
+        resolve_llm_route(
+            surface="reference",
+            default_provider="vertex",
+            model="sample-routed-model",
+            overrides={"reference": {"sample-routed-model": "bedrock"}},
+            allowed_providers={"vertex"},
+        )
+
+
+@dataclass(slots=True)
+class _RecordingProvider:
+    seen_requests: list[LlmRequest]
+
+    async def invoke(self, request: LlmRequest) -> LlmResponse:
+        self.seen_requests.append(request)
+        return LlmResponse(
+            id="resp-1",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(LlmMessageContentPart(type="output_text", text="ok"),),
+                    ),
+                ),
+            ),
+            usage=LlmUsage(),
+            metadata={"raw_response": {"ok": True}},
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.anyio("asyncio")
+async def test_routed_provider_rewrites_request_provider_before_delegating() -> None:
+    delegate = _RecordingProvider(seen_requests=[])
+
+    provider = RoutedLlmProvider(
+        surface="generator",
+        default_provider="vertex",
+        overrides={"generator": {"sample-routed-model": "bedrock"}},
+        allowed_providers={"bedrock", "vertex"},
+        resolve_provider=lambda _: delegate,
+    )
+
+    response = await provider.invoke(
+        LlmRequest(
+            provider="vertex",
+            model="sample-routed-model",
+            messages=(),
+            temperature=None,
+            max_output_tokens=128,
+        )
+    )
+
+    assert delegate.seen_requests[0].provider == "bedrock"
+    assert response.metadata is not None
+    assert response.metadata["effective_provider"] == "bedrock"
+    assert response.metadata["effective_model"] == "sample-routed-model"

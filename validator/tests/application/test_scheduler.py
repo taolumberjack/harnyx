@@ -17,6 +17,7 @@ from harnyx_commons.domain.miner_task import (
     EvaluationDetails,
     EvaluationError,
     MinerTask,
+    MinerTaskErrorCode,
     Query,
     ReferenceAnswer,
     Response,
@@ -39,7 +40,9 @@ from harnyx_validator.application.ports.subtensor import ValidatorNodeInfo
 from harnyx_validator.application.scheduler import EvaluationScheduler, SchedulerConfig
 from harnyx_validator.application.services.evaluation_runner import (
     ArtifactEvaluationOutcome,
+    ArtifactExecutionFailedError,
     ArtifactFailure,
+    UnexpectedArtifactExecutionError,
     ValidatorBatchFailedError,
     ValidatorBatchFailureDetail,
 )
@@ -246,6 +249,7 @@ def _submission_for_task(
 
 
 async def test_scheduler_runs_all_tasks_for_each_artifact(
+    monkeypatch: pytest.MonkeyPatch,
     blocking_executor: ThreadPoolExecutor,
 ) -> None:
     tasks = (_task("one"), _task("two"))
@@ -257,6 +261,13 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
     receipt_log = DummyReceiptLog()
 
     recorded_requests: list[tuple[int, MinerTask]] = []
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
 
     def orchestrator_factory(_client: object):
         class StubOrchestrator:
@@ -305,7 +316,8 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
         ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0),
         ScriptArtifactSpec(uid=5, artifact_id=uuid4(), content_hash="b", size_bytes=0),
     )
-    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+    batch_id = uuid4()
+    result = await scheduler.run(batch_id=batch_id, requested_artifacts=artifacts)
 
     assert len(sandbox_manager.starts) == 2
     assert len(sandbox_manager.stops) == 2
@@ -313,6 +325,915 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
     assert len(result.runs) == len(recorded_requests)
     assert result.tasks == tasks
     assert len(evaluation_records.records_by_batch) == len(result.runs)
+
+    batch_logs = [extra for message, extra in captured_logs if message == "miner-task batch execution started"]
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+
+    assert batch_logs == [
+        {
+            "batch_id": str(batch_id),
+            "artifact_count": 2,
+            "task_count": 2,
+            "artifact_task_parallelism": 5,
+            "recorded_pair_count": 0,
+        }
+    ]
+    assert len(artifact_logs) == 2
+    assert {extra["artifact_id"] for extra in artifact_logs} == {
+        str(artifact.artifact_id) for artifact in artifacts
+    }
+    for artifact_index, extra in enumerate(artifact_logs, start=1):
+        assert extra["batch_id"] == str(batch_id)
+        assert extra["artifact_index"] == artifact_index
+        assert extra["artifact_count"] == 2
+        assert extra["planned_task_count"] == 2
+        assert extra["success_count"] == 2
+        assert extra["failure_count"] == 0
+        assert extra["unresolved_count"] == 0
+        assert extra["setup_ms"] >= 0.0
+        assert extra["evaluation_ms"] >= 0.0
+        assert extra["teardown_ms"] >= 0.0
+        assert extra["total_ms"] >= 0.0
+        assert extra["outcome"] == "completed"
+        assert extra["error_code"] is None
+
+
+async def test_scheduler_logs_setup_failure_timing_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    class FailingSandboxManager(DummySandboxManager):
+        def start(self, options: object | None = None) -> SandboxDeployment:
+            self.starts.append(options)
+            raise RuntimeError("sandbox boot failed")
+
+    tasks = (_task("one"),)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = FailingSandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    def orchestrator_factory(_client: object):
+        raise AssertionError("orchestrator should not be created when sandbox start fails")
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    result = await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    assert len(result.runs) == 1
+    assert len(sandbox_manager.starts) == 2
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["artifact_id"] == str(artifact.artifact_id)
+    assert payload["uid"] == artifact.uid
+    assert payload["artifact_index"] == 1
+    assert payload["artifact_count"] == 1
+    assert payload["planned_task_count"] == 1
+    assert payload["success_count"] == 0
+    assert payload["failure_count"] == 1
+    assert payload["unresolved_count"] == 0
+    assert payload["setup_ms"] == 123.0
+    assert payload["evaluation_ms"] == 0.0
+    assert payload["teardown_ms"] == 0.0
+    assert payload["total_ms"] == 123.0
+    assert payload["outcome"] == "setup_failed"
+    assert payload["error_code"] == "sandbox_start_failed"
+
+
+async def test_scheduler_logs_teardown_failure_timing_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    class FailingStopSandboxManager(DummySandboxManager):
+        def stop(self, deployment: SandboxDeployment) -> None:
+            self.stops.append(deployment)
+            raise RuntimeError("sandbox stop failed")
+
+    tasks = (_task("one"),)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = FailingStopSandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    successful_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=tasks[0],
+    )
+
+    async def evaluate_successfully(**kwargs):
+        _ = kwargs
+        return ArtifactEvaluationOutcome(
+            submissions=(successful_submission,),
+            unresolved_tasks=(),
+            timeout_observations_by_pair={},
+            slowest_successful_tps=40.0,
+        )
+
+    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", evaluate_successfully)
+
+    with pytest.raises(RuntimeError, match="sandbox stop failed"):
+        await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["artifact_id"] == str(artifact.artifact_id)
+    assert payload["planned_task_count"] == 1
+    assert payload["success_count"] == 1
+    assert payload["failure_count"] == 0
+    assert payload["unresolved_count"] == 0
+    assert payload["setup_ms"] == 123.0
+    assert payload["evaluation_ms"] == 123.0
+    assert payload["teardown_ms"] == 123.0
+    assert payload["total_ms"] == 123.0
+    assert payload["outcome"] == "teardown_failed"
+    assert payload["error_code"] == str(MinerTaskErrorCode.SANDBOX_FAILED)
+
+
+async def test_scheduler_preserves_validator_batch_failure_when_teardown_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    class FailingStopSandboxManager(DummySandboxManager):
+        def stop(self, deployment: SandboxDeployment) -> None:
+            self.stops.append(deployment)
+            raise RuntimeError("sandbox stop failed")
+
+    tasks = (_task("one"),)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = FailingStopSandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    async def fail_evaluation(**kwargs):
+        _ = kwargs
+        raise ValidatorBatchFailedError(
+            error_code="validator_internal_timeout",
+            message="validator timeout",
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code="validator_internal_timeout",
+                error_message="validator timeout",
+                occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+            ),
+        )
+
+    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_evaluation)
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+
+    with pytest.raises(ValidatorBatchFailedError, match="validator timeout"):
+        await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["artifact_id"] == str(artifact.artifact_id)
+    assert payload["planned_task_count"] == 1
+    assert payload["success_count"] == 0
+    assert payload["failure_count"] == 0
+    assert payload["unresolved_count"] == 1
+    assert payload["setup_ms"] == 123.0
+    assert payload["evaluation_ms"] == 123.0
+    assert payload["teardown_ms"] == 123.0
+    assert payload["total_ms"] == 123.0
+    assert payload["outcome"] == "validator_batch_failure"
+    assert payload["error_code"] == "validator_internal_timeout"
+
+
+async def test_scheduler_logs_evaluation_timing_summary_for_validator_batch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    tasks = (_task("one"),)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    def orchestrator_factory(_client: object):
+        return object()
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=orchestrator_factory,
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    async def fail_evaluation(**kwargs):
+        _ = kwargs
+        raise ValidatorBatchFailedError(
+            error_code="validator_internal_timeout",
+            message="validator timeout",
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code="validator_internal_timeout",
+                error_message="validator timeout",
+                occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+            ),
+        )
+
+    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_evaluation)
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+
+    with pytest.raises(ValidatorBatchFailedError, match="validator timeout"):
+        await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["artifact_id"] == str(artifact.artifact_id)
+    assert payload["planned_task_count"] == 1
+    assert payload["success_count"] == 0
+    assert payload["failure_count"] == 0
+    assert payload["unresolved_count"] == 1
+    assert payload["setup_ms"] == 123.0
+    assert payload["evaluation_ms"] == 123.0
+    assert payload["teardown_ms"] == 123.0
+    assert payload["total_ms"] == 123.0
+    assert payload["outcome"] == "validator_batch_failure"
+    assert payload["error_code"] == "validator_internal_timeout"
+
+
+async def test_scheduler_logs_partial_progress_for_unexpected_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    completed_task = _task("completed")
+    pending_task = _task("pending")
+    tasks = (completed_task, pending_task)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    completed_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=completed_task,
+    )
+
+    async def fail_unexpectedly(**kwargs):
+        _ = kwargs
+        raise UnexpectedArtifactExecutionError(
+            cause=RuntimeError("progress store failed"),
+            completed_submissions=(completed_submission,),
+            remaining_tasks=(pending_task,),
+        )
+
+    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_unexpectedly)
+
+    with pytest.raises(RuntimeError, match="progress store failed"):
+        await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["artifact_id"] == str(artifact.artifact_id)
+    assert payload["planned_task_count"] == 2
+    assert payload["success_count"] == 1
+    assert payload["failure_count"] == 0
+    assert payload["unresolved_count"] == 1
+    assert payload["setup_ms"] == 123.0
+    assert payload["evaluation_ms"] == 123.0
+    assert payload["teardown_ms"] == 123.0
+    assert payload["total_ms"] == 123.0
+    assert payload["outcome"] == "unexpected_failure"
+    assert payload["error_code"] is None
+
+
+async def test_scheduler_logs_accounted_summary_for_artifact_failed_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    completed_task = _task("completed")
+    unresolved_task = _task("unresolved")
+    tasks = (completed_task, unresolved_task)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    completed_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=completed_task,
+    )
+    backfilled_failure = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=unresolved_task,
+        error=EvaluationError(code="sandbox_invocation_failed", message="sandbox failed"),
+    )
+
+    async def fail_artifact(**kwargs):
+        _ = kwargs
+        return ArtifactEvaluationOutcome(
+            submissions=(completed_submission,),
+            unresolved_tasks=(unresolved_task,),
+            timeout_observations_by_pair={},
+            slowest_successful_tps=40.0,
+            artifact_failure=ArtifactFailure(
+                error_code="sandbox_invocation_failed",
+                message="sandbox failed",
+                failure_detail=ValidatorBatchFailureDetail(
+                    error_code="sandbox_invocation_failed",
+                    error_message="sandbox failed",
+                    occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+                    artifact_id=artifact.artifact_id,
+                    uid=artifact.uid,
+                    exception_type="SandboxInvocationError",
+                ),
+                artifact_breaker_tripped=False,
+            ),
+        )
+
+    async def record_remaining_failures(**kwargs):
+        _ = kwargs
+        return (backfilled_failure,)
+
+    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_artifact)
+    monkeypatch.setattr(
+        scheduler,
+        "_record_remaining_tasks_for_artifact_failure",
+        record_remaining_failures,
+    )
+
+    result = await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    assert result.runs == (completed_submission, backfilled_failure)
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["planned_task_count"] == 2
+    assert payload["success_count"] == 1
+    assert payload["failure_count"] == 1
+    assert payload["unresolved_count"] == 0
+    assert payload["outcome"] == "artifact_failed"
+    assert payload["error_code"] == "sandbox_invocation_failed"
+
+
+async def test_scheduler_preserves_artifact_failed_outcome_when_teardown_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    class FailingStopSandboxManager(DummySandboxManager):
+        def stop(self, deployment: SandboxDeployment) -> None:
+            self.stops.append(deployment)
+            raise RuntimeError("sandbox stop failed")
+
+    completed_task = _task("completed")
+    unresolved_task = _task("unresolved")
+    tasks = (completed_task, unresolved_task)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = FailingStopSandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+    captured_warnings: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    def capture_warning(message: str, *args, **kwargs) -> None:
+        captured_warnings.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module.logger, "warning", capture_warning)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    completed_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=completed_task,
+    )
+    backfilled_failure = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=unresolved_task,
+        error=EvaluationError(code="sandbox_invocation_failed", message="sandbox failed"),
+    )
+
+    async def fail_artifact(**kwargs):
+        _ = kwargs
+        return ArtifactEvaluationOutcome(
+            submissions=(completed_submission,),
+            unresolved_tasks=(unresolved_task,),
+            timeout_observations_by_pair={},
+            slowest_successful_tps=40.0,
+            artifact_failure=ArtifactFailure(
+                error_code="sandbox_invocation_failed",
+                message="sandbox failed",
+                failure_detail=ValidatorBatchFailureDetail(
+                    error_code="sandbox_invocation_failed",
+                    error_message="sandbox failed",
+                    occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+                    artifact_id=artifact.artifact_id,
+                    uid=artifact.uid,
+                    exception_type="SandboxInvocationError",
+                ),
+                artifact_breaker_tripped=False,
+            ),
+        )
+
+    async def record_remaining_failures(**kwargs):
+        _ = kwargs
+        return (backfilled_failure,)
+
+    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_artifact)
+    monkeypatch.setattr(
+        scheduler,
+        "_record_remaining_tasks_for_artifact_failure",
+        record_remaining_failures,
+    )
+
+    result = await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    assert result.runs == (completed_submission, backfilled_failure)
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["planned_task_count"] == 2
+    assert payload["success_count"] == 1
+    assert payload["failure_count"] == 1
+    assert payload["unresolved_count"] == 0
+    assert payload["outcome"] == "artifact_failed"
+    assert payload["error_code"] == "sandbox_invocation_failed"
+
+    assert captured_warnings == [
+        (
+            "artifact teardown failed after primary failure",
+            {
+                "batch_id": str(batch_id),
+                "uid": artifact.uid,
+                "artifact_id": str(artifact.artifact_id),
+                "primary_outcome": "artifact_failed",
+                "primary_error_code": "sandbox_invocation_failed",
+            },
+        )
+    ]
+
+
+async def test_scheduler_logs_partial_progress_when_setup_failure_backfill_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    tasks = (_task("first"), _task("second"))
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    recorded_failure = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=tasks[0],
+        error=EvaluationError(code="sandbox_start_failed", message="artifact setup failed"),
+    )
+
+    async def fail_setup(**kwargs):
+        _ = kwargs
+        raise ArtifactExecutionFailedError(
+            error_code=MinerTaskErrorCode.SANDBOX_START_FAILED,
+            message="artifact setup failed",
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code="sandbox_start_failed",
+                error_message="artifact setup failed",
+                occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+                artifact_id=artifact.artifact_id,
+                uid=artifact.uid,
+            ),
+            completed_submissions=(),
+            remaining_tasks=tasks,
+        )
+
+    async def partial_backfill(**kwargs):
+        _ = kwargs
+        raise UnexpectedArtifactExecutionError(
+            cause=RuntimeError("progress store failed"),
+            completed_submissions=(recorded_failure,),
+            remaining_tasks=(tasks[1],),
+        )
+
+    monkeypatch.setattr(scheduler, "_start_artifact_with_retry", fail_setup)
+    monkeypatch.setattr(scheduler, "_record_artifact_failure", partial_backfill)
+
+    with pytest.raises(RuntimeError, match="progress store failed"):
+        await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["planned_task_count"] == 2
+    assert payload["success_count"] == 0
+    assert payload["failure_count"] == 1
+    assert payload["unresolved_count"] == 1
+    assert payload["outcome"] == "setup_failed"
+    assert payload["error_code"] == "sandbox_start_failed"
+
+
+async def test_scheduler_logs_partial_progress_when_artifact_failure_backfill_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    completed_task = _task("completed")
+    first_unresolved = _task("first-unresolved")
+    second_unresolved = _task("second-unresolved")
+    tasks = (completed_task, first_unresolved, second_unresolved)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    completed_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=completed_task,
+    )
+    recorded_failure = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=first_unresolved,
+        error=EvaluationError(code="sandbox_invocation_failed", message="sandbox failed"),
+    )
+
+    async def fail_artifact(**kwargs):
+        _ = kwargs
+        return ArtifactEvaluationOutcome(
+            submissions=(completed_submission,),
+            unresolved_tasks=(first_unresolved, second_unresolved),
+            timeout_observations_by_pair={},
+            slowest_successful_tps=40.0,
+            artifact_failure=ArtifactFailure(
+                error_code="sandbox_invocation_failed",
+                message="sandbox failed",
+                failure_detail=ValidatorBatchFailureDetail(
+                    error_code="sandbox_invocation_failed",
+                    error_message="sandbox failed",
+                    occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+                    artifact_id=artifact.artifact_id,
+                    uid=artifact.uid,
+                    exception_type="SandboxInvocationError",
+                ),
+                artifact_breaker_tripped=False,
+            ),
+        )
+
+    async def partial_backfill(**kwargs):
+        _ = kwargs
+        raise UnexpectedArtifactExecutionError(
+            cause=RuntimeError("progress store failed"),
+            completed_submissions=(recorded_failure,),
+            remaining_tasks=(second_unresolved,),
+        )
+
+    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_artifact)
+    monkeypatch.setattr(scheduler, "_record_remaining_tasks_for_artifact_failure", partial_backfill)
+
+    with pytest.raises(RuntimeError, match="progress store failed"):
+        await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["planned_task_count"] == 3
+    assert payload["success_count"] == 1
+    assert payload["failure_count"] == 1
+    assert payload["unresolved_count"] == 1
+    assert payload["outcome"] == "artifact_failed"
+    assert payload["error_code"] == "sandbox_invocation_failed"
+
+
+async def test_scheduler_logs_partial_progress_for_validator_batch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    completed_task = _task("completed")
+    pending_task = _task("pending")
+    tasks = (completed_task, pending_task)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    sandbox_manager = DummySandboxManager()
+    evaluation_records = DummyEvaluationRecordStore()
+    session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
+    receipt_log = DummyReceiptLog()
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(scheduler_module.measurement_logger, "info", capture_info)
+    monkeypatch.setattr(scheduler_module, "_monotonic_elapsed_ms", lambda **_: 123.0)
+
+    scheduler = EvaluationScheduler(
+        tasks=tasks,
+        subtensor_client=subtensor,
+        sandbox_manager=sandbox_manager,
+        session_manager=session_manager,
+        evaluation_records=evaluation_records,
+        receipt_log=receipt_log,
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+        ),
+    )
+
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    batch_id = uuid4()
+    completed_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=completed_task,
+    )
+
+    async def fail_evaluation(**kwargs):
+        _ = kwargs
+        raise ValidatorBatchFailedError(
+            error_code="validator_internal_timeout",
+            message="validator timeout",
+            failure_detail=ValidatorBatchFailureDetail(
+                error_code="validator_internal_timeout",
+                error_message="validator timeout",
+                occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+                artifact_id=artifact.artifact_id,
+                uid=artifact.uid,
+            ),
+            completed_submissions=(completed_submission,),
+            remaining_tasks=(pending_task,),
+        )
+
+    monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", fail_evaluation)
+
+    with pytest.raises(ValidatorBatchFailedError, match="validator timeout"):
+        await scheduler.run(batch_id=batch_id, requested_artifacts=(artifact,))
+
+    artifact_logs = [extra for message, extra in captured_logs if message == "miner-task artifact execution finished"]
+    assert len(artifact_logs) == 1
+    payload = artifact_logs[0]
+    assert payload["planned_task_count"] == 2
+    assert payload["success_count"] == 1
+    assert payload["failure_count"] == 0
+    assert payload["unresolved_count"] == 1
+    assert payload["outcome"] == "validator_batch_failure"
+    assert payload["error_code"] == "validator_internal_timeout"
 
 
 async def test_scheduler_avoids_asyncio_to_thread_for_blocking_work(

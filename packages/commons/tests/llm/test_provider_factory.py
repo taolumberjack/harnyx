@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pydantic import SecretStr
 
 from harnyx_commons.config.bedrock import BedrockSettings
@@ -113,3 +114,87 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
     assert third.provider_name == "bedrock"
     assert fourth.provider_name == "vertex"
     assert fifth.provider_name == "vertex-maas"
+
+
+async def test_build_cached_llm_provider_registry_closes_cached_providers_once(
+    monkeypatch,
+) -> None:
+    closed: list[str] = []
+
+    class _FakeProvider:
+        def __init__(self, *, provider_name: str) -> None:
+            self.provider_name = provider_name
+
+        async def aclose(self) -> None:
+            closed.append(self.provider_name)
+
+    def fake_build_provider(*, provider_name, llm_settings, bedrock_settings, vertex_settings):
+        _ = (llm_settings, bedrock_settings, vertex_settings)
+        return _FakeProvider(provider_name=provider_name)
+
+    monkeypatch.setattr(provider_factory, "_build_provider", fake_build_provider)
+
+    registry = provider_factory.build_cached_llm_provider_registry(
+        llm_settings=LlmSettings.model_construct(),
+        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
+        vertex_settings=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_maas_gcp_location="us-east5",
+            vertex_timeout_seconds=45.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+    )
+
+    first = registry.resolve("chutes")
+    second = registry.resolve("chutes")
+    registry.resolve("bedrock")
+
+    assert first is second
+
+    await registry.aclose()
+
+    assert closed == ["chutes", "bedrock"]
+
+
+async def test_build_cached_llm_provider_registry_closes_later_providers_after_failure(
+    monkeypatch,
+) -> None:
+    closed: list[str] = []
+
+    class _FakeProvider:
+        def __init__(self, *, provider_name: str) -> None:
+            self.provider_name = provider_name
+
+        async def aclose(self) -> None:
+            closed.append(self.provider_name)
+            if self.provider_name == "chutes":
+                raise RuntimeError("boom")
+
+    def fake_build_provider(*, provider_name, llm_settings, bedrock_settings, vertex_settings):
+        _ = (llm_settings, bedrock_settings, vertex_settings)
+        return _FakeProvider(provider_name=provider_name)
+
+    monkeypatch.setattr(provider_factory, "_build_provider", fake_build_provider)
+
+    registry = provider_factory.build_cached_llm_provider_registry(
+        llm_settings=LlmSettings.model_construct(),
+        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
+        vertex_settings=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_maas_gcp_location="us-east5",
+            vertex_timeout_seconds=45.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+    )
+
+    registry.resolve("chutes")
+    registry.resolve("bedrock")
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        await registry.aclose()
+
+    assert closed == ["chutes", "bedrock"]
+    assert len(exc_info.value.exceptions) == 1
+    assert exc_info.value.exceptions[0].__notes__ == ["cached llm provider close failed: chutes"]

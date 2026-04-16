@@ -13,6 +13,60 @@ from harnyx_commons.llm.provider import LlmProviderName, LlmProviderPort, parse_
 from harnyx_commons.llm.providers.bedrock import BedrockLlmProvider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
+from harnyx_commons.llm.routing import LlmRouteSurface, RoutedLlmProvider
+
+
+class CachedLlmProviderRegistry:
+    def __init__(
+        self,
+        *,
+        llm_settings: LlmSettings,
+        bedrock_settings: BedrockSettings,
+        vertex_settings: VertexSettings,
+    ) -> None:
+        self._llm_settings = llm_settings
+        self._bedrock_settings = bedrock_settings
+        self._vertex_settings = vertex_settings
+        self._cache: dict[LlmProviderName, LlmProviderPort] = {}
+
+    def resolve(self, name: str) -> LlmProviderPort:
+        provider_name = parse_provider_name(name, component="shared")
+        provider = self._cache.get(provider_name)
+        if provider is None:
+            provider = _build_provider(
+                provider_name=provider_name,
+                llm_settings=self._llm_settings,
+                bedrock_settings=self._bedrock_settings,
+                vertex_settings=self._vertex_settings,
+            )
+            self._cache[provider_name] = provider
+        return provider
+
+    async def aclose(self) -> None:
+        errors: list[Exception] = []
+        for provider_name, provider in self._cache.items():
+            try:
+                await provider.aclose()
+            except Exception as exc:
+                exc.add_note(f"cached llm provider close failed: {provider_name}")
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("cached llm provider cleanup failed", errors)
+
+
+def build_cached_llm_provider_registry(
+    *,
+    llm_settings: LlmSettings,
+    bedrock_settings: BedrockSettings,
+    vertex_settings: VertexSettings,
+) -> CachedLlmProviderRegistry:
+    """Return a cached provider registry that applies shared concurrency settings."""
+
+    return CachedLlmProviderRegistry(
+        llm_settings=llm_settings,
+        bedrock_settings=bedrock_settings,
+        vertex_settings=vertex_settings,
+    )
 
 
 def build_cached_llm_provider_resolver(
@@ -21,24 +75,29 @@ def build_cached_llm_provider_resolver(
     bedrock_settings: BedrockSettings,
     vertex_settings: VertexSettings,
 ) -> Callable[[str], LlmProviderPort]:
-    """Return a cached provider resolver that applies shared concurrency settings."""
+    registry = build_cached_llm_provider_registry(
+        llm_settings=llm_settings,
+        bedrock_settings=bedrock_settings,
+        vertex_settings=vertex_settings,
+    )
+    return registry.resolve
 
-    cache: dict[LlmProviderName, LlmProviderPort] = {}
 
-    def resolve(name: str) -> LlmProviderPort:
-        provider_name = parse_provider_name(name, component="shared")
-        provider = cache.get(provider_name)
-        if provider is None:
-            provider = _build_provider(
-                provider_name=provider_name,
-                llm_settings=llm_settings,
-                bedrock_settings=bedrock_settings,
-                vertex_settings=vertex_settings,
-            )
-            cache[provider_name] = provider
-        return provider
-
-    return resolve
+def build_routed_llm_provider(
+    *,
+    surface: LlmRouteSurface,
+    default_provider: LlmProviderName,
+    llm_settings: LlmSettings,
+    allowed_providers: set[LlmProviderName],
+    provider_registry: CachedLlmProviderRegistry,
+) -> RoutedLlmProvider:
+    return RoutedLlmProvider(
+        surface=surface,
+        default_provider=default_provider,
+        overrides=llm_settings.llm_model_provider_overrides,
+        allowed_providers=allowed_providers,
+        resolve_provider=provider_registry.resolve,
+    )
 
 
 def _build_provider(
@@ -112,4 +171,9 @@ def _max_concurrent_for_provider(
     raise ValueError(f"unsupported llm provider: {provider_name}")
 
 
-__all__ = ["build_cached_llm_provider_resolver"]
+__all__ = [
+    "CachedLlmProviderRegistry",
+    "build_cached_llm_provider_registry",
+    "build_cached_llm_provider_resolver",
+    "build_routed_llm_provider",
+]

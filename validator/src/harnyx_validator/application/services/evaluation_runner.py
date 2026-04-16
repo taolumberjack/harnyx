@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -52,6 +53,7 @@ Clock = Callable[[], datetime]
 SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunSubmission]]
 
 logger = logging.getLogger("harnyx_validator.scheduler")
+measurement_logger = logging.getLogger("harnyx_validator.measurement")
 LOCAL_RETRY_ATTEMPTS = 2
 ARTIFACT_INFRA_FAILURE_THRESHOLD = 2
 PROVIDER_BATCH_MIN_TOTAL_CALLS = 10
@@ -66,6 +68,40 @@ _ARTIFACT_BREAKER_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
     return (completed_at - issued_at).total_seconds() * 1000.0
+
+
+def _monotonic_elapsed_ms(*, started_at: float, completed_at: float) -> float:
+    return round((completed_at - started_at) * 1000.0, 3)
+
+
+def _log_session_finished(
+    *,
+    batch_id: UUID,
+    session_id: UUID,
+    artifact_id: UUID,
+    task_id: UUID,
+    uid: int,
+    attempt_count: int,
+    session_ms: float,
+    terminal_outcome: str,
+    error_code: str | None,
+) -> None:
+    measurement_logger.info(
+        "miner-task session finished",
+        extra={
+            "data": {
+                "batch_id": str(batch_id),
+                "session_id": str(session_id),
+                "artifact_id": str(artifact_id),
+                "task_id": str(task_id),
+                "uid": uid,
+                "attempt_count": attempt_count,
+                "session_ms": session_ms,
+                "terminal_outcome": terminal_outcome,
+                "error_code": error_code,
+            }
+        },
+    )
 
 
 class AttemptControlKind(StrEnum):
@@ -113,10 +149,14 @@ class ValidatorBatchFailedError(RuntimeError):
         error_code: str,
         message: str,
         failure_detail: ValidatorBatchFailureDetail,
+        completed_submissions: tuple[MinerTaskRunSubmission, ...] | None = None,
+        remaining_tasks: tuple[MinerTask, ...] | None = None,
     ) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.failure_detail = failure_detail
+        self.completed_submissions = completed_submissions
+        self.remaining_tasks = remaining_tasks
 
 
 class ArtifactExecutionFailedError(RuntimeError):
@@ -136,6 +176,20 @@ class ArtifactExecutionFailedError(RuntimeError):
         self.completed_submissions = completed_submissions
         self.remaining_tasks = remaining_tasks
         self.artifact_breaker_tripped = artifact_breaker_tripped
+
+
+class UnexpectedArtifactExecutionError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        cause: Exception,
+        completed_submissions: tuple[MinerTaskRunSubmission, ...],
+        remaining_tasks: tuple[MinerTask, ...],
+    ) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.completed_submissions = completed_submissions
+        self.remaining_tasks = remaining_tasks
 
 
 @dataclass(slots=True)
@@ -284,16 +338,31 @@ class EvaluationRunner:
             )
         ]
         await asyncio.gather(*workers)
-
-        if dispatch.validator_failure is not None:
-            raise dispatch.validator_failure
-        if dispatch.unexpected_failure is not None:
-            raise dispatch.unexpected_failure
-
         completed_submissions = tuple(
             submission for submission in dispatch.submissions_by_index if submission is not None
         )
         all_completed_submissions = (*earlier_submissions, *completed_submissions)
+        if dispatch.validator_failure is not None:
+            remaining_tasks = tuple(
+                task for index, task in indexed_tasks if dispatch.submissions_by_index[index] is None
+            )
+            raise ValidatorBatchFailedError(
+                error_code=dispatch.validator_failure.error_code,
+                message=str(dispatch.validator_failure),
+                failure_detail=dispatch.validator_failure.failure_detail,
+                completed_submissions=all_completed_submissions,
+                remaining_tasks=remaining_tasks,
+            ) from dispatch.validator_failure
+        if dispatch.unexpected_failure is not None:
+            remaining_tasks = tuple(
+                task for index, task in indexed_tasks if dispatch.submissions_by_index[index] is None
+            )
+            raise UnexpectedArtifactExecutionError(
+                cause=dispatch.unexpected_failure,
+                completed_submissions=all_completed_submissions,
+                remaining_tasks=remaining_tasks,
+            ) from dispatch.unexpected_failure
+
         if dispatch.artifact_breaker_submission is None:
             unresolved_tasks = tuple(
                 task for _, task in sorted(dispatch.unresolved_tasks_by_index.items())
@@ -389,6 +458,8 @@ class EvaluationRunner:
 
                 raise RuntimeError("unexpected non-terminal decision from task retry loop")
             except ValidatorBatchFailedError as exc:
+                if exc.completed_submissions:
+                    dispatch.submissions_by_index[task_index] = _require_single_completed_submission(exc)
                 if dispatch.validator_failure is None:
                     dispatch.validator_failure = exc
             except Exception as exc:
@@ -404,7 +475,7 @@ class EvaluationRunner:
         create_submission: SubmissionFactory,
     ) -> list[MinerTaskRunSubmission]:
         submissions: list[MinerTaskRunSubmission] = []
-        for task in tasks:
+        for index, task in enumerate(tasks):
             issued = self._issue_session(
                 batch_id=batch_id,
                 uid=artifact.uid,
@@ -412,6 +483,12 @@ class EvaluationRunner:
             )
             try:
                 submissions.append(await create_submission(task, issued))
+            except Exception as exc:
+                raise UnexpectedArtifactExecutionError(
+                    cause=exc,
+                    completed_submissions=tuple(submissions),
+                    remaining_tasks=tuple(tasks[index:]),
+                ) from exc
             finally:
                 self._clear_task_session(issued.session.session_id)
                 self._sessions.revoke(issued.session.session_id)
@@ -432,8 +509,13 @@ class EvaluationRunner:
             uid=artifact.uid,
             task=task,
         )
+        session_started_at = time.monotonic()
+        attempt_count = 0
+        terminal_outcome = "unexpected"
+        error_code: str | None = None
         try:
             for attempt_number in range(1, LOCAL_RETRY_ATTEMPTS + 1):
+                attempt_count = attempt_number
                 self._sessions.begin_attempt(issued.session.session_id)
                 decision = await self._evaluate_task_attempt(
                     batch_id=batch_id,
@@ -444,18 +526,40 @@ class EvaluationRunner:
                     final_attempt=attempt_number >= LOCAL_RETRY_ATTEMPTS,
                 )
                 if decision.kind is AttemptControlKind.SUBMISSION:
+                    terminal_outcome = AttemptControlKind.SUBMISSION.value
+                    error_code = _submission_error_code_or_none(_require_submission(decision))
                     return decision
 
                 if decision.kind is AttemptControlKind.REVIEW_TIMEOUT:
-                    return self._resolve_timeout_attempt(
-                        batch_id=batch_id,
-                        artifact=artifact,
-                        task=task,
-                        session_id=issued.session.session_id,
-                        exc=_require_timeout_exc(decision),
-                        successful_baseline_tps=successful_baseline_tps,
-                        prior_timeout_observations=prior_timeout_observations,
-                    )
+                    try:
+                        timeout_resolution = self._resolve_timeout_attempt(
+                            batch_id=batch_id,
+                            artifact=artifact,
+                            task=task,
+                            session_id=issued.session.session_id,
+                            exc=_require_timeout_exc(decision),
+                            successful_baseline_tps=successful_baseline_tps,
+                            prior_timeout_observations=prior_timeout_observations,
+                        )
+                    except ValidatorBatchFailedError as exc:
+                        terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
+                        error_code = str(exc.error_code)
+                        raise
+                    if timeout_resolution.kind is AttemptControlKind.SUBMISSION:
+                        terminal_outcome = AttemptControlKind.SUBMISSION.value
+                        error_code = _submission_error_code_or_none(
+                            _require_submission(timeout_resolution)
+                        )
+                        return timeout_resolution
+                    if timeout_resolution.kind is AttemptControlKind.TIMEOUT_UNRESOLVED:
+                        terminal_outcome = AttemptControlKind.TIMEOUT_UNRESOLVED.value
+                        return timeout_resolution
+                    if timeout_resolution.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
+                        validator_failure = _require_validator_failure(timeout_resolution)
+                        terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
+                        error_code = str(validator_failure.error_code)
+                        raise validator_failure
+                    raise RuntimeError("timeout review returned unexpected decision")
 
                 if decision.kind is AttemptControlKind.RETRY:
                     self._log_retry_attempt(
@@ -468,10 +572,27 @@ class EvaluationRunner:
                     continue
 
                 if decision.kind is AttemptControlKind.VALIDATOR_BATCH_FAILURE:
-                    raise _require_validator_failure(decision)
+                    validator_failure = _require_validator_failure(decision)
+                    terminal_outcome = AttemptControlKind.VALIDATOR_BATCH_FAILURE.value
+                    error_code = str(validator_failure.error_code)
+                    raise validator_failure
 
                 raise RuntimeError("task retry loop returned unexpected decision")
         finally:
+            _log_session_finished(
+                batch_id=batch_id,
+                session_id=issued.session.session_id,
+                artifact_id=artifact.artifact_id,
+                task_id=task.task_id,
+                uid=artifact.uid,
+                attempt_count=attempt_count,
+                session_ms=_monotonic_elapsed_ms(
+                    started_at=session_started_at,
+                    completed_at=time.monotonic(),
+                ),
+                terminal_outcome=terminal_outcome,
+                error_code=error_code,
+            )
             self._clear_task_session(issued.session.session_id)
             self._sessions.revoke(issued.session.session_id)
 
@@ -488,6 +609,7 @@ class EvaluationRunner:
         final_attempt: bool,
     ) -> TaskAttemptDecision:
         request = MinerTaskRunRequest(
+            batch_id=batch_id,
             session_id=issued.session.session_id,
             token=issued.token,
             uid=artifact.uid,
@@ -807,19 +929,23 @@ class EvaluationRunner:
             )
             return _submission_decision(submission)
 
-        raise ValidatorBatchFailedError(
-            error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
-            message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
-            failure_detail=ValidatorBatchFailureDetail(
+        return _validator_batch_failure_decision(
+            ValidatorBatchFailedError(
                 error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
-                error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
-                occurred_at=self._clock(),
-                artifact_id=artifact.artifact_id,
-                task_id=task.task_id,
-                uid=artifact.uid,
-                exception_type=_exception_type_name(exc),
-            ),
-        ) from exc
+                message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
+                failure_detail=ValidatorBatchFailureDetail(
+                    error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
+                    error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
+                    occurred_at=self._clock(),
+                    artifact_id=artifact.artifact_id,
+                    task_id=task.task_id,
+                    uid=artifact.uid,
+                    exception_type=_exception_type_name(exc),
+                ),
+                completed_submissions=(submission,),
+                remaining_tasks=(),
+            )
+        )
 
     def _non_timeout_failure_decision(
         self,
@@ -1118,6 +1244,15 @@ def _require_validator_failure(decision: TaskAttemptDecision) -> ValidatorBatchF
     return decision.validator_failure
 
 
+def _require_single_completed_submission(
+    validator_failure: ValidatorBatchFailedError,
+) -> MinerTaskRunSubmission:
+    completed_submissions = validator_failure.completed_submissions
+    if completed_submissions is None or len(completed_submissions) != 1:
+        raise RuntimeError("validator batch failure must provide exactly one completed submission")
+    return completed_submissions[0]
+
+
 def _exception_type_name(exc: Exception | None) -> str | None:
     if exc is None:
         return None
@@ -1249,6 +1384,13 @@ def _artifact_failure_exception_type(
     if _is_breaker_eligible_artifact_failure_submission(submission):
         return "SandboxInvocationError"
     return None
+
+
+def _submission_error_code_or_none(submission: MinerTaskRunSubmission) -> str | None:
+    error = submission.run.details.error
+    if error is None:
+        return None
+    return str(error.code)
 
 
 __all__ = [
