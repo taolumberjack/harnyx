@@ -341,7 +341,11 @@ class LocalEvaluationRuntime:
                 rpc_port=tool_host.port,
                 container_name=f"harnyx-local-eval-{artifact.artifact_id.hex[:12]}-{uuid4().hex[:8]}",
                 volumes=((str(state_dir), DEFAULT_STATE_DIR, "ro"),),
-                extra_env={"AGENT_PATH": staged_agent.container_path},
+                extra_env={
+                    "AGENT_PATH": staged_agent.container_path,
+                    "SANDBOX_HOST": "0.0.0.0",
+                    "SANDBOX_PORT": "8000",
+                },
                 host_container_url=tool_host.host_container_url,
             )
             deployment = await self._start_sandbox_deployment(options)
