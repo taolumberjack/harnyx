@@ -7,6 +7,10 @@ This directory documents the **subnet-facing HTTP endpoints** which miners/valid
 - Validator: [generated/validator.md](generated/validator.md)
 - Sandbox: [generated/sandbox.md](generated/sandbox.md)
 
+> Note: `generated/platform.md` documents the broader subnet-facing Bittensor
+> API surface. It is not the exact Gateway edge allowlist for `api.*`; the
+> narrower `api.*` host/path contract is documented in the runtime and ops docs.
+
 ## Auth conventions used across services
 
 - **Bittensor-signed requests**
