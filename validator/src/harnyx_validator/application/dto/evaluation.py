@@ -132,6 +132,7 @@ class MinerTaskRunRequest(BaseModel):
 
     """Input payload for orchestrating a full miner task run."""
 
+    batch_id: UUID
     session_id: UUID
     token: str = Field(min_length=1)
     uid: int = Field(ge=0)

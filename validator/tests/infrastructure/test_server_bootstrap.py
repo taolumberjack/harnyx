@@ -118,6 +118,24 @@ def test_validator_import_configures_sentry_before_tracing(monkeypatch) -> None:
     assert calls.index("sentry") < calls.index("tracing")
 
 
+def test_validator_logging_config_defaults_measurement_logger_to_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VALIDATOR_MEASUREMENT_LOG_LEVEL", raising=False)
+
+    config = logging_mod.build_log_config()
+
+    assert config["loggers"]["harnyx_validator.measurement"]["level"] == "WARNING"
+
+
+def test_validator_logging_config_respects_measurement_logger_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VALIDATOR_MEASUREMENT_LOG_LEVEL", "debug")
+
+    config = logging_mod.build_log_config()
+
+    assert config["loggers"]["harnyx_validator.measurement"]["level"] == "DEBUG"
+
+
 @pytest.mark.anyio
 async def test_lifespan_stops_auth_when_later_startup_step_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []

@@ -6,12 +6,21 @@ from uuid import UUID, uuid4
 
 import pytest
 
+import harnyx_validator.application.evaluate_task_run as evaluate_task_run_module
 from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response, ScoreBreakdown
+from harnyx_commons.domain.miner_task import (
+    MinerTask,
+    MinerTaskErrorCode,
+    Query,
+    ReferenceAnswer,
+    Response,
+    ScoreBreakdown,
+)
 from harnyx_commons.domain.session import LlmUsageTotals
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -95,6 +104,18 @@ class TrackingScoringService:
         _ = task, response
         self.calls += 1
         raise AssertionError("scoring should not run for exhausted sessions")
+
+
+class FailingScoringService:
+    async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+        _ = task, response
+        raise RuntimeError("scoring failed")
+
+
+class RetryExhaustedScoringService:
+    async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+        _ = task, response
+        raise LlmRetryExhaustedError("scoring retries exhausted")
 
 
 class _ClockSequence:
@@ -195,6 +216,7 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
 
     outcome = await orchestrator.evaluate(
         MinerTaskRunRequest(
+            batch_id=uuid4(),
             session_id=session_request.session_id,
             token=TEST_SESSION_TOKEN,
             uid=7,
@@ -218,6 +240,243 @@ async def test_application_use_cases_cooperate_for_single_task_run() -> None:
             session_request.session_id,
         ),
     ]
+
+
+async def test_task_orchestration_logs_scoring_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_registry = FakeSessionRegistry()
+    receipt_log = FakeReceiptLog()
+    token_registry = InMemoryTokenRegistry()
+    session_manager = SessionManager(session_registry, token_registry)
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(evaluate_task_run_module.measurement_logger, "info", capture_info)
+
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Harnyx Subnet demo"),
+        reference_answer=ReferenceAnswer(text="A direct answer"),
+    )
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    session_request = SessionTokenRequest(
+        session_id=uuid4(),
+        uid=7,
+        task_id=task.task_id,
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=0.5,
+        token=TEST_SESSION_TOKEN,
+    )
+    session_manager.issue(session_request)
+
+    sandbox = StubSandboxClient()
+    sandbox.set_response({"text": "A direct answer"})
+    invoker = EntrypointInvoker(
+        session_registry=session_registry,
+        sandbox_client=sandbox,
+        token_registry=token_registry,
+        receipt_log=receipt_log,
+    )
+
+    orchestrator = TaskRunOrchestrator(
+        entrypoint_invoker=invoker,
+        receipt_log=receipt_log,
+        scoring_service=StubScoringService(),
+        session_registry=session_registry,
+        clock=_ClockSequence(
+            datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
+        ).now,
+    )
+
+    await orchestrator.evaluate(
+        MinerTaskRunRequest(
+            batch_id=batch_id,
+            session_id=session_request.session_id,
+            token=TEST_SESSION_TOKEN,
+            uid=7,
+            artifact_id=artifact_id,
+            task=task,
+        ),
+    )
+
+    scoring_logs = [extra for message, extra in captured_logs if message == "miner-task scoring finished"]
+    assert len(scoring_logs) == 1
+    payload = scoring_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["session_id"] == str(session_request.session_id)
+    assert payload["artifact_id"] == str(artifact_id)
+    assert payload["task_id"] == str(task.task_id)
+    assert payload["uid"] == 7
+    assert payload["invocation_ms"] >= 0.0
+    assert payload["scoring_ms"] >= 0.0
+    assert payload["orchestration_ms"] >= 0.0
+    assert payload["comparison_score"] == pytest.approx(1.0)
+    assert payload["similarity_score"] == pytest.approx(1.0)
+    assert payload["total_score"] == pytest.approx(1.0)
+    assert payload["outcome"] == "ok"
+    assert payload["error_code"] is None
+
+
+async def test_task_orchestration_logs_scoring_summary_on_scoring_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_registry = FakeSessionRegistry()
+    receipt_log = FakeReceiptLog()
+    token_registry = InMemoryTokenRegistry()
+    session_manager = SessionManager(session_registry, token_registry)
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(evaluate_task_run_module.measurement_logger, "info", capture_info)
+
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Harnyx Subnet demo"),
+        reference_answer=ReferenceAnswer(text="A direct answer"),
+    )
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    session_request = SessionTokenRequest(
+        session_id=uuid4(),
+        uid=7,
+        task_id=task.task_id,
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=0.5,
+        token=TEST_SESSION_TOKEN,
+    )
+    session_manager.issue(session_request)
+
+    sandbox = StubSandboxClient()
+    sandbox.set_response({"text": "A direct answer"})
+    invoker = EntrypointInvoker(
+        session_registry=session_registry,
+        sandbox_client=sandbox,
+        token_registry=token_registry,
+        receipt_log=receipt_log,
+    )
+    orchestrator = TaskRunOrchestrator(
+        entrypoint_invoker=invoker,
+        receipt_log=receipt_log,
+        scoring_service=FailingScoringService(),
+        session_registry=session_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    with pytest.raises(RuntimeError, match="scoring failed"):
+        await orchestrator.evaluate(
+            MinerTaskRunRequest(
+                batch_id=batch_id,
+                session_id=session_request.session_id,
+                token=TEST_SESSION_TOKEN,
+                uid=7,
+                artifact_id=artifact_id,
+                task=task,
+            ),
+        )
+
+    scoring_logs = [extra for message, extra in captured_logs if message == "miner-task scoring finished"]
+    assert len(scoring_logs) == 1
+    payload = scoring_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["session_id"] == str(session_request.session_id)
+    assert payload["artifact_id"] == str(artifact_id)
+    assert payload["task_id"] == str(task.task_id)
+    assert payload["uid"] == 7
+    assert payload["invocation_ms"] >= 0.0
+    assert payload["scoring_ms"] >= 0.0
+    assert payload["orchestration_ms"] >= 0.0
+    assert payload["comparison_score"] is None
+    assert payload["similarity_score"] is None
+    assert payload["total_score"] is None
+    assert payload["outcome"] == "error"
+    assert payload["error_code"] == str(MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE)
+
+
+async def test_task_orchestration_logs_retry_exhausted_scoring_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_registry = FakeSessionRegistry()
+    receipt_log = FakeReceiptLog()
+    token_registry = InMemoryTokenRegistry()
+    session_manager = SessionManager(session_registry, token_registry)
+    captured_logs: list[tuple[str, dict[str, object]]] = []
+
+    def capture_info(message: str, *args, **kwargs) -> None:
+        captured_logs.append((message, dict(kwargs["extra"]["data"])))
+
+    monkeypatch.setattr(evaluate_task_run_module.measurement_logger, "info", capture_info)
+
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="Harnyx Subnet demo"),
+        reference_answer=ReferenceAnswer(text="A direct answer"),
+    )
+    batch_id = uuid4()
+    artifact_id = uuid4()
+    session_request = SessionTokenRequest(
+        session_id=uuid4(),
+        uid=7,
+        task_id=task.task_id,
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=0.5,
+        token=TEST_SESSION_TOKEN,
+    )
+    session_manager.issue(session_request)
+
+    sandbox = StubSandboxClient()
+    sandbox.set_response({"text": "A direct answer"})
+    invoker = EntrypointInvoker(
+        session_registry=session_registry,
+        sandbox_client=sandbox,
+        token_registry=token_registry,
+        receipt_log=receipt_log,
+    )
+    orchestrator = TaskRunOrchestrator(
+        entrypoint_invoker=invoker,
+        receipt_log=receipt_log,
+        scoring_service=RetryExhaustedScoringService(),
+        session_registry=session_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    with pytest.raises(LlmRetryExhaustedError, match="scoring retries exhausted"):
+        await orchestrator.evaluate(
+            MinerTaskRunRequest(
+                batch_id=batch_id,
+                session_id=session_request.session_id,
+                token=TEST_SESSION_TOKEN,
+                uid=7,
+                artifact_id=artifact_id,
+                task=task,
+            ),
+        )
+
+    scoring_logs = [extra for message, extra in captured_logs if message == "miner-task scoring finished"]
+    assert len(scoring_logs) == 1
+    payload = scoring_logs[0]
+    assert payload["batch_id"] == str(batch_id)
+    assert payload["session_id"] == str(session_request.session_id)
+    assert payload["artifact_id"] == str(artifact_id)
+    assert payload["task_id"] == str(task.task_id)
+    assert payload["uid"] == 7
+    assert payload["invocation_ms"] >= 0.0
+    assert payload["scoring_ms"] >= 0.0
+    assert payload["orchestration_ms"] >= 0.0
+    assert payload["comparison_score"] is None
+    assert payload["similarity_score"] is None
+    assert payload["total_score"] is None
+    assert payload["outcome"] == "error"
+    assert payload["error_code"] == str(MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED)
 
 
 async def test_task_orchestration_stops_before_scoring_when_session_exhausts() -> None:
@@ -270,6 +529,7 @@ async def test_task_orchestration_stops_before_scoring_when_session_exhausts() -
     with pytest.raises(SessionBudgetExhaustedError):
         await orchestrator.evaluate(
             MinerTaskRunRequest(
+                batch_id=uuid4(),
                 session_id=session_request.session_id,
                 token=TEST_SESSION_TOKEN,
                 uid=7,
