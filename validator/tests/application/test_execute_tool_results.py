@@ -43,12 +43,14 @@ def test_build_tool_results_search_web_referenceable() -> None:
     assert first.note == "alpha"
     assert first.title == "Alpha"
     assert first.result_id == UUID(int=1).hex
+    assert first.raw is None
 
     assert second.index == 1
     assert second.url == "https://example.com/b"
     assert second.note is None
     assert second.title == "Beta"
     assert second.result_id == UUID(int=2).hex
+    assert second.raw is None
 
 
 def test_build_tool_results_fetch_page_referenceable() -> None:
@@ -71,6 +73,7 @@ def test_build_tool_results_fetch_page_referenceable() -> None:
         (0, "https://example.com/page-1", "first page", "Page"),
         (1, "https://example.com/page-2", "second page", None),
     ]
+    assert [result.raw for result in results] == [None, None]
 
 
 def test_build_tool_results_search_ai_keeps_note_field() -> None:
@@ -94,6 +97,7 @@ def test_build_tool_results_search_ai_keeps_note_field() -> None:
     assert results[0].url == "https://example.com/harnyx"
     assert results[0].note == "alpha note"
     assert results[0].title == "Harnyx"
+    assert results[0].raw is None
 
 
 def test_build_tool_results_referenceable_with_non_mapping_payload() -> None:

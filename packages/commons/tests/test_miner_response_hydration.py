@@ -67,6 +67,55 @@ def test_hydrate_miner_response_payload_hydrates_same_session_referenceable_resu
     )
 
 
+def test_hydrate_miner_response_payload_normalizes_blank_note_to_none() -> None:
+    session_id = uuid4()
+    receipt_log = InMemoryReceiptLog()
+    receipt_log.record(
+        ToolCall(
+            receipt_id="receipt-1",
+            session_id=session_id,
+            uid=42,
+            tool="search_web",
+            issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+            outcome=ToolCallOutcome.OK,
+            details=ToolCallDetails(
+                request_hash="req",
+                response_hash="res",
+                result_policy=ToolResultPolicy.REFERENCEABLE,
+                results=(
+                    SearchToolResult(
+                        index=0,
+                        result_id="result-1",
+                        url="https://example.com/source",
+                        note="   ",
+                        title="Example source",
+                    ),
+                ),
+            ),
+        )
+    )
+
+    response = hydrate_miner_response_payload(
+        {
+            "text": "Answer",
+            "citations": [{"receipt_id": "receipt-1", "result_id": "result-1"}],
+        },
+        session_id=session_id,
+        receipt_log=receipt_log,
+    )
+
+    assert response == Response(
+        text="Answer",
+        citations=(
+            AnswerCitation(
+                url="https://example.com/source",
+                note=None,
+                title="Example source",
+            ),
+        ),
+    )
+
+
 def test_hydrate_miner_response_payload_drops_invalid_or_cross_session_citations() -> None:
     session_id = uuid4()
     receipt_log = InMemoryReceiptLog()

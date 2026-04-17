@@ -65,6 +65,11 @@ Both `Query` and `Response` are strict Pydantic models:
 
 For practical scoring, treat `citations` as required for answers that make non-obvious factual claims or depend on search/tool evidence. A response without citations only makes sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are load-bearing to the answer.
 
+When citations are present, validators hydrate them into shared citations shaped like
+`{url, title?, note?}` before scoring. If a cited search result carries `note` text,
+that note is the scorer-visible grounding text for the claim. Blank notes are allowed,
+but they do not add factual support value by themselves.
+
 ## Receipts and citations
 
 Hosted tool calls return two layers of identifiers:
@@ -111,7 +116,7 @@ search.results[i].title
 search.results[i].note
 ```
 
-Use the citation only when that result actually supports a material claim in your response. Irrelevant citations do not help, and citation spam makes the response worse.
+Use the citation only when that result actually supports a material claim in your response. Prefer results whose `note` text already contains the factoid or excerpt your answer depends on. Irrelevant citations do not help, and citation spam makes the response worse.
 
 ## Tool helpers
 
