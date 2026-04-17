@@ -85,7 +85,12 @@ class EchoToolInvoker:
 
 
 class StubScoringService:
-    async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+    async def score(
+        self,
+        *,
+        task: MinerTask,
+        response: Response,
+    ) -> ScoreBreakdown:
         assert task.query.text == "Harnyx Subnet demo"
         assert response.text == "A direct answer"
         return ScoreBreakdown(
@@ -100,20 +105,35 @@ class TrackingScoringService:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+    async def score(
+        self,
+        *,
+        task: MinerTask,
+        response: Response,
+    ) -> ScoreBreakdown:
         _ = task, response
         self.calls += 1
         raise AssertionError("scoring should not run for exhausted sessions")
 
 
 class FailingScoringService:
-    async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+    async def score(
+        self,
+        *,
+        task: MinerTask,
+        response: Response,
+    ) -> ScoreBreakdown:
         _ = task, response
         raise RuntimeError("scoring failed")
 
 
 class RetryExhaustedScoringService:
-    async def score(self, *, task: MinerTask, response: Response) -> ScoreBreakdown:
+    async def score(
+        self,
+        *,
+        task: MinerTask,
+        response: Response,
+    ) -> ScoreBreakdown:
         _ = task, response
         raise LlmRetryExhaustedError("scoring retries exhausted")
 

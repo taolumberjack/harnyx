@@ -41,7 +41,10 @@ def hydrate_miner_response_payload(
         session_id=session_id,
         receipt_log=receipt_log,
     )
-    return Response(text=raw_response.text, citations=citations or None)
+    return Response(
+        text=raw_response.text,
+        citations=citations or None,
+    )
 
 
 def _hydrate_citations(
@@ -52,9 +55,14 @@ def _hydrate_citations(
 ) -> tuple[AnswerCitation, ...]:
     hydrated: list[AnswerCitation] = []
     for citation_ref in citation_refs:
-        citation = _hydrate_citation(citation_ref, session_id=session_id, receipt_log=receipt_log)
-        if citation is not None:
-            hydrated.append(citation)
+        hydrated_citation = _hydrate_citation(
+            citation_ref,
+            session_id=session_id,
+            receipt_log=receipt_log,
+        )
+        if hydrated_citation is None:
+            continue
+        hydrated.append(hydrated_citation)
     return tuple(hydrated)
 
 
@@ -70,7 +78,11 @@ def _hydrate_citation(
     result = _lookup_referenceable_result(receipt, citation_ref.result_id)
     if result is None:
         return None
-    return AnswerCitation(url=result.url, note=result.note, title=result.title)
+    return AnswerCitation(
+        url=result.url,
+        note=_normalize_citation_note(result.note),
+        title=result.title,
+    )
 
 
 def _lookup_referenceable_result(
@@ -92,4 +104,12 @@ def _lookup_referenceable_result(
     return None
 
 
-__all__ = ["hydrate_miner_response_payload"]
+def _normalize_citation_note(note: str | None) -> str | None:
+    if note is None:
+        return None
+    return note if note.strip() else None
+
+
+__all__ = [
+    "hydrate_miner_response_payload",
+]

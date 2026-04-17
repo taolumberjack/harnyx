@@ -55,8 +55,6 @@ class SearchToolResult(ToolResult):
         ToolResult.__post_init__(self)
         if not self.url.strip():
             raise ValueError("url must not be empty")
-        if self.note == "":
-            raise ValueError("note must not be empty when supplied")
 
 
 @dataclass(frozen=True, slots=True)

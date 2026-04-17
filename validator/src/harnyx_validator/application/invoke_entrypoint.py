@@ -14,10 +14,7 @@ from harnyx_commons.domain.miner_task import Response
 from harnyx_commons.domain.session import Session, SessionStatus
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
-from harnyx_validator.application.dto.evaluation import (
-    EntrypointInvocationRequest,
-    EntrypointInvocationResult,
-)
+from harnyx_validator.application.dto.evaluation import EntrypointInvocationRequest, EntrypointInvocationResult
 
 QUERY_ENTRYPOINT = "query"
 
@@ -68,7 +65,7 @@ class EntrypointInvoker:
         self._raise_if_session_exhausted(session.session_id)
         receipts = tuple(self._receipts.for_session(session.session_id))
         try:
-            response = _hydrate_miner_response(
+            hydrated_response = _hydrate_miner_response(
                 payload,
                 session_id=session.session_id,
                 receipt_log=self._receipts,
@@ -76,7 +73,7 @@ class EntrypointInvoker:
         except ValidationError as exc:
             raise MinerResponseValidationError("miner returned invalid response payload") from exc
         return EntrypointInvocationResult(
-            response=response,
+            response=hydrated_response,
             tool_receipts=receipts,
         )
 

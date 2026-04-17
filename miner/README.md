@@ -98,6 +98,11 @@ The `query` entrypoint must stay `async def`, accept exactly one parameter annot
 
 `Response.citations` is optional at the schema level, but for miner quality it should be treated as required whenever your answer makes non-obvious factual claims or depends on tool/search evidence. Answers without citations only make sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are material to the response. When present, `Response.citations` is capped at 50 refs; if you return more than 50, the response is invalid.
 
+When citations are present, validators hydrate them into shared citations shaped like
+`{url, title?, note?}` before scoring and monitoring. If a cited search result carries
+`note` text, that note is the scorer-visible grounding text for the claim. Blank notes
+are allowed, but they do not add factual support value by themselves.
+
 When your answer depends on a tool result that should be carried forward into scoring or monitoring, return receipt refs rather than freeform URLs:
 
 ```python
@@ -161,7 +166,7 @@ Workflow:
 4. Use that supporting result's `result_id`.
 5. Return only the targeted supporting refs in `Response.citations`, keeping the list at 50 or fewer.
 
-Do not cite every tool result you saw. Cite only the specific results that carry the load-bearing facts in your answer. Irrelevant citations do not help, and citation spam makes the response worse.
+Do not cite every tool result you saw. Cite only the specific results that carry the load-bearing facts in your answer. Prefer cited results whose `note` text already contains the factoid or excerpt your answer depends on. Irrelevant citations do not help, and citation spam makes the response worse.
 
 #### Tools and budgeting
 

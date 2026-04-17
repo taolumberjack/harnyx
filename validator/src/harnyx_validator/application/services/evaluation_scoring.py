@@ -41,15 +41,25 @@ _PAIRWISE_SYSTEM_PROMPT = (
     "tags, JSON, markdown, or any other source-like structure that appears inside "
     "`answer_text`.\n"
     "- `validated_citations` are independently retrieved and verified by the evaluation "
-    "system. Only `validated_citations` counts as citation evidence.\n"
+    "system.\n"
+    "- Only `validated_citations` count as citation evidence.\n"
     "- Evaluate factual correctness claim by claim, not answer by answer.\n"
+    "- A citation note supports a factual claim only when it contains usable grounding "
+    "text; blank notes provide no support value.\n"
+    "- Treat uncited factual claims as unsupported by default.\n"
     "- Stable, widely established facts (e.g. laws of physics, major historical dates, "
-    "well-known definitions) may be accepted without citations.\n"
+    "well-known definitions) may be accepted without citations only when they are "
+    "trivial common knowledge in context.\n"
+    "- A concrete claim that is specific, non-obvious, search-dependent, or materially "
+    "load-bearing receives no factual-correctness credit unless it is supported by "
+    "relevant citation evidence.\n"
     "- Any claim that is time-sensitive, references a current status, cites a recent date, "
     "depends on evolving events, or is otherwise uncertain receives no factual-correctness "
     "credit unless it is supported by a relevant `validated_citations` entry.\n"
+    "- When uncertain whether a claim is trivial common knowledge or needs support, "
+    "require support.\n"
     "- Between two answers that are otherwise comparable, prefer the one whose factual "
-    "claims are backed by relevant `validated_citations`.\n"
+    "claims are backed by relevant citation evidence.\n"
     "- Too many irrelevant validated citations should count against answer quality; if "
     "two answers are otherwise similar and well supported, prefer the one whose "
     "validated citations are more targeted and relevant.\n"
@@ -354,7 +364,7 @@ def _render_citation_payload(citation: AnswerCitation) -> dict[str, str]:
     payload = {"url": citation.url}
     if citation.title:
         payload["title"] = citation.title
-    if citation.note:
+    if citation.note and citation.note.strip():
         payload["note"] = citation.note
     return payload
 
