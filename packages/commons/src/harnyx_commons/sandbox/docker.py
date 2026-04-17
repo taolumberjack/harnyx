@@ -430,6 +430,20 @@ class DockerSandboxManager(SandboxManager):
             time.sleep(options.startup_delay_seconds)
 
     def _run_container(self, args: list[str], options: SandboxOptions) -> str:
+        # DEBUG: Write to file to bypass any logging suppression
+        import os
+        debug_log = "/tmp/harnyx-docker-debug.log"
+        with open(debug_log, "a") as f:
+            f.write(f"\n=== DEBUG _run_container ===\n")
+            f.write(f"Container name: {options.container_name}\n")
+            f.write(f"Full command: {' '.join(args)}\n")
+            f.write(f"Image: {options.image}\n")
+            f.write(f"Host port: {options.host_port}\n")
+            f.write(f"Container port: {options.container_port}\n")
+        
+        # Also log normally
+        cmd_str = " ".join(args)
+        logger.info(f"🐳 DEBUG: docker run command:\n{cmd_str}")
         logger.info(
             "launching sandbox container",
             extra={
@@ -442,12 +456,40 @@ class DockerSandboxManager(SandboxManager):
             },
         )
         try:
+            with open(debug_log, "a") as f:
+                f.write(f"About to run docker command...\n")
             result = self._run(args, capture_output=True, text=True, check=True)
+            with open(debug_log, "a") as f:
+                f.write(f"Docker run succeeded!\n")
+                f.write(f"Container ID: {result.stdout.strip()}\n")
         except subprocess.CalledProcessError as exc:  # pragma: no cover - exercised in integration
+            with open(debug_log, "a") as f:
+                f.write(f"Docker run FAILED!\n")
+                f.write(f"Exit code: {exc.returncode}\n")
+                f.write(f"STDERR: {exc.stderr}\n")
+                f.write(f"STDOUT: {exc.stdout}\n")
+            # DEBUG: Log the failure output
+            logger.error(f"🐳 DEBUG: docker run FAILED - STDERR:\n{exc.stderr}")
+            logger.error(f"🐳 DEBUG: docker run FAILED - STDOUT:\n{exc.stdout}")
             self._raise_run_error(exc, args, options)
         container_id = result.stdout.strip()
         if not container_id:
             raise RuntimeError("docker run did not return a container identifier")
+        
+        # DEBUG: Wait a moment and check status immediately
+        import time
+        time.sleep(0.5)
+        try:
+            status_result = self._run(["docker", "inspect", "--format", "{{.State.Status}},{{.State.ExitCode}}", container_id], capture_output=True, text=True)
+            status = status_result.stdout.strip()
+            logger.info(f"🐳 DEBUG: container {container_id[:12]} status: {status}")
+            with open(debug_log, "a") as f:
+                f.write(f"Container status: {status}\n")
+        except Exception as e:
+            with open(debug_log, "a") as f:
+                f.write(f"Could not check status: {e}\n")
+            logger.warning(f"🐳 DEBUG: could not check container status: {e}")
+        
         return container_id
 
     def _raise_run_error(
