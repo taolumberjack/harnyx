@@ -19,7 +19,9 @@ class ContainerSecurity:
     """Security constraints for sandbox containers."""
 
     user: str = "harnyx"
-    ulimits: tuple[str, ...] = ("nproc=128:128", "nofile=512:512")
+    # Increased limits for local development compatibility
+    # EAGAIN at exec time requires higher resource limits in some environments
+    ulimits: tuple[str, ...] = ("nproc=8192:8192", "nofile=8192:8192")
     pids_limit: int = 128
     memory: str = "1g"
     cpus: str = "1"
