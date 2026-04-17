@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Harnyx SN67 Miner Agent - Optimized for Champion Performance v2
+Harnyx SN67 Miner Agent - Optimized for Champion Performance
 
 Scoring: total_score = 0.5 * comparison_score + 0.5 * similarity_score
 Ties broken by: lower total tool cost wins
 
-v2 Improvements:
-- Time budget tracking to avoid 120s timeout
-- Reduced LLM calls (skip strategy generation)
-- Faster parallel search execution  
-- Cached model selection
-- Better error recovery
+Strategy:
+1. Budget-aware tool usage (maximize quality per $)
+2. Precise search → high-relevance results
+3. Synthesis that matches reference answer style (factual, concise, complete)
+4. Targeted citations (only load-bearing facts)
+5. Graceful degradation on errors
 """
 
 from harnyx_miner_sdk.decorators import entrypoint
@@ -18,7 +18,7 @@ from harnyx_miner_sdk.query import Query, Response, CitationRef
 from harnyx_miner_sdk.api import tooling_info, llm_chat, search_web, search_ai, fetch_page
 
 import asyncio
-import time
+import json
 import re
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
@@ -43,6 +43,7 @@ class SearchResult:
     source_type: str  # "web" or "ai"
     full_content: str = ""
     relevance_score: float = 0.0
+    estimated_cost: float = 0.008  # default search cost
 
 
 @dataclass
@@ -67,48 +68,16 @@ class BudgetState:
     def can_afford(self, cost: float, buffer: float = 0.002) -> bool:
         """Check if we can afford a tool call with safety buffer."""
         return self.remaining > (cost + buffer)
-
-
-# ============================================================================
-# TIME BUDGET TRACKING
-# ============================================================================
-
-class TimeBudget:
-    """Track time to avoid 120s timeout."""
     
-    def __init__(self, timeout_seconds: float = 115.0):
-        self.start_time = time.time()
-        self.timeout = timeout_seconds
-        self.warnings_issued = 0
-    
-    def elapsed(self) -> float:
-        return time.time() - self.start_time
-    
-    def remaining(self) -> float:
-        return max(0, self.timeout - self.elapsed())
-    
-    def should_abort(self) -> bool:
-        """Check if we should abort to avoid timeout."""
-        return self.elapsed() >= self.timeout
-    
-    def check_time(self, operation: str) -> bool:
-        """Check time and log warning if running low."""
-        elapsed = self.elapsed()
-        remaining = self.remaining()
-        
-        if remaining < 10 and self.warnings_issued == 0:
-            logger.warning(f"⏰ Time warning ({operation}): {remaining:.1f}s remaining")
-            self.warnings_issued = 1
-        
-        if self.should_abort():
-            logger.error(f"⏰ TIMEOUT approaching ({operation}): aborting after {elapsed:.1f}s")
-            return False
-        
-        return True
-    
-    def has_time_for(self, estimated_seconds: float, buffer: float = 5.0) -> bool:
-        """Check if we have enough time for an operation."""
-        return self.remaining() > (estimated_seconds + buffer)
+    def get_tool_cost(self, tool_name: str) -> float:
+        """Get estimated cost for a tool from pricing info."""
+        if tool_name in self.pricing:
+            pricing = self.pricing[tool_name]
+            if isinstance(pricing, dict):
+                return float(pricing.get("per_call", pricing.get("default", 0.01)))
+        # Defaults based on typical Harnyx pricing
+        defaults = {"search_web": 0.008, "search_ai": 0.012, "fetch_page": 0.005, "llm_chat": 0.003}
+        return defaults.get(tool_name, 0.01)
 
 
 # ============================================================================
@@ -200,35 +169,16 @@ def compute_relevance(query: str, result: SearchResult) -> float:
     return min(score, 1.0)
 
 
-def generate_search_variants(query: str) -> List[str]:
-    """
-    Generate search variants without LLM call.
-    Fast, deterministic approach.
-    """
-    variants = [query]
-    
-    # Extract key terms and create variations
-    words = query.split()
-    
-    # If query is longer than 5 words, create focused variant
-    if len(words) > 5:
-        # Take first 5 and last 5 words
-        focused = " ".join(words[:5] + words[-5:])
-        if focused != query:
-            variants.append(focused)
-    
-    # If query has question words, create statement variant
-    question_words = {"what", "how", "why", "when", "where", "who", "which"}
-    if any(q in query.lower() for q in question_words):
-        # Remove question words and convert to keyword search
-        keywords = [w for w in words if w.lower() not in question_words and len(w) > 2]
-        if keywords:
-            keyword_search = " ".join(keywords[:8])
-            if keyword_search not in variants:
-                variants.append(keyword_search)
-    
-    # Limit to 4 variants
-    return variants[:4]
+def parse_json_safely(text: str, default: Any) -> Any:
+    """Extract and parse JSON from LLM output, with fallback."""
+    try:
+        # Try to find JSON object in text
+        json_match = re.search(r'\{.*\}', text, re.DOTALL | re.IGNORECASE)
+        if json_match:
+            return json.loads(json_match.group(0))
+    except Exception:
+        pass
+    return default
 
 
 # ============================================================================
@@ -238,36 +188,30 @@ def generate_search_variants(query: str) -> List[str]:
 @entrypoint("query")
 async def query(q: Query) -> Response:
     """
-    Harnyx SN67 miner entrypoint v2.
+    Harnyx SN67 miner entrypoint.
     
     Strategy:
-    1. Get tool info and initialize time budget
-    2. Generate search variants (no LLM call)
-    3. Execute parallel searches (fast, concurrency-limited)
+    1. Analyze query and plan search strategy
+    2. Execute parallel searches (budget-aware)
+    3. Fetch pages for top results (if budget allows)
     4. Rank results by relevance
     5. Synthesize answer with targeted citations
-    6. Return early if time is running out
     
     Scoring optimization:
-    - Stay under 120s timeout (critical)
     - Maximize answer quality (comparison_score + similarity_score)
-    - Use fewer LLM calls (reduce latency and cost)
-    - Precise citations (only load-bearing facts)
+    - Minimize tool cost (tie-breaker)
+    - Use precise citations (only load-bearing facts)
     """
     
     query_text = q.text.strip()
     budget = BudgetState()
-    time_budget = TimeBudget(timeout_seconds=115.0)
     
     logger.info(f"🎯 Query: {query_text[:100]}...")
     
     try:
         # ================================================================
-        # STEP 1: Get tooling info and budget (check time)
+        # STEP 1: Get tooling info and budget
         # ================================================================
-        if not time_budget.check_time("init"):
-            return Response(text=f"Time limit exceeded", citations=[])
-        
         info = await tooling_info()
         budget.update(info)
         
@@ -281,31 +225,55 @@ async def query(q: Query) -> Response:
         model = next((m for m in model_priority if m in allowed_models), 
                      allowed_models[0] if allowed_models else "openai/gpt-oss-20b-TEE")
         
-        # ================================================================
-        # STEP 2: Generate search variants (fast, no LLM)
-        # ================================================================
-        if not time_budget.check_time("search_variants"):
-            return Response(text=f"Time limit exceeded", citations=[])
+        logger.info(f"💰 Budget: ${budget.remaining:.4f} | Model: {model}")
         
-        search_prompts = generate_search_variants(query_text)
-        max_per_search = 6  # Reduced from 8 for speed
+        # ================================================================
+        # STEP 2: Plan search strategy (lightweight LLM call)
+        # ================================================================
+        strategy_prompt = f"""You are a search strategist for a research AI. Generate diverse search queries.
+
+Return ONLY valid JSON:
+{{
+  "search_prompts": ["original query", "variant 1", "variant 2"],
+  "needs_page_fetch": true,
+  "max_results_per_search": 5
+}}
+
+Query: {query_text}
+Budget: ${budget.remaining:.4f} (be efficient)"""
+
+        strategy_result = await llm_chat(
+            messages=[{"role": "user", "content": strategy_prompt}],
+            model=model,
+            temperature=0.0,      # Deterministic for consistency
+            max_tokens=400,       # Keep it short
+        )
+        budget.update(strategy_result)
         
-        logger.info(f"📋 Strategy: {len(search_prompts)} searches, {max_per_search} results each | Model: {model}")
+        strategy = parse_json_safely(extract_llm_text(strategy_result), {
+            "search_prompts": [query_text],
+            "needs_page_fetch": True,
+            "max_results_per_search": 5
+        })
+        
+        search_prompts = strategy.get("search_prompts", [query_text])[:5]
+        max_per_search = min(strategy.get("max_results_per_search", 5), 8)
+        needs_fetch = strategy.get("needs_page_fetch", True)
+        
+        logger.info(f"📋 Strategy: {len(search_prompts)} searches, {max_per_search} results each")
         
         # ================================================================
         # STEP 3: Execute parallel web searches (concurrency-limited)
         # ================================================================
-        if not time_budget.check_time("searches"):
-            return Response(text=f"Time limit exceeded", citations=[])
-        
         all_results: List[SearchResult] = []
-        search_semaphore = asyncio.Semaphore(3)  # Increased from 2 for speed
+        search_semaphore = asyncio.Semaphore(2)  # Respect concurrency limit
         
         async def execute_search(prompt: str) -> List[SearchResult]:
             """Execute a single search with budget check."""
             async with search_semaphore:
-                if not budget.can_afford(0.009, buffer=0.001):
-                    logger.warning(f"⏸️ Skipping search - budget low")
+                search_cost = budget.get_tool_cost("search_web")
+                if not budget.can_afford(search_cost):
+                    logger.warning(f"⏸️ Skipping search '{prompt[:40]}...' - budget")
                     return []
                 
                 try:
@@ -321,12 +289,13 @@ async def query(q: Query) -> Response:
                             title=getattr(res, "title", "") or "Untitled",
                             note=getattr(res, "note", ""),
                             source_type="web",
+                            estimated_cost=search_cost / max(1, len(getattr(result, "results", [1])))
                         ))
                     logger.info(f"✅ Search '{prompt[:30]}...' → {len(results)} results")
                     return results
                     
                 except Exception as e:
-                    logger.warning(f"❌ Search failed: {e}")
+                    logger.warning(f"❌ Search failed '{prompt[:40]}...': {e}")
                     return []
         
         # Execute all searches in parallel
@@ -338,9 +307,9 @@ async def query(q: Query) -> Response:
                 all_results.extend(batch)
         
         # ================================================================
-        # STEP 4: Quick AI search if time allows (boost quality)
+        # STEP 4: Boost with AI search (if budget allows)
         # ================================================================
-        if all_results and time_budget.has_time_for(8) and budget.can_afford(0.015):
+        if search_prompts and budget.can_afford(budget.get_tool_cost("search_ai")):
             try:
                 ai_result = await search_ai(search_prompts[0])
                 budget.update(ai_result)
@@ -358,120 +327,137 @@ async def query(q: Query) -> Response:
                 logger.warning(f"❌ AI search failed: {e}")
         
         # ================================================================
-        # STEP 5: Fallback if no results (urgent)
+        # STEP 5: Fetch full pages for top results (if budget allows)
+        # ================================================================
+        if all_results and needs_fetch and budget.can_afford(budget.get_tool_cost("fetch_page") * 3):
+            # Score and sort for fetching
+            for r in all_results:
+                r.relevance_score = compute_relevance(query_text, r)
+            
+            top_for_fetch = sorted(all_results, key=lambda x: x.relevance_score, reverse=True)[:3]
+            fetch_semaphore = asyncio.Semaphore(2)
+            
+            async def fetch_page_content(result: SearchResult) -> SearchResult:
+                async with fetch_semaphore:
+                    if not result.url:
+                        return result
+                    try:
+                        page_result = await fetch_page(result.url)
+                        budget.update(page_result)
+                        if hasattr(page_result, "data") and page_result.data:
+                            content = getattr(page_result.data[0], "content", "")
+                            result.full_content = content[:1500]  # Truncate for context
+                    except Exception:
+                        pass  # Keep result even if fetch fails
+                    return result
+            
+            fetched_results = await asyncio.gather(
+                *(fetch_page_content(r) for r in top_for_fetch),
+                return_exceptions=True
+            )
+            
+            # Update original results with fetched content
+            for fetched in fetched_results:
+                if not isinstance(fetched, Exception):
+                    for i, r in enumerate(all_results):
+                        if r.url == fetched.url:
+                            all_results[i] = fetched
+                            break
+            
+            logger.info(f"✅ Fetched {len(fetched_results)} pages")
+        
+        # ================================================================
+        # STEP 6: Fallback if no results
         # ================================================================
         if not all_results:
-            logger.warning("⚠️ No results - trying fallback")
+            logger.warning("⚠️ No results - trying fallback search")
             fallback_results = await execute_search(query_text)
             all_results.extend(fallback_results)
         
         if not all_results:
             # Ultimate fallback: direct answer without citations
-            logger.warning("⚠️ No search results - using direct LLM")
-            if time_budget.has_time_for(10):
-                try:
-                    fallback_llm = await llm_chat(
-                        messages=[{"role": "user", "content": f"Answer concisely: {query_text}"}],
-                        model=model,
-                        temperature=0.1,
-                        max_tokens=600,
-                    )
-                    answer_text = extract_llm_text(fallback_llm)
-                    if answer_text.strip():
-                        return Response(text=answer_text, citations=[])
-                except Exception:
-                    pass
-            return Response(text=f"Unable to find relevant information for: {query_text}", citations=[])
+            logger.warning("⚠️ No search results available - using direct LLM")
+            fallback_llm = await llm_chat(
+                messages=[{"role": "user", "content": f"Answer concisely: {query_text}"}],
+                model=model,
+                temperature=0.1,
+                max_tokens=800,
+            )
+            budget.update(fallback_llm)
+            return Response(
+                text=extract_llm_text(fallback_llm) or f"Query processed: {query_text}",
+                citations=[]
+            )
         
         # ================================================================
-        # STEP 6: Rank results by relevance
+        # STEP 7: Rank results by relevance
         # ================================================================
-        if not time_budget.check_time("ranking"):
-            # If time is low, just use unranked results
-            ranked_results = all_results[:12]
-        else:
-            for r in all_results:
-                r.relevance_score = compute_relevance(query_text, r)
-            ranked_results = sorted(all_results, key=lambda x: x.relevance_score, reverse=True)[:12]
+        for r in all_results:
+            r.relevance_score = compute_relevance(query_text, r)
         
-        logger.info(f"📊 Ranked {len(ranked_results)} results | Time: {time_budget.elapsed():.1f}s")
+        ranked_results = sorted(all_results, key=lambda x: x.relevance_score, reverse=True)[:12]
+        logger.info(f"📊 Ranked {len(ranked_results)} results (top score: {ranked_results[0].relevance_score:.2f})")
         
         # Build context for synthesis
         context_parts = []
         for i, r in enumerate(ranked_results):
             part = f"[{i+1}] {r.title} ({r.source_type})\n"
+            part += f"URL: {r.url}\n"
+            part += f"Relevance: {r.relevance_score:.2f}\n"
             part += f"Snippet: {r.note}\n"
+            if r.full_content:
+                part += f"Content: {r.full_content[:600]}...\n"
             context_parts.append(part)
         
         context = "\n".join(context_parts)
         
         # ================================================================
-        # STEP 7: Synthesize final answer (check time)
+        # STEP 8: Synthesize final answer
         # ================================================================
-        if not time_budget.has_time_for(15):
-            # Not enough time for synthesis - return structured summary
-            summary = f"**Answer Summary for: {query_text}**\n\nBased on the search results:\n\n"
-            for i, r in enumerate(ranked_results[:5]):
-                summary += f"{i+1}. {r.title}\n   {r.note[:200]}...\n\n"
-            
-            citations = [
-                CitationRef(receipt_id=r.receipt_id, result_id=r.result_id)
-                for r in ranked_results[:3]
-                if r.receipt_id and r.result_id
-            ]
-            
-            logger.info(f"✅ Early return | Time: {time_budget.elapsed():.1f}s")
-            return Response(text=summary.strip(), citations=citations)
-        
-        try:
-            synthesis_prompt = f"""Synthesize a precise answer using the evidence.
+        synthesis_prompt = f"""You are a precise research assistant. Synthesize a high-quality answer.
+
+Requirements:
+- Be factual, concise, and complete
+- Answer the query directly in first paragraph
+- Use evidence from provided context
+- Reference sources with [N] notation (e.g., "according to source [1]")
+- Match the style and completeness of expert reference answers
 
 Query: {query_text}
 
-Evidence:
+Evidence Context:
 {context}
-
-Guidelines:
-- Answer directly and completely
-- Be factual and concise
-- Match reference answer style
-- Use [N] notation for sources
 
 Answer:"""
 
-            final_llm = await llm_chat(
-                messages=[{"role": "user", "content": synthesis_prompt}],
-                model=model,
-                temperature=0.05,
-                max_tokens=1500,
-            )
-            budget.update(final_llm)
-            
-            answer_text = extract_llm_text(final_llm)
-            
-            # Fallback if synthesis failed
-            if not answer_text.strip():
-                answer_text = f"**Research: {query_text}**\n\n"
-                for i, r in enumerate(ranked_results[:6]):
-                    answer_text += f"{i+1}. {r.title}\n   {r.note[:250]}...\n\n"
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Synthesis failed: {e}, using structured summary")
-            answer_text = f"**Answer for: {query_text}**\n\n"
-            for i, r in enumerate(ranked_results[:5]):
-                answer_text += f"{i+1}. {r.title}\n   {r.note[:200]}...\n\n"
+        final_llm = await llm_chat(
+            messages=[{"role": "user", "content": synthesis_prompt}],
+            model=model,
+            temperature=0.05,     # Low temp for consistency
+            max_tokens=1800,      # Allow detailed answers
+        )
+        budget.update(final_llm)
+        
+        answer_text = extract_llm_text(final_llm)
+        
+        # Fallback if synthesis failed
+        if not answer_text.strip():
+            answer_text = f"**Research Summary: {query_text}**\n\n"
+            for i, r in enumerate(ranked_results[:8]):
+                answer_text += f"{i+1}. **{r.title}** ({r.source_type})\n   {r.note[:300]}...\n\n"
         
         # ================================================================
-        # STEP 8: Build citations (only load-bearing facts)
+        # STEP 9: Build citations (only load-bearing facts)
         # ================================================================
-        citation_results = ranked_results[:min(4, len(ranked_results))]
+        # Cite top 3-5 most relevant results that support key claims
+        citation_results = ranked_results[:min(5, len(ranked_results))]
         citations = [
             CitationRef(receipt_id=r.receipt_id, result_id=r.result_id)
             for r in citation_results
             if r.receipt_id and r.result_id
         ]
         
-        logger.info(f"✅ Success | Time: {time_budget.elapsed():.1f}s | Budget: ${budget.remaining:.4f} | Citations: {len(citations)}")
+        logger.info(f"✅ Success | Budget: ${budget.remaining:.4f} | Citations: {len(citations)}")
         
         return Response(
             text=answer_text.strip(),
