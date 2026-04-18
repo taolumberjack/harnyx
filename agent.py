@@ -57,7 +57,7 @@ MAX_OUTPUT_TOKENS = 600
 # CITATION STRATEGY - AGGRESSIVE FOR NEW SCORING
 MAX_CITATIONS = 6           # Increased from 4
 MIN_CITATIONS = 3           # Minimum to ensure coverage
-RELEVANCE_THRESHOLD = 0.37  # Lower threshold = more citations
+RELEVANCE_THRESHOLD = 0.33  # Lower threshold = more citations
 
 SYSTEM_PROMPT = """Expert research analyst optimized for factual accuracy.
 
@@ -307,4 +307,4 @@ async def agent(query: Query) -> Response:
     return Response(text=answer.strip(), citations=citations)
 
 
-__version__ = "adaptive-v7-37"
+__version__ = "adaptive-v8-33"
