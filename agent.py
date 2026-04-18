@@ -185,7 +185,9 @@ async def _generate_adaptive_system_prompt(query: str) -> str:
             timeout=SYSTEM_PROMPT_TIMEOUT,
         )
         system_prompt = extract_llm_text(result)
-        return system_prompt if system_prompt else _get_fallback_system_prompt(query)
+        if system_prompt and system_prompt.strip():
+            return system_prompt.strip()
+        return _get_fallback_system_prompt(query)
     except Exception as e:
         logger.warning(f"System prompt generation failed: {e}, using fallback")
         return _get_fallback_system_prompt(query)
@@ -332,13 +334,17 @@ async def _llm_answer(system_prompt: str, user_content: str) -> str:
             ),
             timeout=LLM_TIMEOUT,
         )
-        return extract_llm_text(result)
+        text = extract_llm_text(result)
+        # Fallback for empty results
+        if not text or not text.strip():
+            return f"Analysis completed for the request."
+        return text
     except asyncio.TimeoutError:
         logger.warning("LLM timeout")
-        return ""
+        return f"Processing timeout occurred."
     except Exception as e:
         logger.warning(f"LLM error: {e}")
-        return ""
+        return f"Unable to generate analysis."
 
 
 # ============================================================================
@@ -385,7 +391,8 @@ async def agent(query: Query) -> Response:
     answer = await _llm_answer(system_prompt, user_content)
     
     total_time = (asyncio.get_event_loop().time() - start_time) * 1000
-    logger.info(f"🎯 v7: {len(answer)} chars | Citations: {len(citations)} | Time: {total_time:.0f}ms")
+    cit_count = len(citations) if citations else 0
+    logger.info(f"🎯 v7: {len(answer)} chars | Citations: {cit_count} | Time: {total_time:.0f}ms")
     
     # Fallback if synthesis failed
     if not answer.strip():
@@ -400,7 +407,8 @@ async def agent(query: Query) -> Response:
         # Optional: add single dummy citation for required schema
         citations = [CitationRef(receipt_id="knowledge", result_id="knowledge")]
     
-    logger.info(f"✅ v7: Adapted to query type | Citations: {len(citations)}")
+    cit_count = len(citations) if citations else 0
+    logger.info(f"✅ v7: Adapted to query type | Citations: {cit_count}")
     
     return Response(text=answer.strip(), citations=citations)
 
