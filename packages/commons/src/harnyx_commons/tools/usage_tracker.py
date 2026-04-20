@@ -24,6 +24,7 @@ class ToolCallUsage:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    reasoning_tokens: int | None = None
     cost_usd: float | None = None
 
 
@@ -110,6 +111,7 @@ class UsageTracker:
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
             cost_usd=cost_usd,
         )
 

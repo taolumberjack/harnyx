@@ -5,6 +5,7 @@ import base64
 import json
 import runpy
 import threading
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1033,7 +1034,9 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
     assert tool_host.close_calls == 1
     assert len(sandbox_manager.started_options) == 2
     assert len(sandbox_manager.stopped_deployments) == 2
-    assert [call["sandbox_client"] for call in runner.calls] == sandbox_manager.clients
+    assert Counter(id(call["sandbox_client"]) for call in runner.calls) == Counter(
+        id(client) for client in sandbox_manager.clients
+    )
     assert sandbox_manager.mount_paths_exist == [True, True]
     for options in sandbox_manager.started_options:
         assert options.host_port == 0

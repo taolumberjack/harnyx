@@ -39,6 +39,7 @@ class LlmUsageSummary:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    reasoning_tokens: int = 0
     cost: float = 0.0
     providers: dict[str, dict[str, LlmModelUsageCost]] = field(default_factory=dict)
 
@@ -51,6 +52,8 @@ class LlmUsageSummary:
             raise ValueError("completion_tokens must be non-negative")
         if self.total_tokens < 0:
             raise ValueError("total_tokens must be non-negative")
+        if self.reasoning_tokens < 0:
+            raise ValueError("reasoning_tokens must be non-negative")
         if self.cost < 0.0:
             raise ValueError("cost must be non-negative")
 
@@ -79,4 +82,3 @@ __all__ = [
     "SearchToolUsageSummary",
     "ToolUsageSummary",
 ]
-

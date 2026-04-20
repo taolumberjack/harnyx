@@ -31,6 +31,7 @@ class LlmUsageTotals:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    reasoning_tokens: int = 0
     call_count: int = 0
 
     def __post_init__(self) -> None:
@@ -40,6 +41,8 @@ class LlmUsageTotals:
             raise ValueError("completion_tokens must be non-negative")
         if self.total_tokens < 0:
             raise ValueError("total_tokens must be non-negative")
+        if self.reasoning_tokens < 0:
+            raise ValueError("reasoning_tokens must be non-negative")
         if self.call_count < 0:
             raise ValueError("call_count must be non-negative")
 
@@ -49,6 +52,7 @@ class LlmUsageTotals:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         total_tokens: int = 0,
+        reasoning_tokens: int = 0,
     ) -> LlmUsageTotals:
         """Return a new totals record with the supplied deltas applied."""
         if prompt_tokens < 0:
@@ -57,10 +61,13 @@ class LlmUsageTotals:
             raise ValueError("completion_tokens must be non-negative")
         if total_tokens < 0:
             raise ValueError("total_tokens must be non-negative")
+        if reasoning_tokens < 0:
+            raise ValueError("reasoning_tokens must be non-negative")
         return LlmUsageTotals(
             prompt_tokens=self.prompt_tokens + prompt_tokens,
             completion_tokens=self.completion_tokens + completion_tokens,
             total_tokens=self.total_tokens + total_tokens,
+            reasoning_tokens=self.reasoning_tokens + reasoning_tokens,
             call_count=self.call_count + 1,
         )
 

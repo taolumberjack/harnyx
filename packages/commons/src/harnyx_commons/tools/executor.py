@@ -589,6 +589,7 @@ def _extract_llm_usage(
         prompt_tokens=prompt,
         completion_tokens=completion,
         total_tokens=total,
+        reasoning_tokens=usage_obj.reasoning_tokens,
     )
     resolved_total = total if total is not None else (prompt or 0) + (completion or 0)
     call_cost = price_llm(model, usage_obj)
