@@ -445,6 +445,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `cost` | opt | `number` (default: 0.0) |
 |  |  | `prompt_tokens` | opt | `integer` (default: 0) |
 |  |  | `providers` | opt | `object` |
+|  |  | `reasoning_tokens` | opt | `integer` (default: 0) |
 |  |  | `total_tokens` | opt | `integer` (default: 0) |
 |  | `llm_cost` |  | opt | `number` (default: 0.0) |
 |  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
@@ -526,6 +527,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `cost` | opt | `number` (default: 0.0) |
 |  |  | `prompt_tokens` | opt | `integer` (default: 0) |
 |  |  | `providers` | opt | `object` |
+|  |  | `reasoning_tokens` | opt | `integer` (default: 0) |
 |  |  | `total_tokens` | opt | `integer` (default: 0) |
 |  | `llm_cost` |  | opt | `number` (default: 0.0) |
 |  | `search_tool` |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
@@ -852,6 +854,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `call_count` |  | opt | `integer` (default: 0) |
 |  | `completion_tokens` |  | opt | `integer` (default: 0) |
 |  | `prompt_tokens` |  | opt | `integer` (default: 0) |
+|  | `reasoning_tokens` |  | opt | `integer` (default: 0) |
 |  | `total_tokens` |  | opt | `integer` (default: 0) |
 
 <details>
@@ -886,6 +889,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `cost` |  |  | opt | `number` (default: 0.0) |
 | `prompt_tokens` |  |  | opt | `integer` (default: 0) |
 | `providers` |  |  | opt | `object` |
+| `reasoning_tokens` |  |  | opt | `integer` (default: 0) |
 | `total_tokens` |  |  | opt | `integer` (default: 0) |
 
 <details>
@@ -923,6 +927,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       },
       "title": "Providers",
       "type": "object"
+    },
+    "reasoning_tokens": {
+      "default": 0,
+      "title": "Reasoning Tokens",
+      "type": "integer"
     },
     "total_tokens": {
       "default": 0,
@@ -947,6 +956,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `cost` |  |  | opt | `number` (default: 0.0) |
 | `prompt_tokens` |  |  | opt | `integer` (default: 0) |
 | `providers` |  |  | opt | `object` |
+| `reasoning_tokens` |  |  | opt | `integer` (default: 0) |
 | `total_tokens` |  |  | opt | `integer` (default: 0) |
 
 <details>
@@ -985,6 +995,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "title": "Providers",
       "type": "object"
     },
+    "reasoning_tokens": {
+      "default": 0,
+      "title": "Reasoning Tokens",
+      "type": "integer"
+    },
     "total_tokens": {
       "default": 0,
       "title": "Total Tokens",
@@ -1006,6 +1021,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `call_count` |  |  | opt | `integer` (default: 0) |
 | `completion_tokens` |  |  | opt | `integer` (default: 0) |
 | `prompt_tokens` |  |  | opt | `integer` (default: 0) |
+| `reasoning_tokens` |  |  | opt | `integer` (default: 0) |
 | `total_tokens` |  |  | opt | `integer` (default: 0) |
 
 <details>
@@ -1027,6 +1043,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
     "prompt_tokens": {
       "default": 0,
       "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "reasoning_tokens": {
+      "default": 0,
+      "title": "Reasoning Tokens",
       "type": "integer"
     },
     "total_tokens": {
@@ -3218,6 +3239,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `cost` |  | opt | `number` (default: 0.0) |
 |  | `prompt_tokens` |  | opt | `integer` (default: 0) |
 |  | `providers` |  | opt | `object` |
+|  | `reasoning_tokens` |  | opt | `integer` (default: 0) |
 |  | `total_tokens` |  | opt | `integer` (default: 0) |
 | `llm_cost` |  |  | opt | `number` (default: 0.0) |
 | `search_tool` |  |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
@@ -3266,6 +3288,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `cost` |  | opt | `number` (default: 0.0) |
 |  | `prompt_tokens` |  | opt | `integer` (default: 0) |
 |  | `providers` |  | opt | `object` |
+|  | `reasoning_tokens` |  | opt | `integer` (default: 0) |
 |  | `total_tokens` |  | opt | `integer` (default: 0) |
 | `llm_cost` |  |  | opt | `number` (default: 0.0) |
 | `search_tool` |  |  | opt | [SearchToolUsageSummary](#model-searchtoolusagesummary) |
