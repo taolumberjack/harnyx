@@ -59,9 +59,8 @@ class GroundedLlmRequest(AbstractLlmRequest):
     output_schema: None = None
 
     def __post_init__(self) -> None:  # pragma: no cover - simple guard
-        provider = self.provider
-        if provider != "vertex":
-            raise ValueError(f"grounded mode not supported for provider '{self.provider}'")
+        if not supports_grounded_requests(provider=self.provider, model=self.model):
+            raise ValueError(f"grounded mode not supported for provider/model '{self.provider}:{self.model}'")
         if self.tools and _is_vertex_claude_model(self.model):
             raise ValueError("grounded requests with additional tools are not supported for Vertex Claude models")
         if self.model.startswith("gpt-5") and self.temperature is not None:
@@ -112,13 +111,24 @@ __all__ = [
     "LlmResponse",
     "PostprocessRecovery",
     "PostprocessResult",
+    "extract_vertex_gemini_model_id",
+    "supports_grounded_requests",
     "supports_tool_result_messages",
     "supports_grounded_additional_tools",
 ]
 
 
+def supports_grounded_requests(*, provider: str, model: str) -> bool:
+    normalized_provider = provider.strip().lower()
+    if normalized_provider != "vertex":
+        return False
+    if _is_vertex_claude_model(model):
+        return _is_vertex_claude_web_search_model(model)
+    return _is_vertex_gemini_model(model)
+
+
 def supports_grounded_additional_tools(*, provider: str, model: str) -> bool:
-    return provider == "vertex" and not _is_vertex_claude_model(model)
+    return supports_grounded_requests(provider=provider, model=model) and not _is_vertex_claude_model(model)
 
 
 def supports_tool_result_messages(*, provider: str, model: str) -> bool:
@@ -131,18 +141,73 @@ def supports_tool_result_messages(*, provider: str, model: str) -> bool:
 
 
 def _is_vertex_claude_model(model: str) -> bool:
+    extracted = _extract_vertex_claude_model_id(model)
+    return bool(extracted and extracted.startswith("claude-"))
+
+
+def _extract_vertex_claude_model_id(model: str) -> str | None:
     normalized = model.strip().lower()
     if not normalized:
-        return False
+        return None
     if normalized.startswith("claude-"):
-        return True
+        return normalized
 
     for prefix in ("publishers/anthropic/models/", "anthropic/models/"):
         idx = normalized.find(prefix)
         if idx == -1:
             continue
         extracted = normalized[idx + len(prefix) :].strip()
-        return extracted.startswith("claude-")
+        return extracted or None
 
     idx = normalized.find("claude-")
-    return idx != -1 and (idx == 0 or normalized[idx - 1] == "/")
+    if idx != -1 and (idx == 0 or normalized[idx - 1] == "/"):
+        extracted = normalized[idx:].strip()
+        return extracted or None
+    return None
+
+
+def _is_vertex_gemini_model(model: str) -> bool:
+    return extract_vertex_gemini_model_id(model) is not None
+
+
+def extract_vertex_gemini_model_id(model: str) -> str | None:
+    normalized = model.strip().lower()
+    if not normalized:
+        return None
+    if normalized.startswith("gemini-"):
+        return normalized
+
+    for official_prefix in (
+        "publishers/google/models/",
+        "google/models/",
+    ):
+        if normalized.startswith(official_prefix):
+            extracted = normalized.removeprefix(official_prefix).strip()
+            return extracted if extracted.startswith("gemini-") else None
+
+    parts = normalized.split("/")
+    if len(parts) != 8:
+        return None
+    if parts[0] != "projects" or parts[2] != "locations":
+        return None
+    if parts[4:7] != ["publishers", "google", "models"]:
+        return None
+    extracted = parts[7].strip()
+    return extracted if extracted.startswith("gemini-") else None
+
+
+def _is_vertex_claude_web_search_model(model: str) -> bool:
+    normalized = _extract_vertex_claude_model_id(model)
+    if not normalized:
+        return False
+    for prefix in (
+        "claude-opus-4-5@",
+        "claude-opus-4-1@",
+        "claude-opus-4@",
+        "claude-sonnet-4-5@",
+        "claude-sonnet-4@",
+        "claude-haiku-4-5@",
+    ):
+        if normalized.startswith(prefix):
+            return True
+    return False
