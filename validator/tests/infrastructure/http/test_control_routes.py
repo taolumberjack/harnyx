@@ -375,8 +375,7 @@ def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSub
         response=Response(text="The miner answer."),
         details=EvaluationDetails(
             score_breakdown=ScoreBreakdown(
-                comparison_score=1.0,
-                similarity_score=0.8,
+                comparison_score=0.9,
                 total_score=0.9,
                 scoring_version="v1",
                 reasoning=ScorerReasoning(
@@ -550,7 +549,6 @@ def _make_restore_run_payload(submission: MinerTaskRunSubmission) -> dict[str, o
                 if score_breakdown is None
                 else {
                     "comparison_score": score_breakdown.comparison_score,
-                    "similarity_score": score_breakdown.similarity_score,
                     "total_score": score_breakdown.total_score,
                     "scoring_version": score_breakdown.scoring_version,
                     "reasoning": (
@@ -1207,6 +1205,50 @@ def test_accept_batch_endpoint_rejects_invalid_restore_session_status() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "'not_a_real_status' is not a valid SessionStatus"
+    assert provider.accept_batch.received_batch is None
+    assert provider.accept_batch.received_restore_runs == ()
+
+
+def test_accept_batch_endpoint_rejects_restore_run_with_divergent_score_breakdown() -> None:
+    batch_id = uuid4()
+    task, submission = _make_task_submission(batch_id=batch_id)
+    snapshot: RunProgressSnapshot = {
+        "batch_id": batch_id,
+        "total": 0,
+        "completed": 0,
+        "remaining": 0,
+        "tasks": (),
+        "miner_task_runs": (),
+        "provider_evidence": (),
+    }
+    provider = DemoControlDependencyProvider(snapshot=snapshot)
+    app = _create_test_app(provider)
+    client = TestClient(app)
+    restore_payload = _make_restore_run_payload(submission)
+    specifics_payload = restore_payload["specifics"]
+    if not isinstance(specifics_payload, dict):
+        raise AssertionError("expected restore specifics payload dict")
+    score_breakdown = specifics_payload["score_breakdown"]
+    if not isinstance(score_breakdown, dict):
+        raise AssertionError("expected restore score breakdown payload dict")
+    score_breakdown["comparison_score"] = 0.8
+    score_breakdown["total_score"] = 0.9
+
+    response = client.post(
+        "/validator/miner-task-batches/batch",
+        json={
+            **_make_batch_payload(
+                batch_id=batch_id,
+                task_id=task.task_id,
+                artifact_id=submission.run.artifact_id,
+                query_text=task.query.text,
+            ),
+            "restore_runs": [restore_payload],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "comparison_score" in response.text
     assert provider.accept_batch.received_batch is None
     assert provider.accept_batch.received_restore_runs == ()
 

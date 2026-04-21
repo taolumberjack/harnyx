@@ -165,7 +165,6 @@ def _successful_outcome(
             details=EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
                     comparison_score=score,
-                    similarity_score=score,
                     total_score=score,
                     scoring_version="v1",
                 ),
@@ -207,7 +206,6 @@ def _submission_for_task(
             details=EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
                     comparison_score=1.0,
-                    similarity_score=1.0,
                     total_score=1.0,
                     scoring_version="v1",
                 ),
@@ -369,8 +367,7 @@ class _RetryThenSuccessOrchestrator:
             raise _sandbox_invocation_error("transient sandbox failure")
         details = EvaluationDetails(
             score_breakdown=ScoreBreakdown(
-                comparison_score=1.0,
-                similarity_score=0.5,
+                comparison_score=0.75,
                 total_score=0.75,
                 scoring_version="v1",
             ),

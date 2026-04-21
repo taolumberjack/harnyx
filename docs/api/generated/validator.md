@@ -436,7 +436,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `reasoning_tokens` | opt | `integer` (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `scoring_version` |  | req | `string` |
-|  | `similarity_score` |  | req | `number` |
 |  | `total_score` |  | req | `number` |
 | `total_tool_usage` |  |  | opt | [ToolUsageSummary-Input](#model-toolusagesummary-input) |
 |  | `llm` |  | opt | [LlmUsageSummary-Input](#model-llmusagesummary-input) |
@@ -518,7 +517,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `reasoning_tokens` | opt | `integer` (nullable) |
 |  |  | `text` | opt | `string` (nullable) |
 |  | `scoring_version` |  | req | `string` |
-|  | `similarity_score` |  | req | `number` |
 |  | `total_score` |  | req | `number` |
 | `total_tool_usage` |  |  | opt | [ToolUsageSummary-Output](#model-toolusagesummary-output) |
 |  | `llm` |  | opt | [LlmUsageSummary-Output](#model-llmusagesummary-output) |
@@ -1428,7 +1426,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `comparison_score` | req | `number` |
 |  |  | `reasoning` | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  |  | `scoring_version` | req | `string` |
-|  |  | `similarity_score` | req | `number` |
 |  |  | `total_score` | req | `number` |
 |  | `total_tool_usage` |  | opt | [ToolUsageSummary-Output](#model-toolusagesummary-output) |
 |  |  | `llm` | opt | [LlmUsageSummary-Output](#model-llmusagesummary-output) |
@@ -1957,7 +1954,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `comparison_score` | req | `number` |
 |  |  | `reasoning` | opt | [ScorerReasoning](#model-scorerreasoning) (nullable) |
 |  |  | `scoring_version` | req | `string` |
-|  |  | `similarity_score` | req | `number` |
 |  |  | `total_score` | req | `number` |
 |  | `total_tool_usage` |  | opt | [ToolUsageSummary-Input](#model-toolusagesummary-input) |
 |  |  | `llm` | opt | [LlmUsageSummary-Input](#model-llmusagesummary-input) |
@@ -2041,7 +2037,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  | `reasoning_tokens` |  | opt | `integer` (nullable) |
 |  | `text` |  | opt | `string` (nullable) |
 | `scoring_version` |  |  | req | `string` |
-| `similarity_score` |  |  | req | `number` |
 | `total_score` |  |  | req | `number` |
 
 <details>
@@ -2072,12 +2067,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "title": "Scoring Version",
       "type": "string"
     },
-    "similarity_score": {
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Similarity Score",
-      "type": "number"
-    },
     "total_score": {
       "maximum": 1.0,
       "minimum": 0.0,
@@ -2087,7 +2076,6 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   },
   "required": [
     "comparison_score",
-    "similarity_score",
     "total_score",
     "scoring_version"
   ],

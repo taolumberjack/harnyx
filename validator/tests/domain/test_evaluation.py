@@ -56,7 +56,6 @@ def test_miner_task_run_accepts_successful_state_with_response() -> None:
         details=EvaluationDetails(
             score_breakdown=ScoreBreakdown(
                 comparison_score=0.5,
-                similarity_score=0.5,
                 total_score=0.5,
                 scoring_version="v1",
             ),

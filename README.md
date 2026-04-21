@@ -62,8 +62,7 @@ Notes:
 - Miners submit scripts that answer the query under a tight tool budget.
 - Validators score each response against the reference answer with:
   - `comparison_score`: pairwise judge vs reference answer, run twice with swapped order
-  - `similarity_score`: embedding cosine similarity between response text and reference-answer text
-  - `total_score = 0.5 * comparison_score + 0.5 * similarity_score`
+  - `total_score = comparison_score`
 - Candidate totals are aggregated across validators, and ties prefer lower total tool cost.
 
 **Validator flow + gating**

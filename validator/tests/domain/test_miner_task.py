@@ -21,8 +21,7 @@ def test_successful_run_requires_response() -> None:
             task_id=uuid4(),
             details=EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
-                    comparison_score=1.0,
-                    similarity_score=0.5,
+                    comparison_score=0.75,
                     total_score=0.75,
                     scoring_version="v1",
                 )
@@ -55,8 +54,7 @@ def test_successful_run_accepts_elapsed_ms() -> None:
         response=Response(text="The miner answer."),
         details=EvaluationDetails(
             score_breakdown=ScoreBreakdown(
-                comparison_score=1.0,
-                similarity_score=0.5,
+                comparison_score=0.75,
                 total_score=0.75,
                 scoring_version="v1",
             ),
@@ -72,10 +70,36 @@ def test_evaluation_details_reject_negative_elapsed_ms() -> None:
     with pytest.raises(ValidationError, match="greater than or equal to 0"):
         EvaluationDetails(
             score_breakdown=ScoreBreakdown(
-                comparison_score=1.0,
-                similarity_score=0.5,
+                comparison_score=0.75,
                 total_score=0.75,
                 scoring_version="v1",
             ),
             elapsed_ms=-1.0,
         )
+
+
+def test_score_breakdown_rejects_total_that_differs_from_comparison() -> None:
+    with pytest.raises(ValidationError, match="comparison_score"):
+        ScoreBreakdown(
+            comparison_score=0.8,
+            total_score=0.9,
+            scoring_version="v1",
+        )
+
+
+def test_evaluation_details_normalizes_legacy_similarity_score_payload() -> None:
+    details = EvaluationDetails.model_validate(
+        {
+            "score_breakdown": {
+                "comparison_score": 0.8,
+                "similarity_score": 0.9,
+                "total_score": 0.9,
+                "scoring_version": "v1",
+            },
+            "total_tool_usage": {},
+        }
+    )
+
+    assert details.score_breakdown is not None
+    assert details.score_breakdown.comparison_score == pytest.approx(0.9)
+    assert details.score_breakdown.total_score == pytest.approx(0.9)

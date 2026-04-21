@@ -41,7 +41,6 @@ def _make_submission(
         details=EvaluationDetails(
             score_breakdown=ScoreBreakdown(
                 comparison_score=score,
-                similarity_score=score,
                 total_score=score,
                 scoring_version="v1",
             ),

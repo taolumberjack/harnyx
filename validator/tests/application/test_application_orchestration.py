@@ -95,7 +95,6 @@ class StubScoringService:
         assert response.text == "A direct answer"
         return ScoreBreakdown(
             comparison_score=1.0,
-            similarity_score=1.0,
             total_score=1.0,
             scoring_version="v1",
         )
@@ -337,7 +336,6 @@ async def test_task_orchestration_logs_scoring_summary(
     assert payload["scoring_ms"] >= 0.0
     assert payload["orchestration_ms"] >= 0.0
     assert payload["comparison_score"] == pytest.approx(1.0)
-    assert payload["similarity_score"] == pytest.approx(1.0)
     assert payload["total_score"] == pytest.approx(1.0)
     assert payload["outcome"] == "ok"
     assert payload["error_code"] is None
@@ -415,7 +413,6 @@ async def test_task_orchestration_logs_scoring_summary_on_scoring_error(
     assert payload["scoring_ms"] >= 0.0
     assert payload["orchestration_ms"] >= 0.0
     assert payload["comparison_score"] is None
-    assert payload["similarity_score"] is None
     assert payload["total_score"] is None
     assert payload["outcome"] == "error"
     assert payload["error_code"] == str(MinerTaskErrorCode.UNEXPECTED_VALIDATOR_FAILURE)
@@ -493,7 +490,6 @@ async def test_task_orchestration_logs_retry_exhausted_scoring_error_code(
     assert payload["scoring_ms"] >= 0.0
     assert payload["orchestration_ms"] >= 0.0
     assert payload["comparison_score"] is None
-    assert payload["similarity_score"] is None
     assert payload["total_score"] is None
     assert payload["outcome"] == "error"
     assert payload["error_code"] == str(MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED)

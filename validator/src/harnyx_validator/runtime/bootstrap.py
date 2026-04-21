@@ -55,7 +55,6 @@ from harnyx_validator.application.ports.subtensor import SubtensorClientPort
 from harnyx_validator.application.services.evaluation_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
-    TextEmbeddingPort,
 )
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.application.submit_weights import WeightSubmissionService
@@ -69,7 +68,6 @@ from harnyx_validator.infrastructure.platform.registration_client import (
     PlatformRegistrationClient,
     register_with_retry,
 )
-from harnyx_validator.infrastructure.scoring.factory import create_scoring_embedding_client
 from harnyx_validator.infrastructure.state.batch_inbox import InMemoryBatchInbox
 from harnyx_validator.infrastructure.state.evaluation_record import InMemoryEvaluationRecordStore
 from harnyx_validator.infrastructure.state.run_progress import InMemoryRunProgress
@@ -82,18 +80,11 @@ from harnyx_validator.runtime.settings import Settings
 
 logger = logging.getLogger("harnyx_validator.runtime")
 
-_SCORING_EMBEDDING_MODEL = "gemini-embedding-001"
-_SCORING_CHUTES_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 _SCORING_LLM_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 TOKEN_MAX_PARALLEL_CALLS = 2
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _BATCH_BLOCKING_LANE_NAME = "validator-batch-blocking"
-
-
-class _ScoringEmbeddingClient(TextEmbeddingPort, Protocol):
-    async def aclose(self) -> None: ...
-
 
 class _ProviderTrackingToolExecutor(ToolExecutor):
     def __init__(
@@ -180,7 +171,6 @@ class RuntimeContext:
     tool_executor: ToolExecutor
     token_semaphore: TokenSemaphore
     subtensor_client: SubtensorClientPort
-    scoring_embedding_client: _ScoringEmbeddingClient | None
     scoring_service: EvaluationScoringService
     weight_submission_service: WeightSubmissionService
     create_entrypoint_invoker: Callable[[SandboxClient], EntrypointInvoker]
@@ -230,7 +220,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         tool_llm_provider=tool_llm_provider,
     )
 
-    scoring_service, weight_submission_service, scoring_embedding_client = _build_services(
+    scoring_service, weight_submission_service = _build_services(
         resolved=resolved,
         scoring_llm_provider=scoring_llm_provider,
         scoring_route=scoring_route,
@@ -275,7 +265,6 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         tool_executor=tool_executor,
         token_semaphore=state.token_semaphore,
         subtensor_client=subtensor_client,
-        scoring_embedding_client=scoring_embedding_client,
         scoring_service=scoring_service,
         weight_submission_service=weight_submission_service,
         create_entrypoint_invoker=entrypoint_factory,
@@ -485,20 +474,18 @@ def _build_services(
     scoring_route: ResolvedLlmRoute,
     subtensor_client: SubtensorClientPort,
     platform_client: PlatformPort,
-) -> tuple[EvaluationScoringService, WeightSubmissionService, _ScoringEmbeddingClient]:
-    scoring_embedding_client = _create_scoring_embedding_client(resolved)
+) -> tuple[EvaluationScoringService, WeightSubmissionService]:
     scoring_service = _create_scoring_service(
         resolved,
         scoring_llm_provider,
         scoring_route=scoring_route,
-        embedding_client=scoring_embedding_client,
     )
     weight_submission_service = _build_weight_service(
         resolved,
         subtensor_client=subtensor_client,
         platform_client=platform_client,
     )
-    return scoring_service, weight_submission_service, scoring_embedding_client
+    return scoring_service, weight_submission_service
 
 
 def _build_factories(
@@ -804,11 +791,9 @@ def _create_scoring_service(
     provider: LlmProviderPort | None,
     *,
     scoring_route: ResolvedLlmRoute,
-    embedding_client: TextEmbeddingPort | None = None,
 ) -> EvaluationScoringService:
     if provider is None:
         raise ValueError("scoring_llm_provider must be configured")
-    resolved_embedding_client = embedding_client or _create_scoring_embedding_client(settings)
     config = EvaluationScoringConfig(
         provider=scoring_route.provider,
         model=scoring_route.model,
@@ -819,23 +804,7 @@ def _create_scoring_service(
     )
     return EvaluationScoringService(
         llm_provider=provider,
-        embedding_client=resolved_embedding_client,
         config=config,
-    )
-
-
-def _create_scoring_embedding_client(settings: Settings) -> _ScoringEmbeddingClient:
-    return create_scoring_embedding_client(
-        provider_name=settings.llm.scoring_llm_provider,
-        vertex_model=_SCORING_EMBEDDING_MODEL,
-        chutes_model=_SCORING_CHUTES_EMBEDDING_MODEL,
-        chutes_api_key=settings.llm.chutes_api_key_value,
-        scoring_timeout_seconds=settings.llm.scoring_llm_timeout_seconds,
-        vertex_project=settings.vertex.gcp_project_id,
-        vertex_location=settings.vertex.gcp_location,
-        vertex_maas_location=settings.vertex.vertex_maas_gcp_location,
-        vertex_service_account_b64=settings.vertex.gcp_sa_credential_b64_value,
-        vertex_timeout_seconds=settings.vertex.vertex_timeout_seconds,
     )
 
 
@@ -866,7 +835,6 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
         runtime.search_client,
         runtime.tool_llm_provider,
         runtime.scoring_llm_provider,
-        runtime.scoring_embedding_client,
     ):
         await _aclose(owned)
 

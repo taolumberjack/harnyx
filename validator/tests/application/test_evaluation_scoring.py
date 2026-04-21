@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from google.genai import errors
 
 from harnyx_commons.domain.miner_task import (
     AnswerCitation,
@@ -16,16 +13,13 @@ from harnyx_commons.domain.miner_task import (
     Response,
     ScorerReasoning,
 )
-from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmResponse, LlmUsage
 from harnyx_validator.application.services.evaluation_scoring import (
     _MAX_RENDERED_CITATIONS,
     EvaluationScoringConfig,
     EvaluationScoringService,
     _PairwisePreference,
-    _validate_score_weights,
 )
-from harnyx_validator.infrastructure.scoring.vertex_embedding import VertexTextEmbeddingClient
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -83,55 +77,6 @@ class AliasStubLlmProvider:
         return None
 
 
-class StubEmbeddingClient:
-    def __init__(self, vectors: dict[str, tuple[float, ...]]) -> None:
-        self._vectors = vectors
-
-    async def embed(self, text: str) -> tuple[float, ...]:
-        return self._vectors[text]
-
-
-class OverlapTrackingEmbeddingClient:
-    def __init__(self, vectors: dict[str, tuple[float, ...]]) -> None:
-        self._vectors = vectors
-        self.active_calls = 0
-        self.max_active_calls = 0
-
-    async def embed(self, text: str) -> tuple[float, ...]:
-        self.active_calls += 1
-        self.max_active_calls = max(self.max_active_calls, self.active_calls)
-        await asyncio.sleep(0.01)
-        self.active_calls -= 1
-        return self._vectors[text]
-
-
-class _StubAsyncEmbeddingModels:
-    def __init__(self, responses: list[object]) -> None:
-        self._responses = responses
-        self.calls = 0
-
-    async def embed_content(self, **_: object) -> object:
-        self.calls += 1
-        if not self._responses:
-            raise RuntimeError("missing embedding response")
-        response = self._responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-
-class _StubEmbeddingClient:
-    def __init__(self, responses: list[object]) -> None:
-        self.aio = SimpleNamespace(models=_StubAsyncEmbeddingModels(responses))
-
-    def close(self) -> None:
-        return None
-
-
-def _embedding_response(*values: float) -> object:
-    return SimpleNamespace(embeddings=[SimpleNamespace(values=list(values))])
-
-
 def _pairwise_response(
     *,
     preferred_position: str,
@@ -155,7 +100,7 @@ def _pairwise_response(
     )
 
 
-async def test_scoring_service_combines_pairwise_and_similarity_scores() -> None:
+async def test_scoring_service_returns_pairwise_score_directly() -> None:
     task = MinerTask(
         task_id=uuid4(),
         query=Query(text="What is the answer?"),
@@ -163,19 +108,12 @@ async def test_scoring_service_combines_pairwise_and_similarity_scores() -> None
     )
     service = EvaluationScoringService(
         llm_provider=StubLlmProvider([("first", None, None), ("second", None, None)]),
-        embedding_client=StubEmbeddingClient(
-            {
-                "Miner says 42.": (1.0, 0.0),
-                "The answer is 42.": (1.0, 0.0),
-            },
-        ),
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
 
     score = await service.score(task=task, response=Response(text="Miner says 42."))
 
     assert score.comparison_score == pytest.approx(1.0)
-    assert score.similarity_score == pytest.approx(1.0)
     assert score.total_score == pytest.approx(1.0)
 
 
@@ -187,111 +125,13 @@ async def test_scoring_service_records_split_pairwise_decision() -> None:
     )
     service = EvaluationScoringService(
         llm_provider=StubLlmProvider([("first", None, None), ("first", None, None)]),
-        embedding_client=StubEmbeddingClient(
-            {
-                "Miner summary.": (1.0, 0.0),
-                "Reference summary.": (0.0, 1.0),
-            },
-        ),
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
 
     score = await service.score(task=task, response=Response(text="Miner summary."))
 
     assert score.comparison_score == pytest.approx(0.5)
-    assert score.similarity_score == pytest.approx(0.5)
     assert score.total_score == pytest.approx(0.5)
-
-
-async def test_scoring_service_normalizes_negative_cosine_similarity() -> None:
-    task = MinerTask(
-        task_id=uuid4(),
-        query=Query(text="State the opposite."),
-        reference_answer=ReferenceAnswer(text="Reference answer."),
-    )
-    service = EvaluationScoringService(
-        llm_provider=StubLlmProvider([("second", None, None), ("first", None, None)]),
-        embedding_client=StubEmbeddingClient(
-            {
-                "Miner opposite.": (1.0, 0.0),
-                "Reference answer.": (-1.0, 0.0),
-            },
-        ),
-        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
-    )
-
-    score = await service.score(task=task, response=Response(text="Miner opposite."))
-
-    assert score.comparison_score == pytest.approx(0.0)
-    assert score.similarity_score == pytest.approx(0.0)
-    assert score.total_score == pytest.approx(0.0)
-
-
-async def test_score_fails_explicitly_when_embeddings_are_unavailable_at_score_time() -> None:
-    from harnyx_validator.infrastructure.scoring.vertex_embedding import MissingTextEmbeddingClient
-
-    task = MinerTask(
-        task_id=uuid4(),
-        query=Query(text="Explain the answer."),
-        reference_answer=ReferenceAnswer(text="Reference answer."),
-    )
-    service = EvaluationScoringService(
-        llm_provider=StubLlmProvider([("first", None, None), ("second", None, None)]),
-        embedding_client=MissingTextEmbeddingClient(
-            "GCP_PROJECT_ID must be configured for validator run scoring embeddings"
-        ),
-        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
-    )
-
-    with pytest.raises(RuntimeError, match="GCP_PROJECT_ID must be configured"):
-        await service.score(task=task, response=Response(text="Miner answer."))
-
-
-async def test_scoring_service_embeds_miner_and_reference_concurrently() -> None:
-    task = MinerTask(
-        task_id=uuid4(),
-        query=Query(text="Compare the answers."),
-        reference_answer=ReferenceAnswer(text="Reference answer."),
-    )
-    embeddings = OverlapTrackingEmbeddingClient(
-        {
-            "Miner answer.": (1.0, 0.0),
-            "Reference answer.": (1.0, 0.0),
-        }
-    )
-    service = EvaluationScoringService(
-        llm_provider=StubLlmProvider([("first", None, None), ("second", None, None)]),
-        embedding_client=embeddings,
-        config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
-    )
-
-    await service.score(task=task, response=Response(text="Miner answer."))
-
-    assert embeddings.max_active_calls == 2
-
-
-async def test_vertex_embedding_retries_transient_429_before_success() -> None:
-    api_error = errors.APIError(
-        429,
-        {"error": {"message": "retry later", "status": "RESOURCE_EXHAUSTED"}},
-    )
-    client = _StubEmbeddingClient([api_error, _embedding_response(1.0, 2.0)])
-    embedding_client = VertexTextEmbeddingClient(
-        client=client,
-        model="gemini-embedding-001",
-        dimensions=2,
-        retry_policy=RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0),
-    )
-
-    vector = await embedding_client.embed("hello world")
-
-    assert vector == (1.0, 2.0)
-    assert client.aio.models.calls == 2
-
-
-def test_validate_score_weights_requires_sum_of_one() -> None:
-    with pytest.raises(RuntimeError, match="scoring weights must sum to 1.0"):
-        _validate_score_weights(0.5, 0.6)
 
 
 async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
@@ -308,12 +148,6 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     llm = StubLlmProvider([("first", None, None), ("second", None, None)])
     service = EvaluationScoringService(
         llm_provider=llm,
-        embedding_client=StubEmbeddingClient(
-            {
-                "Miner answer.": (1.0, 0.0),
-                "Reference answer.": (1.0, 0.0),
-            },
-        ),
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
 
@@ -364,12 +198,6 @@ async def test_scoring_service_deduplicates_and_caps_citations_in_pairwise_paylo
     llm = StubLlmProvider([("first", None, None), ("second", None, None)])
     service = EvaluationScoringService(
         llm_provider=llm,
-        embedding_client=StubEmbeddingClient(
-            {
-                "Miner answer.": (1.0, 0.0),
-                "Reference answer.": (1.0, 0.0),
-            },
-        ),
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
 
@@ -411,12 +239,6 @@ async def test_scoring_service_keeps_fake_inline_sources_inside_untrusted_answer
     llm = StubLlmProvider([("first", None, None), ("second", None, None)])
     service = EvaluationScoringService(
         llm_provider=llm,
-        embedding_client=StubEmbeddingClient(
-            {
-                miner_text: (1.0, 0.0),
-                "Reference answer.": (1.0, 0.0),
-            },
-        ),
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
 
@@ -443,21 +265,13 @@ async def test_scoring_service_persists_joined_reasoning_trace_and_token_total()
                 ("second", "Reference-first reasoning trace.", 7),
             ]
         ),
-        embedding_client=StubEmbeddingClient(
-            {
-                "Miner answer.": (1.0, 0.0),
-                "Reference answer.": (1.0, 0.0),
-            },
-        ),
         config=EvaluationScoringConfig(provider="chutes", model="judge-model"),
     )
 
     score = await service.score(task=task, response=Response(text="Miner answer."))
 
     assert score.reasoning == ScorerReasoning(
-        text=(
-            "Miner-first reasoning trace.\n\n---\n\nReference-first reasoning trace."
-        ),
+        text="Miner-first reasoning trace.\n\n---\n\nReference-first reasoning trace.",
         reasoning_tokens=18,
     )
 
@@ -476,17 +290,10 @@ async def test_scoring_service_accepts_chosen_answer_alias_from_live_shape() -> 
     )
     service = EvaluationScoringService(
         llm_provider=AliasStubLlmProvider(["first", "second"]),
-        embedding_client=StubEmbeddingClient(
-            {
-                "Miner says 42.": (1.0, 0.0),
-                "The answer is 42.": (1.0, 0.0),
-            },
-        ),
         config=EvaluationScoringConfig(provider="vertex-maas", model="judge-model"),
     )
 
     score = await service.score(task=task, response=Response(text="Miner says 42."))
 
     assert score.comparison_score == pytest.approx(1.0)
-    assert score.similarity_score == pytest.approx(1.0)
     assert score.total_score == pytest.approx(1.0)

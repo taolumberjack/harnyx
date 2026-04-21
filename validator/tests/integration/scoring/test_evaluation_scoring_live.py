@@ -17,13 +17,6 @@ from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
-
-
-class StubEmbeddingClient:
-    async def embed(self, _text: str) -> tuple[float, ...]:
-        return (1.0, 0.0, 0.0)
-
-
 class RecordingProvider(LlmProviderPort):
     def __init__(self, delegate: LlmProviderPort) -> None:
         self._delegate = delegate
@@ -62,7 +55,6 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow() -> No
     llm_provider = RecordingProvider(resolve_provider(scoring_route.provider))
     service = EvaluationScoringService(
         llm_provider=llm_provider,
-        embedding_client=StubEmbeddingClient(),
         config=EvaluationScoringConfig(
             provider=scoring_route.provider,
             model=scoring_route.model,
@@ -92,8 +84,7 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow() -> No
     assert all(request.model == scoring_route.model for request in llm_provider.requests)
     assert score.scoring_version == "v1"
     assert 0.0 <= score.comparison_score <= 1.0
-    assert score.similarity_score == pytest.approx(1.0)
-    assert 0.0 <= score.total_score <= 1.0
+    assert score.total_score == pytest.approx(score.comparison_score)
     observed_reasoning = [
         response.choices[0].message.reasoning
         for response in llm_provider.responses

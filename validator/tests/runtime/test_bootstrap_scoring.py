@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 from pydantic import SecretStr
 
-import harnyx_validator.infrastructure.scoring.vertex_embedding as vertex_embedding
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.observability import ObservabilitySettings
@@ -16,7 +15,6 @@ from harnyx_commons.config.subtensor import SubtensorSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.errors import ConcurrencyLimitError
 from harnyx_commons.llm.routing import ResolvedLlmRoute
-from harnyx_validator.infrastructure.scoring.vertex_embedding import LazyVertexTextEmbeddingClient
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import (
     _build_llm_clients,
@@ -310,246 +308,9 @@ def test_create_scoring_service_uses_effective_route_model_and_provider() -> Non
 
     assert service._config.provider == "bedrock"
     assert service._config.model == "custom/internal-model"
-    assert isinstance(service._embeddings, LazyVertexTextEmbeddingClient)
 
 
-def test_create_scoring_service_uses_chutes_embeddings_for_chutes_provider() -> None:
-    settings = Settings.model_construct(
-        rpc_listen_host="127.0.0.1",
-        rpc_port=8100,
-        llm=LlmSettings.model_construct(
-            scoring_llm_provider="chutes",
-            scoring_llm_temperature=None,
-            scoring_llm_max_output_tokens=1024,
-            scoring_llm_timeout_seconds=30.0,
-            chutes_api_key=SecretStr("test-key"),
-        ),
-        vertex=VertexSettings.model_construct(
-            gcp_project_id=None,
-            gcp_location=None,
-            vertex_maas_gcp_location="us-central1",
-            vertex_timeout_seconds=60.0,
-            gcp_service_account_credential_b64=SecretStr(""),
-        ),
-        sandbox=SandboxSettings.model_construct(
-            sandbox_image="harnyx-sandbox:test",
-            sandbox_network="harnyx-sandbox-net",
-            sandbox_pull_policy="always",
-        ),
-        platform_api=PlatformApiSettings.model_construct(
-            platform_base_url=None,
-            validator_public_base_url=None,
-        ),
-        observability=ObservabilitySettings.model_construct(
-            enable_cloud_logging=False,
-            gcp_project_id=None,
-        ),
-        subtensor=SubtensorSettings.model_construct(
-            network="local",
-            endpoint="ws://127.0.0.1:9945",
-            netuid=1,
-            wallet_name="harnyx-validator",
-            hotkey_name="default",
-            hotkey_mnemonic=None,
-            wait_for_inclusion=True,
-            wait_for_finalization=False,
-            transaction_mode="immortal",
-            transaction_period=None,
-        ),
-    )
-
-    service = _create_scoring_service(
-        settings,
-        provider=SimpleNamespace(),
-        scoring_route=ResolvedLlmRoute(
-            surface="scoring",
-            provider="chutes",
-            model=bootstrap._SCORING_LLM_MODEL,
-        ),
-    )
-
-    assert service._embeddings.__class__.__name__ == "ChutesTextEmbeddingClient"
-    assert service._embeddings.model == "Qwen/Qwen3-Embedding-0.6B"
-    assert service._embeddings.base_url == "https://chutes-qwen-qwen3-embedding-0-6b.chutes.ai"
-
-
-def test_create_scoring_service_fails_when_chutes_embedding_model_is_unmapped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = Settings.model_construct(
-        rpc_listen_host="127.0.0.1",
-        rpc_port=8100,
-        llm=LlmSettings.model_construct(
-            scoring_llm_provider="chutes",
-            scoring_llm_temperature=None,
-            scoring_llm_max_output_tokens=1024,
-            scoring_llm_timeout_seconds=30.0,
-            chutes_api_key=SecretStr("test-key"),
-        ),
-        vertex=VertexSettings.model_construct(
-            gcp_project_id=None,
-            gcp_location=None,
-            vertex_maas_gcp_location="us-central1",
-            vertex_timeout_seconds=60.0,
-            gcp_service_account_credential_b64=SecretStr(""),
-        ),
-        sandbox=SandboxSettings.model_construct(
-            sandbox_image="harnyx-sandbox:test",
-            sandbox_network="harnyx-sandbox-net",
-            sandbox_pull_policy="always",
-        ),
-        platform_api=PlatformApiSettings.model_construct(
-            platform_base_url=None,
-            validator_public_base_url=None,
-        ),
-        observability=ObservabilitySettings.model_construct(
-            enable_cloud_logging=False,
-            gcp_project_id=None,
-        ),
-        subtensor=SubtensorSettings.model_construct(
-            network="local",
-            endpoint="ws://127.0.0.1:9945",
-            netuid=1,
-            wallet_name="harnyx-validator",
-            hotkey_name="default",
-            hotkey_mnemonic=None,
-            wait_for_inclusion=True,
-            wait_for_finalization=False,
-            transaction_mode="immortal",
-            transaction_period=None,
-        ),
-    )
-    monkeypatch.setattr(bootstrap, "_SCORING_CHUTES_EMBEDDING_MODEL", "Unknown/Embedding-Model")
-
-    with pytest.raises(RuntimeError, match="no chutes embedding base_url configured"):
-        _create_scoring_service(
-            settings,
-            provider=SimpleNamespace(),
-            scoring_route=ResolvedLlmRoute(
-                surface="scoring",
-                provider="chutes",
-                model=bootstrap._SCORING_LLM_MODEL,
-            ),
-        )
-
-
-def test_create_scoring_service_requires_chutes_api_key_for_chutes_embeddings() -> None:
-    settings = Settings.model_construct(
-        rpc_listen_host="127.0.0.1",
-        rpc_port=8100,
-        llm=LlmSettings.model_construct(
-            scoring_llm_provider="chutes",
-            scoring_llm_temperature=None,
-            scoring_llm_max_output_tokens=1024,
-            scoring_llm_timeout_seconds=30.0,
-            chutes_api_key=SecretStr(""),
-        ),
-        vertex=VertexSettings.model_construct(
-            gcp_project_id=None,
-            gcp_location=None,
-            vertex_maas_gcp_location="us-central1",
-            vertex_timeout_seconds=60.0,
-            gcp_service_account_credential_b64=SecretStr(""),
-        ),
-        sandbox=SandboxSettings.model_construct(
-            sandbox_image="harnyx-sandbox:test",
-            sandbox_network="harnyx-sandbox-net",
-            sandbox_pull_policy="always",
-        ),
-        platform_api=PlatformApiSettings.model_construct(
-            platform_base_url=None,
-            validator_public_base_url=None,
-        ),
-        observability=ObservabilitySettings.model_construct(
-            enable_cloud_logging=False,
-            gcp_project_id=None,
-        ),
-        subtensor=SubtensorSettings.model_construct(
-            network="local",
-            endpoint="ws://127.0.0.1:9945",
-            netuid=1,
-            wallet_name="harnyx-validator",
-            hotkey_name="default",
-            hotkey_mnemonic=None,
-            wait_for_inclusion=True,
-            wait_for_finalization=False,
-            transaction_mode="immortal",
-            transaction_period=None,
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="CHUTES_API_KEY must be configured"):
-        _create_scoring_service(
-            settings,
-            provider=SimpleNamespace(),
-            scoring_route=ResolvedLlmRoute(
-                surface="scoring",
-                provider="chutes",
-                model=bootstrap._SCORING_LLM_MODEL,
-            ),
-        )
-
-
-def test_create_scoring_service_uses_vertex_maas_region_for_embeddings() -> None:
-    settings = Settings.model_construct(
-        rpc_listen_host="127.0.0.1",
-        rpc_port=8100,
-        llm=LlmSettings.model_construct(
-            scoring_llm_provider="vertex-maas",
-            scoring_llm_temperature=None,
-            scoring_llm_max_output_tokens=1024,
-            scoring_llm_timeout_seconds=30.0,
-            chutes_api_key=SecretStr(""),
-        ),
-        vertex=VertexSettings.model_construct(
-            gcp_project_id="test-project",
-            gcp_location=None,
-            vertex_maas_gcp_location="us-central1",
-            vertex_timeout_seconds=60.0,
-            gcp_service_account_credential_b64=SecretStr(""),
-        ),
-        sandbox=SandboxSettings.model_construct(
-            sandbox_image="harnyx-sandbox:test",
-            sandbox_network="harnyx-sandbox-net",
-            sandbox_pull_policy="always",
-        ),
-        platform_api=PlatformApiSettings.model_construct(
-            platform_base_url=None,
-            validator_public_base_url=None,
-        ),
-        observability=ObservabilitySettings.model_construct(
-            enable_cloud_logging=False,
-            gcp_project_id=None,
-        ),
-        subtensor=SubtensorSettings.model_construct(
-            network="local",
-            endpoint="ws://127.0.0.1:9945",
-            netuid=1,
-            wallet_name="harnyx-validator",
-            hotkey_name="default",
-            hotkey_mnemonic=None,
-            wait_for_inclusion=True,
-            wait_for_finalization=False,
-            transaction_mode="immortal",
-            transaction_period=None,
-        ),
-    )
-
-    service = _create_scoring_service(
-        settings,
-        provider=SimpleNamespace(),
-        scoring_route=ResolvedLlmRoute(
-            surface="scoring",
-            provider="vertex-maas",
-            model=bootstrap._SCORING_LLM_MODEL,
-        ),
-    )
-
-    assert isinstance(service._embeddings, LazyVertexTextEmbeddingClient)
-    assert service._embeddings.location == "us-central1"
-
-
-def test_build_llm_clients_allows_bedrock_scoring_route_while_embeddings_stay_on_default_provider(
+def test_build_llm_clients_allows_bedrock_scoring_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings.model_construct(
@@ -581,7 +342,6 @@ def test_build_llm_clients_allows_bedrock_scoring_route_while_embeddings_stay_on
     monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
     _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
-    embedding_client = bootstrap._create_scoring_embedding_client(settings)
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route == ResolvedLlmRoute(
@@ -589,72 +349,6 @@ def test_build_llm_clients_allows_bedrock_scoring_route_while_embeddings_stay_on
         provider="bedrock",
         model=bootstrap._SCORING_LLM_MODEL,
     )
-    assert isinstance(embedding_client, LazyVertexTextEmbeddingClient)
-
-
-@pytest.mark.anyio
-async def test_lazy_vertex_text_embedding_client_uses_async_sdk_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str, object]] = []
-    captured: dict[str, object] = {}
-
-    class _SyncModels:
-        def embed_content(self, *args, **kwargs):
-            raise AssertionError("sync embedding path should not be used")
-
-    class _AsyncModels:
-        async def embed_content(self, *, model: str, contents: str, config: object) -> object:
-            calls.append((model, contents, config))
-            return SimpleNamespace(embeddings=[SimpleNamespace(values=(1.0, 2.0))])
-
-    class _AsyncClient:
-        def __init__(self) -> None:
-            self.models = _AsyncModels()
-            self.closed = False
-
-        async def aclose(self) -> None:
-            self.closed = True
-
-    class _FakeClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.update(kwargs)
-            self.models = _SyncModels()
-            self.aio = _AsyncClient()
-            self.closed = False
-
-        def close(self) -> None:
-            self.closed = True
-
-    monkeypatch.setattr(vertex_embedding, "prepare_credentials", lambda _path, _b64: (None, None))
-    monkeypatch.setattr(vertex_embedding.genai, "Client", _FakeClient)
-
-    client = LazyVertexTextEmbeddingClient(
-        project="test-project",
-        location="us-central1",
-        service_account_b64=None,
-        model="gemini-embedding-001",
-        timeout_seconds=15.0,
-        dimensions=2,
-    )
-
-    vector = await client.embed("hello world")
-
-    assert vector == (1.0, 2.0)
-    assert captured["vertexai"] is True
-    assert captured["project"] == "test-project"
-    assert captured["location"] == "us-central1"
-    assert len(calls) == 1
-    assert calls[0][0] == "gemini-embedding-001"
-    assert calls[0][1] == "hello world"
-
-    underlying = client._client
-    assert underlying is not None
-
-    await client.aclose()
-
-    assert underlying.client.aio.closed is True
-    assert underlying.client.closed is True
 
 
 class _Closable:
@@ -682,21 +376,20 @@ class _ShutdownSpyExecutor:
 
 
 @pytest.mark.anyio
-async def test_close_runtime_resources_closes_scoring_embedding_client() -> None:
-    scoring_embedding_client = _Closable()
+async def test_close_runtime_resources_closes_scoring_llm_provider() -> None:
+    scoring_llm_provider = _Closable()
     blocking_executor = _ShutdownSpyExecutor()
     runtime = SimpleNamespace(
         batch_blocking_executor=blocking_executor,
         search_client=None,
         tool_llm_provider=None,
-        scoring_llm_provider=None,
-        scoring_embedding_client=scoring_embedding_client,
+        scoring_llm_provider=scoring_llm_provider,
     )
 
     await close_runtime_resources(runtime)
 
     assert blocking_executor.calls == [(False, True)]
-    assert scoring_embedding_client.closed is True
+    assert scoring_llm_provider.closed is True
 
 
 @pytest.mark.anyio
@@ -708,7 +401,6 @@ async def test_close_runtime_resources_dedupes_shared_llm_provider() -> None:
         search_client=None,
         tool_llm_provider=shared_provider,
         scoring_llm_provider=shared_provider,
-        scoring_embedding_client=None,
     )
 
     await close_runtime_resources(runtime)

@@ -163,7 +163,6 @@ def _completed_submission(batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
     details = EvaluationDetails(
         score_breakdown=ScoreBreakdown(
             comparison_score=1.0,
-            similarity_score=1.0,
             total_score=1.0,
             scoring_version="v1",
         ),

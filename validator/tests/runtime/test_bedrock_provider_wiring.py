@@ -8,7 +8,6 @@ from pydantic import SecretStr
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
-from harnyx_validator.infrastructure.scoring.factory import create_scoring_embedding_client
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import _build_llm_clients, _build_local_eval_tooling_clients
 from harnyx_validator.runtime.settings import Settings
@@ -102,19 +101,3 @@ def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytes
     assert scoring_route.model == bootstrap._SCORING_LLM_MODEL
     assert local_scoring_provider == "provider:bedrock"
     assert local_scoring_route == scoring_route
-
-
-def test_validator_scoring_embedding_factory_rejects_bedrock() -> None:
-    with pytest.raises(ValueError, match="SCORING_LLM_PROVIDER='bedrock' is not supported"):
-        create_scoring_embedding_client(
-            provider_name="bedrock",
-            vertex_model="gemini-embedding-001",
-            chutes_model="Qwen/Qwen3-Embedding-0.6B",
-            chutes_api_key="test-key",
-            scoring_timeout_seconds=30.0,
-            vertex_project="project",
-            vertex_location="us-central1",
-            vertex_maas_location="us-east5",
-            vertex_service_account_b64="vertex-creds",
-            vertex_timeout_seconds=60.0,
-        )

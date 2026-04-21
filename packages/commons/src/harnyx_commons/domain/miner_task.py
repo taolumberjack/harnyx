@@ -75,10 +75,27 @@ class ScoreBreakdown(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
     comparison_score: float = Field(ge=0.0, le=1.0)
-    similarity_score: float = Field(ge=0.0, le=1.0)
     total_score: float = Field(ge=0.0, le=1.0)
     scoring_version: str = Field(min_length=1)
     reasoning: ScorerReasoning | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_payload(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+
+        normalized = dict(value)
+        similarity_score = normalized.pop("similarity_score", None)
+        if similarity_score is not None and "total_score" in normalized:
+            normalized["comparison_score"] = normalized["total_score"]
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_total_matches_comparison(self) -> ScoreBreakdown:
+        if self.total_score != self.comparison_score:
+            raise ValueError("score breakdown total_score must equal comparison_score")
+        return self
 
 
 class MinerTaskErrorCode(StrEnum):

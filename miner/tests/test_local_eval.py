@@ -156,7 +156,6 @@ def _submission(
             details=EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
                     comparison_score=score,
-                    similarity_score=score,
                     total_score=score,
                     scoring_version="v1",
                 ),
@@ -256,7 +255,6 @@ def _recorded_rows(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ..
                 "specifics": {
                     "score_breakdown": {
                         "comparison_score": 0.61,
-                        "similarity_score": 0.61,
                         "total_score": 0.61,
                         "scoring_version": "v1",
                     },
@@ -1005,7 +1003,6 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
         _search_client=_FakeAsyncResource(),
         _tool_llm_provider=_FakeAsyncResource(),
         _scoring_llm_provider=_FakeAsyncResource(),
-        _scoring_embedding_client=_FakeAsyncResource(),
         _sandbox_manager=cast(Any, sandbox_manager),
         _tool_host=None,
         _tool_host_lock=asyncio.Lock(),
@@ -1175,7 +1172,6 @@ async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup
         _search_client=None,
         _tool_llm_provider=None,
         _scoring_llm_provider=None,
-        _scoring_embedding_client=None,
         _sandbox_manager=cast(Any, sandbox_manager),
         _tool_host=cast(Any, _FakeToolHost()),
         _tool_host_lock=asyncio.Lock(),

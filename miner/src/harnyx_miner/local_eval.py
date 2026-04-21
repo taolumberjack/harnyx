@@ -58,7 +58,6 @@ from harnyx_validator.runtime.bootstrap import (
     _build_local_eval_tooling_clients,
     _build_state,
     _build_tooling,
-    _create_scoring_embedding_client,
     _create_scoring_service,
 )
 from harnyx_validator.runtime.settings import Settings
@@ -68,8 +67,6 @@ _LOCAL_SESSION_TTL = timedelta(minutes=30)
 _LOCAL_VALIDATOR_UID = 0
 _LOCAL_SELECTION_VALIDATOR_ID = UUID(int=0)
 _DEFAULT_OUTPUT_PREFIX = "local-eval-report"
-_COMPARISON_WEIGHT = 0.5
-_SIMILARITY_WEIGHT = 0.5
 _DEFAULT_PUBLISHED_SANDBOX_NETWORK = "bridge"
 _DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM = SchedulerConfig.artifact_task_parallelism
 _LOCAL_SANDBOX_HOST_PROBE_ADDRESS = "127.0.0.1"
@@ -247,7 +244,6 @@ class LocalEvaluationRuntime:
     _search_client: Any
     _tool_llm_provider: Any
     _scoring_llm_provider: Any
-    _scoring_embedding_client: Any
     _sandbox_manager: SandboxManager
     _tool_host: LocalToolHostHandle | None
     _tool_host_lock: asyncio.Lock
@@ -266,12 +262,10 @@ class LocalEvaluationRuntime:
             search_client=search_client,
             tool_llm_provider=tool_llm_provider,
         )
-        scoring_embedding_client = _create_scoring_embedding_client(settings)
         scoring_service = _create_scoring_service(
             settings,
             scoring_llm_provider,
             scoring_route=scoring_route,
-            embedding_client=scoring_embedding_client,
         )
         scoring_config = cast(EvaluationScoringConfig, scoring_service._config)
         runner = EvaluationRunner(
@@ -297,7 +291,6 @@ class LocalEvaluationRuntime:
             _search_client=search_client,
             _tool_llm_provider=tool_llm_provider,
             _scoring_llm_provider=scoring_llm_provider,
-            _scoring_embedding_client=scoring_embedding_client,
             _sandbox_manager=create_sandbox_manager(
                 logger_name="harnyx_miner.local_eval.sandbox",
                 host=_LOCAL_SANDBOX_HOST_PROBE_ADDRESS,
@@ -415,7 +408,6 @@ class LocalEvaluationRuntime:
             self._search_client,
             self._tool_llm_provider,
             self._scoring_llm_provider,
-            self._scoring_embedding_client,
         ):
             await resource.aclose()
 
@@ -784,12 +776,10 @@ def _build_report(
             "timeout_seconds": scoring_config.timeout_seconds,
             "scoring_version": scoring_config.scoring_version,
             "weights": {
-                "comparison_score": _COMPARISON_WEIGHT,
-                "similarity_score": _SIMILARITY_WEIGHT,
+                "comparison_score": 1.0,
             },
             "methods": {
                 "comparison_score": "pairwise judge vs reference answer with swapped order",
-                "similarity_score": "embedding cosine similarity vs reference answer",
             },
         },
         "artifacts": {
@@ -1140,7 +1130,7 @@ def _render_markdown_report(report: Mapping[str, object]) -> str:
             "## Scoring Context",
             f"- Provider/model: `{scoring_context['provider']}` / `{scoring_context['model']}`",
             f"- Scoring version: `{scoring_context['scoring_version']}`",
-            f"- Weights: comparison `{_COMPARISON_WEIGHT}`, similarity `{_SIMILARITY_WEIGHT}`",
+            "- Weights: comparison `1.0`",
             "",
             "## Local Leaderboard",
             "",

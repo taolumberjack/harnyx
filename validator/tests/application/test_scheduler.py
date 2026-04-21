@@ -210,7 +210,6 @@ def _submission_for_task(
             details=EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
                     comparison_score=1.0,
-                    similarity_score=1.0,
                     total_score=1.0,
                     scoring_version="v1",
                 ),
@@ -275,8 +274,7 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
                 recorded_requests.append((request.uid, request.task))
                 details = EvaluationDetails(
                     score_breakdown=ScoreBreakdown(
-                        comparison_score=1.0,
-                        similarity_score=0.5,
+                        comparison_score=0.75,
                         total_score=0.75,
                         scoring_version="v1",
                     ),
@@ -1253,8 +1251,7 @@ async def test_scheduler_avoids_asyncio_to_thread_for_blocking_work(
             async def evaluate(self, request):
                 details = EvaluationDetails(
                     score_breakdown=ScoreBreakdown(
-                        comparison_score=1.0,
-                        similarity_score=0.5,
+                        comparison_score=0.75,
                         total_score=0.75,
                         scoring_version="v1",
                     ),
@@ -1332,8 +1329,7 @@ async def test_scheduler_cancellation_does_not_wait_for_blocking_lane_shutdown(
             async def evaluate(self, request):
                 details = EvaluationDetails(
                     score_breakdown=ScoreBreakdown(
-                        comparison_score=1.0,
-                        similarity_score=0.5,
+                        comparison_score=0.75,
                         total_score=0.75,
                         scoring_version="v1",
                     ),
@@ -1461,8 +1457,7 @@ async def test_scheduler_retries_only_transient_sandbox_invocation_errors(
                 raise _sandbox_invocation_error("upstream tool failure")
             details = EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
-                    comparison_score=1.0,
-                    similarity_score=0.5,
+                    comparison_score=0.75,
                     total_score=0.75,
                     scoring_version="v1",
                 ),
@@ -1531,8 +1526,7 @@ async def test_scheduler_fails_batch_for_generic_post_invoke_error(
                 raise RuntimeError("embedding client unavailable")
             details = EvaluationDetails(
                 score_breakdown=ScoreBreakdown(
-                    comparison_score=1.0,
-                    similarity_score=0.5,
+                    comparison_score=0.75,
                     total_score=0.75,
                     scoring_version="v1",
                 ),
@@ -1656,8 +1650,7 @@ async def test_scheduler_uses_successful_baseline_across_execution_for_timeout_i
                 )
                 details = EvaluationDetails(
                     score_breakdown=ScoreBreakdown(
-                        comparison_score=1.0,
-                        similarity_score=0.5,
+                        comparison_score=0.75,
                         total_score=0.75,
                         scoring_version="v1",
                     ),
@@ -2102,8 +2095,7 @@ async def test_scheduler_retries_sandbox_start_once_before_running_tasks(
             async def evaluate(self, request):
                 details = EvaluationDetails(
                     score_breakdown=ScoreBreakdown(
-                        comparison_score=1.0,
-                        similarity_score=0.5,
+                        comparison_score=0.75,
                         total_score=0.75,
                         scoring_version="v1",
                     ),
@@ -2498,8 +2490,7 @@ async def test_scheduler_runs_only_remaining_pairs(
                 recorded_requests.append((request.uid, request.task))
                 details = EvaluationDetails(
                     score_breakdown=ScoreBreakdown(
-                        comparison_score=1.0,
-                        similarity_score=0.5,
+                        comparison_score=0.75,
                         total_score=0.75,
                         scoring_version="v1",
                     ),
@@ -2567,8 +2558,7 @@ async def test_scheduler_skips_artifact_when_all_pairs_are_already_recorded(
                 recorded_requests.append((request.uid, request.artifact_id))
                 details = EvaluationDetails(
                     score_breakdown=ScoreBreakdown(
-                        comparison_score=1.0,
-                        similarity_score=0.5,
+                        comparison_score=0.75,
                         total_score=0.75,
                         scoring_version="v1",
                     ),
