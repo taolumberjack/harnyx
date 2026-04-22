@@ -127,6 +127,25 @@ class MinerTaskErrorCode(StrEnum):
     VALIDATOR_TIMEOUT = "validator_timeout"
 
 
+DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
+    (
+        MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
+        MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED,
+        MinerTaskErrorCode.ARTIFACT_FETCH_FAILED,
+        MinerTaskErrorCode.ARTIFACT_SIZE_INVALID,
+        MinerTaskErrorCode.ARTIFACT_HASH_MISMATCH,
+        MinerTaskErrorCode.ARTIFACT_STAGING_FAILED,
+        MinerTaskErrorCode.ARTIFACT_SETUP_FAILED,
+        MinerTaskErrorCode.SANDBOX_START_FAILED,
+        MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
+    )
+)
+
+
+def is_delivery_disqualifying_validator_pair_error(code: MinerTaskErrorCode) -> bool:
+    return code in DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES
+
+
 class EvaluationError(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
@@ -178,6 +197,7 @@ class MinerTask(BaseModel):
 __all__ = [
     "AnswerCitation",
     "DEFAULT_MINER_TASK_BUDGET_USD",
+    "DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES",
     "EvaluationDetails",
     "EvaluationError",
     "MinerTask",
@@ -187,4 +207,5 @@ __all__ = [
     "Response",
     "ScorerReasoning",
     "ScoreBreakdown",
+    "is_delivery_disqualifying_validator_pair_error",
 ]

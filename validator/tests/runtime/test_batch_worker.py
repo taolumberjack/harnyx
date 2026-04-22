@@ -480,13 +480,13 @@ async def test_evaluation_worker_sends_batch_failure_scope_to_sentry(monkeypatch
     ]
 
 
-def test_batch_failure_capture_payload_uses_base_grouping_for_non_provider_errors() -> None:
+def test_batch_failure_capture_payload_groups_conclusive_artifact_failures_as_artifact() -> None:
     batch = _sample_batch()
     occurred_at = datetime.now(UTC)
     error = _validator_batch_failed_error(
         batch,
-        error_code="artifact_breaker_tripped",
-        error_message="validator artifact breaker tripped across 3 artifacts",
+        error_code="artifact_fetch_failed",
+        error_message="platform artifact fetch exhausted retries",
         task_id=None,
         exception_type="SandboxInvocationError",
         occurred_at=occurred_at,
@@ -495,14 +495,14 @@ def test_batch_failure_capture_payload_uses_base_grouping_for_non_provider_error
     payload = worker_mod._batch_failure_capture_payload(batch_id=batch.batch_id, exc=error)
 
     assert payload.tags == {
-        "error_code": "artifact_breaker_tripped",
+        "error_code": "artifact_fetch_failed",
         "failure_kind": "artifact",
     }
     assert payload.context_name == "validator_batch"
     assert payload.context == {
         "batch_id": str(batch.batch_id),
-        "error_code": "artifact_breaker_tripped",
-        "error_message": "validator artifact breaker tripped across 3 artifacts",
+        "error_code": "artifact_fetch_failed",
+        "error_message": "platform artifact fetch exhausted retries",
         "occurred_at": occurred_at.isoformat(),
         "artifact_id": str(batch.artifacts[0].artifact_id),
         "uid": batch.artifacts[0].uid,
@@ -510,5 +510,5 @@ def test_batch_failure_capture_payload_uses_base_grouping_for_non_provider_error
     }
     assert payload.fingerprint == [
         "validator-batch",
-        "artifact_breaker_tripped",
+        "artifact_fetch_failed",
     ]

@@ -49,7 +49,6 @@ from harnyx_validator.application.scheduler import SchedulerConfig
 from harnyx_validator.application.services.evaluation_runner import (
     TERMINAL_TIMEOUT_ERROR_MESSAGE,
     ArtifactEvaluationOutcome,
-    ArtifactFailure,
     EvaluationRunner,
     TimeoutObservationEvidence,
     UnexpectedArtifactExecutionError,
@@ -1187,20 +1186,28 @@ async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_
         detail_exception="TimeoutError",
     )
 
-    result = await runner.evaluate_artifact_with_state(
-        batch_id=uuid4(),
-        artifact=artifact,
-        tasks=(task,),
-        orchestrator=cast(TaskRunOrchestrator, orchestrator),
-        successful_baseline_tps=60.0,
-        timeout_observations_by_pair={},
-    )
+    with pytest.raises(
+        ValidatorBatchFailedError,
+        match="sandbox entrypoint request timed out",
+    ) as exc_info:
+        await runner.evaluate_artifact_with_state(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, orchestrator),
+            successful_baseline_tps=60.0,
+            timeout_observations_by_pair={},
+        )
 
-    assert result.unresolved_tasks == ()
-    assert result.artifact_failure is None
-    assert len(result.submissions) == 1
-    assert result.submissions[0].run.details.error is not None
-    assert result.submissions[0].run.details.error.code == "sandbox_invocation_failed"
+    exc = exc_info.value
+    assert exc.error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
+    assert exc.completed_submissions is not None
+    assert len(exc.completed_submissions) == 1
+    assert exc.completed_submissions[0].run.details.error == EvaluationError(
+        code="sandbox_invocation_failed",
+        message="sandbox entrypoint request timed out",
+    )
+    assert exc.remaining_tasks == ()
 
 
 async def test_evaluation_runner_defaults_miner_timeout_to_owned_without_comparable_receipts() -> None:
@@ -1374,15 +1381,17 @@ async def test_evaluation_runner_records_zero_score_for_scoring_retry_exhaustion
         size_bytes=128,
     )
 
-    result = await runner.evaluate_artifact(
-        batch_id=uuid4(),
-        artifact=artifact,
-        tasks=(task,),
-        orchestrator=cast(TaskRunOrchestrator, _ScoringRetryExhaustedOrchestrator()),
-    )
+    with pytest.raises(ValidatorBatchFailedError, match="embedding retries exhausted") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, _ScoringRetryExhaustedOrchestrator()),
+        )
 
-    assert len(result.submissions) == 1
-    submission = result.submissions[0]
+    assert exc_info.value.error_code == MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED
+    assert exc_info.value.completed_submissions is not None
+    submission = exc_info.value.completed_submissions[0]
     assert submission.score == 0.0
     assert submission.run.details.error == EvaluationError(
         code="scoring_llm_retry_exhausted",
@@ -1487,19 +1496,21 @@ async def test_evaluation_runner_logs_session_summary_for_scoring_retry_exhausti
     )
     batch_id = uuid4()
 
-    result = await runner.evaluate_artifact(
-        batch_id=batch_id,
-        artifact=artifact,
-        tasks=(task,),
-        orchestrator=cast(TaskRunOrchestrator, _ScoringRetryExhaustedOrchestrator()),
-    )
+    with pytest.raises(ValidatorBatchFailedError, match="embedding retries exhausted") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, _ScoringRetryExhaustedOrchestrator()),
+        )
 
-    assert len(result.submissions) == 1
+    assert exc_info.value.completed_submissions is not None
+    submission = exc_info.value.completed_submissions[0]
     session_logs = [extra for message, extra in captured_logs if message == "miner-task session finished"]
     assert len(session_logs) == 1
     payload = session_logs[0]
     assert payload["batch_id"] == str(batch_id)
-    assert payload["session_id"] == str(result.submissions[0].run.session_id)
+    assert payload["session_id"] == str(submission.run.session_id)
     assert payload["artifact_id"] == str(artifact.artifact_id)
     assert payload["task_id"] == str(task.task_id)
     assert payload["uid"] == artifact.uid
@@ -1592,10 +1603,7 @@ async def test_evaluation_runner_records_embedding_retry_exhausted_submission() 
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
         config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
-        clock=_ClockSequence(
-            datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
-            datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
-        ),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
     )
     task = MinerTask(
         task_id=uuid4(),
@@ -1609,15 +1617,17 @@ async def test_evaluation_runner_records_embedding_retry_exhausted_submission() 
         size_bytes=128,
     )
 
-    result = await runner.evaluate_artifact(
-        batch_id=uuid4(),
-        artifact=artifact,
-        tasks=(task,),
-        orchestrator=cast(TaskRunOrchestrator, _EmbeddingRetryExhaustedOrchestrator()),
-    )
+    with pytest.raises(ValidatorBatchFailedError, match="embedding retries exhausted") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, _EmbeddingRetryExhaustedOrchestrator()),
+        )
 
-    assert len(result.submissions) == 1
-    submission = result.submissions[0]
+    assert exc_info.value.error_code == MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED
+    assert exc_info.value.completed_submissions is not None
+    submission = exc_info.value.completed_submissions[0]
     assert submission.score == 0.0
     assert submission.run.details.error == EvaluationError(
         code="scoring_llm_retry_exhausted",
@@ -1871,20 +1881,24 @@ async def test_evaluation_runner_does_not_let_stale_provider_marker_poison_later
     )
     orchestrator = _ProviderFailureThenSandboxFailureOrchestrator(progress=progress)
 
-    result = await runner.evaluate_artifact(
-        batch_id=batch_id,
-        artifact=artifact,
-        tasks=(task,),
-        orchestrator=cast(TaskRunOrchestrator, orchestrator),
-    )
+    with pytest.raises(ValidatorBatchFailedError, match="plain sandbox failure") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, orchestrator),
+        )
 
+    exc = exc_info.value
+    assert exc.error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
     assert orchestrator.calls == 2
-    assert len(result.submissions) == 1
-    assert result.submissions[0].run.details.error == EvaluationError(
+    assert exc.completed_submissions is not None
+    assert len(exc.completed_submissions) == 1
+    assert exc.completed_submissions[0].run.details.error == EvaluationError(
         code="sandbox_invocation_failed",
         message="plain sandbox failure",
     )
-    assert evaluation_store.records == list(result.submissions)
+    assert evaluation_store.records == list(exc.completed_submissions)
 
 
 async def test_evaluation_runner_uses_bounded_continuous_worker_pool() -> None:
@@ -2059,7 +2073,7 @@ async def test_evaluation_runner_keeps_miner_failures_local_and_preserves_input_
     assert len(evaluation_store.records) == 3
 
 
-async def test_evaluation_runner_trips_artifact_breaker_after_two_infra_failures() -> None:
+async def test_evaluation_runner_fails_batch_after_first_conclusive_validator_owned_submission() -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2089,11 +2103,11 @@ async def test_evaluation_runner_trips_artifact_breaker_after_two_infra_failures
         size_bytes=128,
     )
 
-    class _ArtifactBreakerOrchestrator:
+    class _FailFastOrchestrator:
         def __init__(self) -> None:
             self.started_distinct: set[str] = set()
             self.first_wave_started = asyncio.Event()
-            self.breaker_triggered = asyncio.Event()
+            self.conclusive_failure_recorded = asyncio.Event()
             self.release_by_text = {task.query.text: asyncio.Event() for task in tasks}
             self.second_attempt_release_by_text = {
                 task.query.text: asyncio.Event() for task in tasks[:2]
@@ -2111,12 +2125,12 @@ async def test_evaluation_runner_trips_artifact_breaker_after_two_infra_failures
             if text in {"task-0", "task-1"}:
                 if attempt_number == 2:
                     await self.second_attempt_release_by_text[text].wait()
-                if text == "task-1" and attempt_number == 2:
-                    self.breaker_triggered.set()
+                if attempt_number == 2:
+                    self.conclusive_failure_recorded.set()
                 raise _sandbox_invocation_error("shared sandbox failure")
             return _successful_outcome(request, score=1.0)
 
-    orchestrator = _ArtifactBreakerOrchestrator()
+    orchestrator = _FailFastOrchestrator()
     execution = asyncio.create_task(
         runner.evaluate_artifact(
             batch_id=uuid4(),
@@ -2134,18 +2148,25 @@ async def test_evaluation_runner_trips_artifact_breaker_after_two_infra_failures
             await asyncio.sleep(0)
         orchestrator.second_attempt_release_by_text["task-0"].set()
         orchestrator.second_attempt_release_by_text["task-1"].set()
-        await asyncio.wait_for(orchestrator.breaker_triggered.wait(), timeout=1.0)
+        await asyncio.wait_for(orchestrator.conclusive_failure_recorded.wait(), timeout=1.0)
 
         for task in tasks[1:]:
             orchestrator.release_by_text[task.query.text].set()
 
-        result = await asyncio.wait_for(execution, timeout=1.0)
+        with pytest.raises(
+            ValidatorBatchFailedError,
+            match="shared sandbox failure",
+        ) as exc_info:
+            await asyncio.wait_for(execution, timeout=1.0)
     finally:
         for release_event in orchestrator.release_by_text.values():
             release_event.set()
 
-    assert result.artifact_failure is not None
-    assert result.artifact_failure.error_code == "sandbox_invocation_failed"
+    exc = exc_info.value
+    assert exc.error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
+    assert exc.completed_submissions is not None
+    assert [submission.run.task_id for submission in exc.completed_submissions] == [task.task_id for task in tasks[:5]]
+    assert exc.remaining_tasks == (tasks[5],)
     recorded_ids = [record.run.task_id for record in evaluation_store.records]
     assert recorded_ids[:5] == [task.task_id for task in tasks[:5]]
     assert tasks[0].task_id in recorded_ids
@@ -2202,42 +2223,38 @@ async def test_evaluation_runner_preserves_earlier_completed_runs_when_later_rou
                 timeout_observations_by_pair={},
                 slowest_successful_tps=None,
             )
-        return ArtifactEvaluationOutcome(
-            submissions=(first_submission,),
-            unresolved_tasks=(later_task,),
-            timeout_observations_by_pair={},
-            slowest_successful_tps=None,
-            artifact_failure=ArtifactFailure(
+        raise ValidatorBatchFailedError(
+            error_code=MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
+            message="later round failed",
+            failure_detail=ValidatorBatchFailureDetail(
                 error_code="sandbox_invocation_failed",
-                message="later round failed",
-                failure_detail=ValidatorBatchFailureDetail(
-                    error_code="sandbox_invocation_failed",
-                    error_message="later round failed",
-                    occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
-                    artifact_id=artifact.artifact_id,
-                    uid=artifact.uid,
-                    exception_type="SandboxInvocationError",
-                ),
-                artifact_breaker_tripped=True,
+                error_message="later round failed",
+                occurred_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+                artifact_id=artifact.artifact_id,
+                uid=artifact.uid,
+                exception_type="SandboxInvocationError",
             ),
+            completed_submissions=(first_submission,),
+            remaining_tasks=(later_task,),
         )
 
     runner.evaluate_artifact_with_state = evaluate_artifact_with_state  # type: ignore[method-assign]
 
-    result = await runner.evaluate_artifact(
-        batch_id=batch_id,
-        artifact=artifact,
-        tasks=(first_task, later_task),
-        orchestrator=cast(TaskRunOrchestrator, object()),
-    )
+    with pytest.raises(ValidatorBatchFailedError, match="later round failed") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=(first_task, later_task),
+            orchestrator=cast(TaskRunOrchestrator, object()),
+        )
 
-    assert result.artifact_failure is not None
-    assert result.artifact_failure.error_code == "sandbox_invocation_failed"
-    assert result.submissions == (first_submission,)
-    assert result.unresolved_tasks == (later_task,)
+    exc = exc_info.value
+    assert exc.error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
+    assert exc.completed_submissions == (first_submission,)
+    assert exc.remaining_tasks == (later_task,)
 
 
-async def test_evaluate_artifact_with_state_counts_breaker_failures_from_earlier_submissions() -> None:
+async def test_evaluate_artifact_with_state_preserves_earlier_submissions_for_conclusive_failure() -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -2253,10 +2270,15 @@ async def test_evaluate_artifact_with_state_counts_breaker_failures_from_earlier
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
     )
     batch_id = uuid4()
+    earlier_task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="earlier success"),
+        reference_answer=ReferenceAnswer(text="reference earlier"),
+    )
     task = MinerTask(
         task_id=uuid4(),
-        query=Query(text="breaker later round"),
-        reference_answer=ReferenceAnswer(text="reference"),
+        query=Query(text="conclusive later round"),
+        reference_answer=ReferenceAnswer(text="reference later"),
     )
     artifact = ScriptArtifactSpec(
         uid=7,
@@ -2264,31 +2286,37 @@ async def test_evaluate_artifact_with_state_counts_breaker_failures_from_earlier
         content_hash="artifact-hash",
         size_bytes=128,
     )
-    earlier_failure = _submission_for_task(
+    earlier_submission = _submission_for_task(
         batch_id=batch_id,
         validator_uid=41,
         artifact=artifact,
-        task=task,
-        error=EvaluationError(code="sandbox_invocation_failed", message="earlier round failed"),
+        task=earlier_task,
     )
 
     class _AlwaysSandboxFailureOrchestrator:
         async def evaluate(self, _request: MinerTaskRunRequest) -> TaskRunOutcome:
             raise _sandbox_invocation_error("shared sandbox failure")
 
-    result = await runner.evaluate_artifact_with_state(
-        batch_id=batch_id,
-        artifact=artifact,
-        tasks=(task,),
-        orchestrator=cast(TaskRunOrchestrator, _AlwaysSandboxFailureOrchestrator()),
-        successful_baseline_tps=None,
-        timeout_observations_by_pair={},
-        earlier_submissions=(earlier_failure,),
-    )
+    with pytest.raises(ValidatorBatchFailedError, match="shared sandbox failure") as exc_info:
+        await runner.evaluate_artifact_with_state(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, _AlwaysSandboxFailureOrchestrator()),
+            successful_baseline_tps=None,
+            timeout_observations_by_pair={},
+            earlier_submissions=(earlier_submission,),
+        )
 
-    assert result.artifact_failure is not None
-    assert result.artifact_failure.error_code == "sandbox_invocation_failed"
-    assert result.submissions[0] == earlier_failure
+    exc = exc_info.value
+    assert exc.error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
+    assert exc.completed_submissions is not None
+    assert exc.completed_submissions[0] == earlier_submission
+    assert exc.completed_submissions[1].run.details.error == EvaluationError(
+        code="sandbox_invocation_failed",
+        message="shared sandbox failure",
+    )
+    assert exc.remaining_tasks == ()
 
 
 async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_validator_batch_failure() -> None:

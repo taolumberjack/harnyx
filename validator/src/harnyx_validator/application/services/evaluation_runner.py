@@ -23,6 +23,7 @@ from harnyx_commons.domain.miner_task import (
     EvaluationError,
     MinerTask,
     MinerTaskErrorCode,
+    is_delivery_disqualifying_validator_pair_error,
 )
 from harnyx_commons.domain.session import SessionStatus
 from harnyx_commons.domain.tool_call import ToolCall
@@ -55,15 +56,11 @@ SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunS
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
 LOCAL_RETRY_ATTEMPTS = 2
-ARTIFACT_INFRA_FAILURE_THRESHOLD = 2
 PROVIDER_BATCH_MIN_TOTAL_CALLS = 10
 PROVIDER_BATCH_MIN_FAILURE_RATE = 0.95
 TIMEOUT_REVIEW_MAX_OBSERVATIONS = 3
 TIMEOUT_TPS_SLOWDOWN_FACTOR = 2.0
 TERMINAL_TIMEOUT_ERROR_MESSAGE = "terminal timeout"
-_ARTIFACT_BREAKER_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
-    (MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,)
-)
 
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
@@ -200,8 +197,6 @@ class _ArtifactDispatchState:
         default_factory=dict
     )
     slowest_successful_tps: float | None = None
-    artifact_failure_count: int = 0
-    artifact_breaker_submission: MinerTaskRunSubmission | None = None
     validator_failure: ValidatorBatchFailedError | None = None
     unexpected_failure: Exception | None = None
 
@@ -286,8 +281,6 @@ class EvaluationRunner:
                 timeout_observations_by_pair=outcome.timeout_observations_by_pair,
                 earlier_submissions=outcome.submissions,
             )
-            if outcome.artifact_failure is not None:
-                return outcome
         return outcome
 
     async def evaluate_artifact_with_state(
@@ -314,7 +307,6 @@ class EvaluationRunner:
             submissions_by_index=[None] * len(indexed_tasks),
             timeout_observations_by_pair=dict(timeout_observations_by_pair),
             slowest_successful_tps=successful_baseline_tps,
-            artifact_failure_count=_count_breaker_eligible_artifact_failures(earlier_submissions),
         )
         pending_tasks: asyncio.Queue[tuple[int, MinerTask]] = asyncio.Queue()
         for indexed_task in indexed_tasks:
@@ -363,40 +355,14 @@ class EvaluationRunner:
                 remaining_tasks=remaining_tasks,
             ) from dispatch.unexpected_failure
 
-        if dispatch.artifact_breaker_submission is None:
-            unresolved_tasks = tuple(
-                task for _, task in sorted(dispatch.unresolved_tasks_by_index.items())
-            )
-            return ArtifactEvaluationOutcome(
-                submissions=all_completed_submissions,
-                unresolved_tasks=unresolved_tasks,
-                timeout_observations_by_pair=dispatch.timeout_observations_by_pair,
-                slowest_successful_tps=dispatch.slowest_successful_tps,
-            )
-
-        remaining_tasks = tuple(
-            task for index, task in indexed_tasks if dispatch.submissions_by_index[index] is None
+        unresolved_tasks = tuple(
+            task for _, task in sorted(dispatch.unresolved_tasks_by_index.items())
         )
         return ArtifactEvaluationOutcome(
             submissions=all_completed_submissions,
-            unresolved_tasks=remaining_tasks,
+            unresolved_tasks=unresolved_tasks,
             timeout_observations_by_pair=dispatch.timeout_observations_by_pair,
             slowest_successful_tps=dispatch.slowest_successful_tps,
-            artifact_failure=ArtifactFailure(
-                error_code=_submission_error_code(dispatch.artifact_breaker_submission),
-                message=_submission_error_message(dispatch.artifact_breaker_submission),
-                failure_detail=ValidatorBatchFailureDetail(
-                    error_code=_submission_error_code(dispatch.artifact_breaker_submission),
-                    error_message=_submission_error_message(dispatch.artifact_breaker_submission),
-                    occurred_at=self._clock(),
-                    artifact_id=artifact.artifact_id,
-                    uid=artifact.uid,
-                    exception_type=_artifact_failure_exception_type(
-                        dispatch.artifact_breaker_submission
-                    ),
-                ),
-                artifact_breaker_tripped=True,
-            ),
         )
 
     async def _run_artifact_worker(
@@ -409,11 +375,7 @@ class EvaluationRunner:
         dispatch: _ArtifactDispatchState,
     ) -> None:
         while True:
-            if (
-                dispatch.validator_failure is not None
-                or dispatch.unexpected_failure is not None
-                or dispatch.artifact_breaker_submission is not None
-            ):
+            if dispatch.validator_failure is not None or dispatch.unexpected_failure is not None:
                 return
             try:
                 task_index, task = pending_tasks.get_nowait()
@@ -438,10 +400,18 @@ class EvaluationRunner:
                         decision.successful_baseline_tps,
                     )
                     dispatch.timeout_observations_by_pair.pop(pair_key, None)
-                    if _is_breaker_eligible_artifact_failure_submission(submission):
-                        dispatch.artifact_failure_count += 1
-                        if dispatch.artifact_failure_count >= ARTIFACT_INFRA_FAILURE_THRESHOLD:
-                            dispatch.artifact_breaker_submission = submission
+                    error_code = _submission_error_code_or_none(submission)
+                    if (
+                        error_code is not None
+                        and is_delivery_disqualifying_validator_pair_error(error_code)
+                        and dispatch.validator_failure is None
+                    ):
+                        dispatch.validator_failure = _validator_batch_failed_from_existing_submission(
+                            submission=submission,
+                            artifact=artifact,
+                            task=task,
+                            occurred_at=self._clock(),
+                        )
                     continue
 
                 if decision.kind is AttemptControlKind.TIMEOUT_UNRESOLVED:
@@ -1342,28 +1312,6 @@ def _merge_slowest_successful_tps(
     return min(current, candidate)
 
 
-def _count_breaker_eligible_artifact_failures(
-    earlier_submissions: tuple[MinerTaskRunSubmission, ...],
-) -> int:
-    count = 0
-    for submission in earlier_submissions:
-        error = submission.run.details.error
-        if error is None:
-            continue
-        if error.code in _ARTIFACT_BREAKER_ERROR_CODES:
-            count += 1
-    return count
-
-
-def _is_breaker_eligible_artifact_failure_submission(
-    submission: MinerTaskRunSubmission,
-) -> bool:
-    error = submission.run.details.error
-    if error is None:
-        return False
-    return error.code in _ARTIFACT_BREAKER_ERROR_CODES
-
-
 def _submission_error_code(submission: MinerTaskRunSubmission) -> MinerTaskErrorCode:
     error = submission.run.details.error
     if error is None:
@@ -1378,26 +1326,46 @@ def _submission_error_message(submission: MinerTaskRunSubmission) -> str:
     return error.message
 
 
-def _artifact_failure_exception_type(
-    submission: MinerTaskRunSubmission,
-) -> str | None:
-    if _is_breaker_eligible_artifact_failure_submission(submission):
-        return "SandboxInvocationError"
-    return None
-
-
-def _submission_error_code_or_none(submission: MinerTaskRunSubmission) -> str | None:
+def _submission_error_code_or_none(submission: MinerTaskRunSubmission) -> MinerTaskErrorCode | None:
     error = submission.run.details.error
     if error is None:
         return None
-    return str(error.code)
+    return error.code
+
+
+def _validator_batch_failed_from_existing_submission(
+    *,
+    submission: MinerTaskRunSubmission,
+    artifact: ScriptArtifactSpec,
+    task: MinerTask,
+    occurred_at: datetime,
+) -> ValidatorBatchFailedError:
+    error_code = _submission_error_code(submission)
+    return ValidatorBatchFailedError(
+        error_code=error_code,
+        message=_submission_error_message(submission),
+        failure_detail=ValidatorBatchFailureDetail(
+            error_code=error_code,
+            error_message=_submission_error_message(submission),
+            occurred_at=occurred_at,
+            artifact_id=artifact.artifact_id,
+            task_id=task.task_id,
+            uid=artifact.uid,
+            exception_type=(
+                "SandboxInvocationError"
+                if error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
+                else None
+            ),
+        ),
+        completed_submissions=(submission,),
+        remaining_tasks=(),
+    )
 
 
 __all__ = [
-    "ARTIFACT_INFRA_FAILURE_THRESHOLD",
-    "ArtifactFailure",
     "ArtifactExecutionFailedError",
     "ArtifactEvaluationOutcome",
+    "ArtifactFailure",
     "EvaluationRunner",
     "LOCAL_RETRY_ATTEMPTS",
     "TERMINAL_TIMEOUT_ERROR_MESSAGE",

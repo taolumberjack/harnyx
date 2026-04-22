@@ -90,7 +90,16 @@ def _serialize_failure_detail(detail: ValidatorBatchFailureDetail) -> dict[str, 
 def _failure_kind(error_code: str) -> str:
     if error_code == MinerTaskErrorCode.PROVIDER_BATCH_FAILURE:
         return "provider"
-    if error_code == MinerTaskErrorCode.ARTIFACT_BREAKER_TRIPPED:
+    if error_code in {
+        MinerTaskErrorCode.ARTIFACT_BREAKER_TRIPPED,
+        MinerTaskErrorCode.ARTIFACT_FETCH_FAILED,
+        MinerTaskErrorCode.ARTIFACT_SIZE_INVALID,
+        MinerTaskErrorCode.ARTIFACT_HASH_MISMATCH,
+        MinerTaskErrorCode.ARTIFACT_STAGING_FAILED,
+        MinerTaskErrorCode.ARTIFACT_SETUP_FAILED,
+        MinerTaskErrorCode.SANDBOX_START_FAILED,
+        MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
+    }:
         return "artifact"
     if error_code == MinerTaskErrorCode.BATCH_EXECUTION_FAILED:
         return "batch_execution"
