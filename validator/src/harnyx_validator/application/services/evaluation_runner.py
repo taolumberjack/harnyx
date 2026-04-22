@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 
 Clock = Callable[[], datetime]
 SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunSubmission]]
+CompletedArtifactBaseline = Callable[[], float | None]
 
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
@@ -291,6 +292,7 @@ class EvaluationRunner:
         tasks: Sequence[MinerTask],
         orchestrator: TaskRunOrchestrator,
         successful_baseline_tps: float | None,
+        completed_artifact_baseline: CompletedArtifactBaseline | None = None,
         timeout_observations_by_pair: dict[tuple[UUID, UUID], tuple[TimeoutObservationEvidence, ...]],
         earlier_submissions: tuple[MinerTaskRunSubmission, ...] = (),
     ) -> ArtifactEvaluationOutcome:
@@ -320,6 +322,7 @@ class EvaluationRunner:
                     orchestrator=orchestrator,
                     pending_tasks=pending_tasks,
                     dispatch=dispatch,
+                    completed_artifact_baseline=completed_artifact_baseline,
                 )
             )
             for _ in range(
@@ -373,6 +376,7 @@ class EvaluationRunner:
         orchestrator: TaskRunOrchestrator,
         pending_tasks: asyncio.Queue[tuple[int, MinerTask]],
         dispatch: _ArtifactDispatchState,
+        completed_artifact_baseline: CompletedArtifactBaseline | None = None,
     ) -> None:
         while True:
             if dispatch.validator_failure is not None or dispatch.unexpected_failure is not None:
@@ -390,6 +394,7 @@ class EvaluationRunner:
                     task=task,
                     orchestrator=orchestrator,
                     successful_baseline_tps=dispatch.slowest_successful_tps,
+                    completed_artifact_baseline=completed_artifact_baseline,
                     prior_timeout_observations=dispatch.timeout_observations_by_pair.get(pair_key, ()),
                 )
                 if decision.kind is AttemptControlKind.SUBMISSION:
@@ -472,6 +477,7 @@ class EvaluationRunner:
         task: MinerTask,
         orchestrator: TaskRunOrchestrator,
         successful_baseline_tps: float | None,
+        completed_artifact_baseline: CompletedArtifactBaseline | None = None,
         prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
     ) -> TaskAttemptDecision:
         issued = self._issue_session(
@@ -501,6 +507,10 @@ class EvaluationRunner:
                     return decision
 
                 if decision.kind is AttemptControlKind.REVIEW_TIMEOUT:
+                    current_successful_baseline_tps = _merge_slowest_successful_tps(
+                        successful_baseline_tps,
+                        None if completed_artifact_baseline is None else completed_artifact_baseline(),
+                    )
                     try:
                         timeout_resolution = self._resolve_timeout_attempt(
                             batch_id=batch_id,
@@ -508,7 +518,7 @@ class EvaluationRunner:
                             task=task,
                             session_id=issued.session.session_id,
                             exc=_require_timeout_exc(decision),
-                            successful_baseline_tps=successful_baseline_tps,
+                            successful_baseline_tps=current_successful_baseline_tps,
                             prior_timeout_observations=prior_timeout_observations,
                         )
                     except ValidatorBatchFailedError as exc:

@@ -306,6 +306,7 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
         config=SchedulerConfig(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
+            artifact_parallelism=2,
         ),
     )
 
@@ -331,6 +332,7 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
             "batch_id": str(batch_id),
             "artifact_count": 2,
             "task_count": 2,
+            "artifact_parallelism": 2,
             "artifact_task_parallelism": 5,
             "recorded_pair_count": 0,
         }
@@ -353,6 +355,352 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
         assert extra["total_ms"] >= 0.0
         assert extra["outcome"] == "completed"
         assert extra["error_code"] is None
+
+
+async def test_scheduler_flattens_runs_in_requested_artifact_order_when_completion_is_out_of_order(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    task = _task("ordered")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=DummySandboxManager(),
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=2,
+        ),
+    )
+    batch_id = uuid4()
+    first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    second_artifact = ScriptArtifactSpec(uid=5, artifact_id=uuid4(), content_hash="b", size_bytes=0)
+    first_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=first_artifact,
+        task=task,
+    )
+    second_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=second_artifact,
+        task=task,
+    )
+    second_finished = asyncio.Event()
+
+    async def run_single_artifact(**kwargs):
+        artifact = kwargs["artifact"]
+        if artifact.artifact_id == first_artifact.artifact_id:
+            await second_finished.wait()
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(first_submission,),
+                slowest_successful_tps=None,
+                timeout_retry_state_by_pair={},
+            )
+        second_finished.set()
+        return scheduler_module._CompletedArtifactResult(
+            artifact_id=artifact.artifact_id,
+            submissions=(second_submission,),
+            slowest_successful_tps=None,
+            timeout_retry_state_by_pair={},
+        )
+
+    scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
+
+    result = await scheduler.run(
+        batch_id=batch_id,
+        requested_artifacts=(first_artifact, second_artifact),
+    )
+
+    assert result.runs == (first_submission, second_submission)
+
+
+async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_artifacts(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    task = _task("slot refill")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=DummySandboxManager(),
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=2,
+        ),
+    )
+    batch_id = uuid4()
+    first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    second_artifact = ScriptArtifactSpec(uid=5, artifact_id=uuid4(), content_hash="b", size_bytes=0)
+    third_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="c", size_bytes=0)
+    first_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=first_artifact,
+        task=task,
+    )
+    second_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=second_artifact,
+        task=task,
+    )
+    third_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=third_artifact,
+        task=task,
+    )
+    first_artifact_release = asyncio.Event()
+    second_artifact_finished = asyncio.Event()
+    third_artifact_started = asyncio.Event()
+
+    async def run_single_artifact(**kwargs):
+        artifact = kwargs["artifact"]
+        if artifact.artifact_id == first_artifact.artifact_id:
+            await first_artifact_release.wait()
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(first_submission,),
+                slowest_successful_tps=None,
+                timeout_retry_state_by_pair={},
+            )
+        if artifact.artifact_id == second_artifact.artifact_id:
+            second_artifact_finished.set()
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(second_submission,),
+                slowest_successful_tps=None,
+                timeout_retry_state_by_pair={},
+            )
+        third_artifact_started.set()
+        return scheduler_module._CompletedArtifactResult(
+            artifact_id=artifact.artifact_id,
+            submissions=(third_submission,),
+            slowest_successful_tps=None,
+            timeout_retry_state_by_pair={},
+        )
+
+    scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
+
+    run_task = asyncio.create_task(
+        scheduler.run(
+            batch_id=batch_id,
+            requested_artifacts=(first_artifact, second_artifact, third_artifact),
+        )
+    )
+
+    await asyncio.wait_for(second_artifact_finished.wait(), timeout=1.0)
+    await asyncio.wait_for(third_artifact_started.wait(), timeout=1.0)
+    first_artifact_release.set()
+
+    result = await run_task
+
+    assert result.runs == (first_submission, second_submission, third_submission)
+
+
+async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure_is_discovered(
+) -> None:
+    task = _task("stop queued work")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    second_artifact = ScriptArtifactSpec(uid=5, artifact_id=uuid4(), content_hash="b", size_bytes=0)
+    third_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="c", size_bytes=0)
+    failure_teardown_release = Event()
+    second_artifact_stopped = Event()
+
+    class ControlledSandboxManager(DummySandboxManager):
+        def start(self, options: object | None = None) -> SandboxDeployment:
+            self.starts.append(options)
+            assert isinstance(options, dict)
+            return SandboxDeployment(client=options["artifact_id"])
+
+        def stop(self, deployment: SandboxDeployment) -> None:
+            self.stops.append(deployment)
+            if deployment.client == first_artifact.artifact_id:
+                assert failure_teardown_release.wait(timeout=1.0)
+                return
+            if deployment.client == second_artifact.artifact_id:
+                second_artifact_stopped.set()
+
+    sandbox_manager = ControlledSandboxManager()
+    blocking_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="test-validator-race-blocking")
+    try:
+        scheduler = EvaluationScheduler(
+            tasks=(task,),
+            subtensor_client=subtensor,
+            sandbox_manager=sandbox_manager,
+            session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+            evaluation_records=DummyEvaluationRecordStore(),
+            receipt_log=DummyReceiptLog(),
+            blocking_executor=blocking_executor,
+            orchestrator_factory=lambda _client: object(),
+            sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+            clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+            config=SchedulerConfig(
+                token_secret_bytes=8,
+                session_ttl=timedelta(minutes=5),
+                artifact_parallelism=2,
+            ),
+        )
+        batch_id = uuid4()
+        failure_discovered = asyncio.Event()
+        successful_submission = _submission_for_task(
+            batch_id=batch_id,
+            validator_uid=41,
+            artifact=second_artifact,
+            task=task,
+        )
+
+        class _FailureRaceRunner:
+            async def evaluate_artifact_with_state(
+                self,
+                *,
+                artifact: ScriptArtifactSpec,
+                **_kwargs,
+            ) -> ArtifactEvaluationOutcome:
+                if artifact.artifact_id == first_artifact.artifact_id:
+                    failure_discovered.set()
+                    raise ValidatorBatchFailedError(
+                        error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
+                        message="terminal timeout",
+                        failure_detail=ValidatorBatchFailureDetail(
+                            error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
+                            error_message="terminal timeout",
+                            occurred_at=datetime(2025, 10, 27, tzinfo=UTC),
+                            artifact_id=artifact.artifact_id,
+                            task_id=task.task_id,
+                            uid=artifact.uid,
+                            exception_type="TimeoutException",
+                        ),
+                    )
+                await failure_discovered.wait()
+                return ArtifactEvaluationOutcome(
+                    submissions=(successful_submission,),
+                    unresolved_tasks=(),
+                    timeout_observations_by_pair={},
+                    slowest_successful_tps=40.0,
+                )
+
+        scheduler._runner = _FailureRaceRunner()  # type: ignore[assignment]
+
+        run_task = asyncio.create_task(
+            scheduler.run(
+                batch_id=batch_id,
+                requested_artifacts=(first_artifact, second_artifact, third_artifact),
+            )
+        )
+
+        assert await asyncio.to_thread(second_artifact_stopped.wait, 1.0)
+        await asyncio.sleep(0.05)
+        failure_teardown_release.set()
+
+        with pytest.raises(ValidatorBatchFailedError, match="terminal timeout"):
+            await run_task
+    finally:
+        failure_teardown_release.set()
+        blocking_executor.shutdown(wait=True, cancel_futures=True)
+
+    assert [start["artifact_id"] for start in sandbox_manager.starts] == [
+        first_artifact.artifact_id,
+        second_artifact.artifact_id,
+    ]
+
+
+async def test_scheduler_shares_live_completed_artifact_baseline_with_concurrent_artifacts(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    task = _task("live baseline")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=DummySandboxManager(),
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=2,
+        ),
+    )
+    batch_id = uuid4()
+    first_artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    second_artifact = ScriptArtifactSpec(uid=5, artifact_id=uuid4(), content_hash="b", size_bytes=0)
+    first_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=first_artifact,
+        task=task,
+    )
+    second_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=second_artifact,
+        task=task,
+    )
+    seen_completed_baselines: list[float | None] = []
+
+    class _LiveBaselineRunner:
+        async def evaluate_artifact_with_state(
+            self,
+            *,
+            artifact: ScriptArtifactSpec,
+            completed_artifact_baseline,
+            **_kwargs,
+        ) -> ArtifactEvaluationOutcome:
+            if artifact.artifact_id == first_artifact.artifact_id:
+                return ArtifactEvaluationOutcome(
+                    submissions=(first_submission,),
+                    unresolved_tasks=(),
+                    timeout_observations_by_pair={},
+                    slowest_successful_tps=40.0,
+                )
+            while completed_artifact_baseline() is None:
+                await asyncio.sleep(0)
+            seen_completed_baselines.append(completed_artifact_baseline())
+            return ArtifactEvaluationOutcome(
+                submissions=(second_submission,),
+                unresolved_tasks=(),
+                timeout_observations_by_pair={},
+                slowest_successful_tps=40.0,
+            )
+
+    scheduler._runner = _LiveBaselineRunner()  # type: ignore[assignment]
+
+    result = await scheduler.run(
+        batch_id=batch_id,
+        requested_artifacts=(first_artifact, second_artifact),
+    )
+
+    assert seen_completed_baselines == [40.0]
+    assert result.runs == (first_submission, second_submission)
 
 
 async def test_scheduler_logs_setup_failure_timing_summary(
@@ -396,6 +744,7 @@ async def test_scheduler_logs_setup_failure_timing_summary(
         config=SchedulerConfig(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
         ),
     )
 
@@ -464,6 +813,7 @@ async def test_scheduler_logs_teardown_failure_timing_summary(
         config=SchedulerConfig(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
         ),
     )
 
@@ -545,6 +895,7 @@ async def test_scheduler_preserves_validator_batch_failure_when_teardown_also_fa
         config=SchedulerConfig(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
         ),
     )
 
@@ -736,6 +1087,64 @@ async def test_scheduler_logs_partial_progress_for_unexpected_failure(
     assert payload["total_ms"] == 123.0
     assert payload["outcome"] == "unexpected_failure"
     assert payload["error_code"] is None
+
+async def test_scheduler_cancels_remaining_artifact_workers_when_one_raises_unexpectedly(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    task = _task("cancel sibling worker")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=DummySandboxManager(),
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=2,
+        ),
+    )
+    second_worker_started = asyncio.Event()
+    second_worker_cancelled = asyncio.Event()
+    first_worker_released = asyncio.Event()
+
+    async def run_artifact_worker(**_kwargs) -> None:
+        if second_worker_started.is_set():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                second_worker_cancelled.set()
+                raise
+        second_worker_started.set()
+        await first_worker_released.wait()
+        raise RuntimeError("worker boom")
+
+    scheduler._run_artifact_worker = run_artifact_worker  # type: ignore[method-assign]
+
+    run_task = asyncio.create_task(
+        scheduler.run(
+            batch_id=uuid4(),
+            requested_artifacts=(
+                ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0),
+                ScriptArtifactSpec(uid=8, artifact_id=uuid4(), content_hash="b", size_bytes=0),
+            ),
+        )
+    )
+
+    await asyncio.wait_for(second_worker_started.wait(), timeout=1.0)
+    first_worker_released.set()
+
+    with pytest.raises(RuntimeError, match="worker boom"):
+        await run_task
+
+    assert second_worker_cancelled.is_set() is True
 
 
 async def test_scheduler_logs_accounted_summary_for_validator_batch_failure_after_partial_progress(
@@ -1594,7 +2003,11 @@ async def test_retry_round_preserves_earlier_completed_runs_when_later_round_abo
         orchestrator_factory=lambda _client: object(),
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
+        ),
     )
     batch_id = uuid4()
     earlier_task = _task("earlier success")
@@ -1672,7 +2085,11 @@ async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
         orchestrator_factory=lambda _client: object(),
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
+        ),
     )
     batch_id = uuid4()
     earlier_task = _task("earlier breaker failure")
@@ -1745,7 +2162,11 @@ async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_
         orchestrator_factory=lambda _client: object(),
         sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
+        ),
     )
     batch_id = uuid4()
     first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
@@ -2045,6 +2466,7 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_sandbox_start_fai
         config=SchedulerConfig(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
         ),
     )
 
@@ -2240,6 +2662,7 @@ async def test_scheduler_fails_batch_on_first_conclusive_evaluation_failure(
         config=SchedulerConfig(
             token_secret_bytes=8,
             session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
         ),
     )
 

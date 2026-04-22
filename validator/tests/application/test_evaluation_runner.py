@@ -1153,6 +1153,65 @@ async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaus
     assert recorded_submission.session.status is SessionStatus.ERROR
 
 
+async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_before_timeout_review() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=_RecordingEvaluationStore(),
+        receipt_log=FakeReceiptLog(),
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="timeout review baseline"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    completed_artifact_baseline: list[float | None] = [None]
+    seen_baselines: list[float | None] = []
+
+    async def evaluate_task_attempt(**_kwargs):
+        completed_artifact_baseline[0] = 40.0
+        return evaluation_runner_module._review_timeout_decision(
+            _sandbox_invocation_error(
+                "sandbox entrypoint request timed out",
+                status_code=504,
+                detail_exception="TimeoutException",
+                detail_error="sandbox entrypoint request timed out",
+            )
+        )
+
+    def resolve_timeout_attempt(**kwargs):
+        seen_baselines.append(kwargs["successful_baseline_tps"])
+        return evaluation_runner_module._timeout_unresolved_decision(_timeout_observation())
+
+    runner._evaluate_task_attempt = evaluate_task_attempt  # type: ignore[method-assign]
+    runner._resolve_timeout_attempt = resolve_timeout_attempt  # type: ignore[method-assign]
+
+    decision = await runner._evaluate_task_with_retry(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        orchestrator=cast(TaskRunOrchestrator, object()),
+        successful_baseline_tps=75.0,
+        completed_artifact_baseline=lambda: completed_artifact_baseline[0],
+        prior_timeout_observations=(),
+    )
+
+    assert decision.kind is evaluation_runner_module.AttemptControlKind.TIMEOUT_UNRESOLVED
+    assert seen_baselines == [40.0]
+
+
 async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_timeout() -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)

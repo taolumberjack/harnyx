@@ -38,6 +38,7 @@ from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskBatchSpec,
     MinerTaskRunSubmission,
+    ScriptArtifactSpec,
     TokenUsageSummary,
 )
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailureDetail
@@ -412,6 +413,52 @@ def _make_task_submission(*, batch_id: UUID) -> tuple[MinerTask, MinerTaskRunSub
     return task, submission
 
 
+def _make_submission_for_batch_pair(
+    *,
+    batch_id: UUID,
+    task: MinerTask,
+    artifact: ScriptArtifactSpec,
+) -> MinerTaskRunSubmission:
+    issued_at = datetime(2026, 3, 8, tzinfo=UTC)
+    completed_at = issued_at + timedelta(seconds=5)
+    run = MinerTaskRun(
+        session_id=uuid4(),
+        uid=artifact.uid,
+        artifact_id=artifact.artifact_id,
+        task_id=task.task_id,
+        response=Response(text=f"answer for {task.query.text}"),
+        details=EvaluationDetails(
+            score_breakdown=ScoreBreakdown(
+                comparison_score=1.0,
+                similarity_score=0.8,
+                total_score=0.9,
+                scoring_version="v1",
+            ),
+            total_tool_usage=ToolUsageSummary.zero(),
+            elapsed_ms=2500.0,
+        ),
+        completed_at=completed_at,
+    )
+    session = Session(
+        session_id=run.session_id,
+        uid=run.uid,
+        task_id=task.task_id,
+        issued_at=issued_at,
+        expires_at=issued_at + timedelta(minutes=5),
+        budget_usd=0.1,
+        usage=SessionUsage(total_cost_usd=0.0),
+    )
+    return MinerTaskRunSubmission(
+        batch_id=batch_id,
+        validator_uid=4,
+        run=run,
+        score=0.9,
+        execution_log=(),
+        usage=TokenUsageSummary.empty(),
+        session=session,
+    )
+
+
 def _make_failed_task_submission(*, batch_id: UUID, error_code: str) -> tuple[MinerTask, MinerTaskRunSubmission]:
     task = MinerTask(
         task_id=uuid4(),
@@ -734,6 +781,66 @@ def test_progress_endpoint_keeps_ordered_runs_visible_when_lifecycle_is_failed()
     assert [run["run"]["query"]["text"] for run in body["miner_task_runs"]] == [
         first_task.query.text,
         second_task.query.text,
+    ]
+
+
+def test_progress_endpoint_orders_real_failed_progress_by_requested_artifact() -> None:
+    provider = RealAcceptBatchDependencyProvider()
+    app = _create_test_app(provider)
+    client = TestClient(app)
+    batch_id = uuid4()
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What happened?"),
+        reference_answer=ReferenceAnswer(text="The reference answer."),
+    )
+    first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="hash-a", size_bytes=42)
+    second_artifact = ScriptArtifactSpec(uid=8, artifact_id=uuid4(), content_hash="hash-b", size_bytes=43)
+    batch = MinerTaskBatchSpec(
+        batch_id=batch_id,
+        cutoff_at="2026-03-08T00:00:00+00:00",
+        created_at="2026-03-08T00:00:00+00:00",
+        tasks=(task,),
+        artifacts=(first_artifact, second_artifact),
+    )
+    first_submission = _make_submission_for_batch_pair(
+        batch_id=batch_id,
+        task=task,
+        artifact=first_artifact,
+    )
+    second_submission = _make_submission_for_batch_pair(
+        batch_id=batch_id,
+        task=task,
+        artifact=second_artifact,
+    )
+
+    provider.accept_batch.execute(batch)
+    provider.progress_tracker.record(second_submission)
+    provider.progress_tracker.record(first_submission)
+    provider.accept_batch.mark_failed(
+        batch_id,
+        error_code="sandbox_invocation_failed",
+        failure_detail=ValidatorBatchFailureDetail(
+            error_code="sandbox_invocation_failed",
+            error_message="plain sandbox failure",
+            occurred_at=datetime(2026, 3, 26, 21, 0, tzinfo=UTC),
+            artifact_id=second_artifact.artifact_id,
+            task_id=task.task_id,
+            uid=second_artifact.uid,
+            exception_type="SandboxInvocationError",
+        ),
+    )
+
+    response = client.get(f"/validator/miner-task-batches/{batch_id}/progress")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["completed"] == 2
+    assert body["remaining"] == 0
+    assert [run["run"]["artifact_id"] for run in body["miner_task_runs"]] == [
+        str(first_artifact.artifact_id),
+        str(second_artifact.artifact_id),
     ]
 
 

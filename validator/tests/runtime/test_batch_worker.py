@@ -137,6 +137,18 @@ class PersistentFailureBatchService:
         raise RuntimeError("worker boom")
 
 
+class DeferredValidatorFailureBatchService:
+    def __init__(self, error: ValidatorBatchFailedError) -> None:
+        self._error = error
+        self.failure_ready = asyncio.Event()
+        self.release_failure = asyncio.Event()
+
+    async def process_async(self, _batch: MinerTaskBatchSpec) -> None:
+        self.failure_ready.set()
+        await self.release_failure.wait()
+        raise self._error
+
+
 class CloseAwareBatchService(FakeBatchService):
     def __init__(self) -> None:
         super().__init__()
@@ -478,6 +490,45 @@ async def test_evaluation_worker_sends_batch_failure_scope_to_sentry(monkeypatch
         "desearch",
         "search_web",
     ]
+
+@pytest.mark.anyio
+async def test_evaluation_worker_keeps_batch_processing_until_failed_batch_returns() -> None:
+    inbox = InMemoryBatchInbox()
+    status = StatusProvider()
+    progress = ProgressSpy()
+    accept_batch = AcceptEvaluationBatch(inbox=inbox, status=status, progress=progress)
+    batch = _sample_batch()
+    accept_batch.execute(batch)
+    error = _validator_batch_failed_error(
+        batch,
+        error_code="artifact_fetch_failed",
+        error_message="platform artifact fetch exhausted retries",
+        task_id=None,
+        exception_type="SandboxInvocationError",
+    )
+    fake_service = DeferredValidatorFailureBatchService(error)
+    worker = EvaluationWorker(
+        batch_service=fake_service,
+        batch_inbox=inbox,
+        status_provider=status,
+        batch_tracker=accept_batch,
+    )
+
+    worker.start()
+    try:
+        await asyncio.wait_for(fake_service.failure_ready.wait(), timeout=1.0)
+        assert accept_batch.lifecycle_for(batch.batch_id) == "processing"
+        assert accept_batch.error_code_for(batch.batch_id) is None
+
+        fake_service.release_failure.set()
+        await asyncio.sleep(0.05)
+    finally:
+        fake_service.release_failure.set()
+        await worker.stop(timeout=1.0)
+
+    assert accept_batch.lifecycle_for(batch.batch_id) == "failed"
+    assert accept_batch.error_code_for(batch.batch_id) == "artifact_fetch_failed"
+    assert accept_batch.failure_detail_for(batch.batch_id) == error.failure_detail
 
 
 def test_batch_failure_capture_payload_groups_conclusive_artifact_failures_as_artifact() -> None:
