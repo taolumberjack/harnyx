@@ -13,7 +13,7 @@ import bittensor as bt
 import httpx
 from dotenv import load_dotenv
 
-from harnyx_miner.agent_source import agent_sha256, load_agent_bytes, require_existing_agent_path
+from harnyx_miner.agent_source import agent_sha256, load_submittable_agent_bytes, require_existing_agent_path
 
 _UPLOAD_PATH = "/v1/miners/scripts"
 
@@ -50,7 +50,7 @@ def _summarize_response_text(response: httpx.Response, *, limit: int = 500) -> s
 
 
 def _upload_agent(*, agent_path: Path, wallet_name: str, hotkey_name: str) -> dict[str, object]:
-    content = load_agent_bytes(agent_path)
+    content = load_submittable_agent_bytes(agent_path)
     digest = agent_sha256(content)
     payload = {
         "script_b64": base64.b64encode(content).decode(),

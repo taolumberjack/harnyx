@@ -40,6 +40,13 @@ class EntrypointRequest:
     tool_config: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class SandboxPreloadFailure:
+    code: str
+    error: str
+    exception: str
+
+
 class MpContext(Protocol):
     def Pipe(self, duplex: bool = True) -> tuple[Connection, Connection]: ...  # noqa: N802 - mirror multiprocessing
 
@@ -53,7 +60,6 @@ class MpContext(Protocol):
 
 logger = logging.getLogger("harnyx_sandbox.sandbox")
 WORKER_KILL_GRACE_SECONDS = 1.0
-
 
 def _default_mp_context() -> multiprocessing.context.BaseContext:
     try:
@@ -70,7 +76,7 @@ class SandboxHarness:
         *,
         registry: EntrypointRegistry | None = None,
         tool_factory: ToolFactory | None = None,
-        preload: Callable[[], None] | None = None,
+        preload: Callable[[], SandboxPreloadFailure | None] | None = None,
     ) -> None:
         self._registry = registry or get_entrypoint_registry()
         self._tool_factory = tool_factory
@@ -262,10 +268,11 @@ def _entrypoint_worker(
     tool_config: Mapping[str, Any] | None,
     headers: Mapping[str, str],
     tool_factory: ToolFactory | None,
-    preload: Callable[[], None] | None,
+    preload: Callable[[], SandboxPreloadFailure | None] | None,
     conn: Connection,
 ) -> None:
     tool_proxy = None
+    preload_completed = False
     try:
         if tool_factory is not None:
             # Build the proxy before seccomp so hostname resolution/client setup
@@ -273,11 +280,20 @@ def _entrypoint_worker(
             tool_proxy = tool_factory(tool_config, headers)
         _block_new_tasks_in_this_process()
         if preload is not None:
-            preload()
+            try:
+                preload_failure = preload()
+            except BaseException as exc:
+                _send_worker_error(conn, "PreloadFailed", exc)
+                return
+            if preload_failure is not None:
+                _send_preload_failure(conn, preload_failure)
+                return
+            preload_completed = True
         try:
             func = get_entrypoint(entrypoint_name)
         except KeyError as exc:
-            _send_worker_error(conn, "MissingEntrypoint", exc)
+            detail_code = "MissingEntrypoint" if preload_completed else "EntrypointUnavailable"
+            _send_worker_error(conn, detail_code, exc)
             return
         context_snapshot = ContextSnapshot(context_data or {})
         call_kwargs = SandboxHarness._build_call_kwargs(
@@ -325,6 +341,20 @@ def _send_worker_error(conn: Connection, code: str, exc: BaseException) -> None:
     )
 
 
+def _send_preload_failure(conn: Connection, failure: SandboxPreloadFailure) -> None:
+    conn.send(
+        (
+            "error",
+            {
+                "code": failure.code,
+                "error": failure.error,
+                "exception": failure.exception,
+                "traceback": None,
+            },
+        ),
+    )
+
+
 def _execute_entrypoint(func: Callable[..., Any], call_kwargs: Mapping[str, Any]) -> Any:
     if not inspect.iscoroutinefunction(func):
         raise RuntimeError("sandbox entrypoints must be async def")
@@ -332,4 +362,11 @@ def _execute_entrypoint(func: Callable[..., Any], call_kwargs: Mapping[str, Any]
     return asyncio.run(coroutine)
 
 
-__all__ = ["SandboxHarness", "ToolFactory", "ToolHeaders", "ToolConfig", "EntrypointRequest"]
+__all__ = [
+    "EntrypointRequest",
+    "SandboxHarness",
+    "SandboxPreloadFailure",
+    "ToolConfig",
+    "ToolFactory",
+    "ToolHeaders",
+]

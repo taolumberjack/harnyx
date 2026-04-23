@@ -30,4 +30,5 @@ def test_entry_route_accepts_neutral_platform_token_header() -> None:
         headers={"x-platform-token": "token"},
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "PreloadInfrastructureFailed"

@@ -132,7 +132,6 @@ DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES: frozenset[MinerTaskErrorCode]
         MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
         MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED,
         MinerTaskErrorCode.ARTIFACT_FETCH_FAILED,
-        MinerTaskErrorCode.ARTIFACT_SIZE_INVALID,
         MinerTaskErrorCode.ARTIFACT_HASH_MISMATCH,
         MinerTaskErrorCode.ARTIFACT_STAGING_FAILED,
         MinerTaskErrorCode.ARTIFACT_SETUP_FAILED,
@@ -141,9 +140,24 @@ DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES: frozenset[MinerTaskErrorCode]
     )
 )
 
+MINER_ATTRIBUTED_PAIR_ERROR_CODES: frozenset[MinerTaskErrorCode] = frozenset(
+    (
+        MinerTaskErrorCode.MINER_RESPONSE_INVALID,
+        MinerTaskErrorCode.MINER_UNHANDLED_EXCEPTION,
+        MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED,
+        MinerTaskErrorCode.SESSION_BUDGET_EXHAUSTED,
+        MinerTaskErrorCode.TIMEOUT_MINER_OWNED,
+        MinerTaskErrorCode.ARTIFACT_SIZE_INVALID,
+    )
+)
+
 
 def is_delivery_disqualifying_validator_pair_error(code: MinerTaskErrorCode) -> bool:
     return code in DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES
+
+
+def is_miner_attributed_pair_error(code: MinerTaskErrorCode) -> bool:
+    return code in MINER_ATTRIBUTED_PAIR_ERROR_CODES
 
 
 class EvaluationError(BaseModel):
@@ -200,6 +214,7 @@ __all__ = [
     "DELIVERY_DISQUALIFYING_VALIDATOR_PAIR_ERROR_CODES",
     "EvaluationDetails",
     "EvaluationError",
+    "MINER_ATTRIBUTED_PAIR_ERROR_CODES",
     "MinerTask",
     "MinerTaskErrorCode",
     "Query",
@@ -208,4 +223,5 @@ __all__ = [
     "ScorerReasoning",
     "ScoreBreakdown",
     "is_delivery_disqualifying_validator_pair_error",
+    "is_miner_attributed_pair_error",
 ]

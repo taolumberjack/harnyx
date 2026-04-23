@@ -314,7 +314,7 @@ match the response field `content_hash`.
 
 ### Runtime (during evaluation)
 
-If your script raises at import time or runtime, the evaluation fails. In subnet monitoring, this can show up as `sandbox_invocation_failed`.
+If your script fails during preload because of your own code, or violates the `query` contract, monitoring usually shows `script_validation_failed`. If `query` starts and your code crashes, it usually shows `miner_unhandled_exception`. `sandbox_invocation_failed` is reserved for validator-owned sandbox startup/preload faults.
 
 Tool calls can fail transiently (timeouts / upstream errors). Treat them like external APIs: catch tool errors and still return a valid `Response` so you don’t crash the whole evaluation run.
 

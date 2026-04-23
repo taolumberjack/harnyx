@@ -2584,10 +2584,10 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_hash_mis
     assert evaluation_records.records_by_batch == []
 
 
-async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_size_invalid(
+async def test_scheduler_records_script_validation_failures_for_all_tasks_without_failing_delivery(
     blocking_executor: ThreadPoolExecutor,
 ) -> None:
-    task = _task("size mismatch")
+    tasks = (_task("size mismatch"), _task("later mismatch"))
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     sandbox_manager = DummySandboxManager()
@@ -2596,7 +2596,7 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_size_inv
     receipt_log = DummyReceiptLog()
 
     scheduler = EvaluationScheduler(
-        tasks=(task,),
+        tasks=tasks,
         subtensor_client=subtensor,
         sandbox_manager=sandbox_manager,
         session_manager=session_manager,
@@ -2606,8 +2606,8 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_size_inv
         orchestrator_factory=lambda _client: _client,
         sandbox_options_factory=lambda _artifact: (_ for _ in ()).throw(
             ArtifactPreparationError(
-                error_code="artifact_size_invalid",
-                message="platform artifact size mismatch",
+                error_code="script_validation_failed",
+                message="platform artifact script invalid",
             )
         ),
         clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
@@ -2617,19 +2617,18 @@ async def test_scheduler_fails_batch_immediately_on_conclusive_artifact_size_inv
         ),
     )
 
-    artifacts = tuple(
-        ScriptArtifactSpec(uid=uid, artifact_id=uuid4(), content_hash=f"hash-{uid}", size_bytes=0)
-        for uid in (3, 5, 7)
-    )
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="hash-3", size_bytes=0)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=(artifact,))
 
-    with pytest.raises(ValidatorBatchFailedError, match="platform artifact size mismatch") as exc_info:
-        await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
-
-    assert exc_info.value.error_code == MinerTaskErrorCode.ARTIFACT_SIZE_INVALID
-    assert exc_info.value.failure_detail.error_code == "artifact_size_invalid"
-    assert exc_info.value.remaining_tasks == (task,)
     assert len(sandbox_manager.starts) == 0
-    assert evaluation_records.records_by_batch == []
+    assert len(result.runs) == len(tasks)
+    assert len(evaluation_records.records_by_batch) == len(tasks)
+    for submission in result.runs:
+        assert submission.score == 0.0
+        assert submission.run.details.error == EvaluationError(
+            code="script_validation_failed",
+            message="platform artifact script invalid",
+        )
 
 
 async def test_scheduler_fails_batch_on_first_conclusive_evaluation_failure(

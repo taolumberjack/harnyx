@@ -3,22 +3,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import runpy
 from collections.abc import Sequence
 from pathlib import Path
 
+from harnyx_miner.agent_source import load_agent_query_entrypoint
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
-from harnyx_miner_sdk.decorators import clear_entrypoints, entrypoint_exists, get_entrypoint
+from harnyx_miner_sdk.decorators import get_entrypoint
 from harnyx_miner_sdk.query import Query, Response
 
 _DEFAULT_QUERY_TEXT = "Harnyx Subnet validators manage sandboxed miners."
 
 
 def _load_agent(agent_path: Path) -> None:
-    clear_entrypoints()
-    runpy.run_path(str(agent_path))
-    if not entrypoint_exists("query"):
-        raise RuntimeError("agent did not register entrypoint 'query'")
+    load_agent_query_entrypoint(agent_path)
 
 
 def _build_request(*, request_path: Path | None, query_text: str | None) -> dict[str, object]:

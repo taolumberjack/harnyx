@@ -985,7 +985,21 @@ class EvaluationRunner:
                 )
             )
 
-        if isinstance(exc, SandboxInvocationError) and exc.detail_code == "UnhandledException":
+        if isinstance(exc, SandboxInvocationError) and _is_script_validation_sandbox_invocation(exc):
+            return _submission_decision(
+                self._record_task_failure(
+                    batch_id=batch_id,
+                    artifact=artifact,
+                    task=task,
+                    session_id=session_id,
+                    error_code=MinerTaskErrorCode.SCRIPT_VALIDATION_FAILED,
+                    error_message=exc.detail_error or str(exc),
+                    log_message="miner script failed validation during sandbox preload",
+                    exc=exc,
+                )
+            )
+
+        if isinstance(exc, SandboxInvocationError) and exc.detail_code == _SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION:
             return _submission_decision(
                 self._record_task_failure(
                     batch_id=batch_id,
@@ -1145,7 +1159,7 @@ def _provider_batch_failure_message(evidence: ProviderFailureEvidence) -> str:
 def _is_provider_caused_terminal_failure(exc: Exception) -> bool:
     if not isinstance(exc, SandboxInvocationError):
         return False
-    if exc.detail_code != "UnhandledException":
+    if exc.detail_code != _SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION:
         return False
     if exc.detail_exception != "ToolInvocationError":
         return False
@@ -1240,10 +1254,22 @@ def _exception_type_name(exc: Exception | None) -> str | None:
 
 
 _SANDBOX_TIMEOUT_EXCEPTIONS = frozenset({"TimeoutError", "TimeoutException"})
+_SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION = "UnhandledException"
+_SANDBOX_DETAIL_CODE_MISSING_ENTRYPOINT = "MissingEntrypoint"
+_SANDBOX_DETAIL_CODE_PRELOAD_FAILED = "PreloadFailed"
+_SANDBOX_DETAIL_CODE_PRELOAD_INFRASTRUCTURE_FAILED = "PreloadInfrastructureFailed"
 
 
 def _is_timeout_sandbox_invocation(exc: SandboxInvocationError) -> bool:
     return exc.status_code == 504 and exc.detail_exception in _SANDBOX_TIMEOUT_EXCEPTIONS
+
+
+def _is_script_validation_sandbox_invocation(exc: Exception) -> bool:
+    if not isinstance(exc, SandboxInvocationError):
+        return False
+    if exc.detail_code == _SANDBOX_DETAIL_CODE_MISSING_ENTRYPOINT:
+        return True
+    return exc.detail_code == _SANDBOX_DETAIL_CODE_PRELOAD_FAILED
 
 
 def _successful_llm_samples(receipts: Sequence[ToolCall]) -> tuple[SuccessfulLlmSample, ...]:

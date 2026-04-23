@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 import runpy
+import traceback
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,7 +19,11 @@ from harnyx_miner_sdk.sandbox_headers import (
     read_platform_token_header,
     read_session_id_header,
 )
-from harnyx_sandbox.sandbox.harness import ENTRYPOINT_TIMEOUT_SECONDS, SandboxHarness
+from harnyx_sandbox.sandbox.harness import (
+    ENTRYPOINT_TIMEOUT_SECONDS,
+    SandboxHarness,
+    SandboxPreloadFailure,
+)
 from harnyx_sandbox.tools.proxy import ToolProxy
 
 logger = logging.getLogger("harnyx_sandbox")
@@ -53,27 +58,77 @@ sandbox_harness: SandboxHarness | None = None
 _agent_loaded = False
 
 
-def _load_agent_from_env() -> None:
+def _load_agent_from_env() -> SandboxPreloadFailure | None:
     global _agent_loaded
     if _agent_loaded:
-        return
+        return None
 
-    agent_path = (os.getenv("AGENT_PATH") or "").strip()
-    agent_module = (os.getenv("AGENT_MODULE") or "").strip()
+    preload_failure_type = SandboxPreloadFailure
+
+    def make_preload_infrastructure_failure(message: str, exception: str) -> SandboxPreloadFailure:
+        return preload_failure_type(
+            code="PreloadInfrastructureFailed",
+            error=message,
+            exception=exception,
+        )
+
+    raw_agent_path = os.getenv("AGENT_PATH")
+    agent_path = raw_agent_path.strip() if raw_agent_path is not None else ""
+    raw_agent_module = os.getenv("AGENT_MODULE")
+    agent_module = raw_agent_module.strip() if raw_agent_module is not None else ""
     if agent_module:
-        raise RuntimeError("AGENT_MODULE is not supported; use AGENT_PATH")
+        return make_preload_infrastructure_failure(
+            "AGENT_MODULE is not supported; use AGENT_PATH",
+            "ValueError",
+        )
+    if not agent_path:
+        return make_preload_infrastructure_failure("AGENT_PATH is required", "ValueError")
+
+    path = Path(agent_path)
+    if not path.exists():
+        return make_preload_infrastructure_failure(
+            "agent path is not present inside sandbox",
+            "FileNotFoundError",
+        )
+    mounted_root_text = str(path.parent.resolve())
+    mounted_root_prefix = f"{mounted_root_text}{os.sep}"
+    extract_tb = traceback.extract_tb
+    log_preload_infrastructure_failure = logger.warning
+    log_preload_success = logger.info
+    log_preload_exception = logger.exception
+
+    def is_mounted_root_path(filename: str) -> bool:
+        return filename == mounted_root_text or filename.startswith(mounted_root_prefix)
+
+    def is_loader_owned_os_error(exc: OSError) -> bool:
+        if exc.filename is None:
+            return False
+        if not is_mounted_root_path(exc.filename):
+            return False
+        for frame in extract_tb(exc.__traceback__):
+            filename = frame.filename
+            if not filename or filename.startswith("<"):
+                continue
+            if is_mounted_root_path(filename):
+                return False
+        return True
 
     try:
-        if agent_path:
-            path = Path(agent_path)
-            if not path.exists():
-                logger.warning("agent path %s is not present inside sandbox", agent_path)
-            else:
-                runpy.run_path(str(path))
-                logger.info("loaded agent from path %s", path)
-                _agent_loaded = True
+        try:
+            runpy.run_path(str(path))
+        except OSError as exc:
+            if is_loader_owned_os_error(exc):
+                log_preload_infrastructure_failure("sandbox preload infrastructure failed", exc_info=exc)
+                return make_preload_infrastructure_failure(
+                    "failed to read mounted agent path",
+                    exc.__class__.__name__,
+                )
+            raise
+        log_preload_success("loaded agent from path %s", path)
+        _agent_loaded = True
+        return None
     except Exception as exc:  # pragma: no cover - defensive logging for sandbox startup
-        logger.exception("failed to load agent", exc_info=exc)
+        log_preload_exception("failed to load agent", exc_info=exc)
         raise
 
 

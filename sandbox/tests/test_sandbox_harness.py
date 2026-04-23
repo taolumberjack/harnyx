@@ -6,14 +6,19 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+import harnyx_sandbox.app as sandbox_app
 import harnyx_sandbox.sandbox.harness as harness_module
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from harnyx_sandbox.sandbox.harness import SandboxHarness
+from harnyx_sandbox.sandbox.harness import SandboxHarness, SandboxPreloadFailure
 
 from harnyx_miner_sdk.api import test_tool as invoke_test_tool
-from harnyx_miner_sdk.decorators import entrypoint, entrypoint_exists
+from harnyx_miner_sdk.decorators import clear_entrypoints, entrypoint, entrypoint_exists
+
+
+def _detail_code(response) -> str:
+    return response.json()["detail"]["code"]
 
 
 def test_harness_invokes_entrypoint_and_closes_tools() -> None:
@@ -185,14 +190,15 @@ def test_harness_accepts_neutral_session_header() -> None:
     assert response.json()["result"] == {"message": "hello"}
 
 
-def test_unknown_entrypoint_returns_404() -> None:
+def test_unknown_entrypoint_without_preload_returns_500() -> None:
     harness = SandboxHarness()
     app = FastAPI()
     app.include_router(harness.create_router(), prefix="/entry")
     client = TestClient(app)
 
     response = client.post("/entry/missing", json={})
-    assert response.status_code == 404
+    assert response.status_code == 500
+    assert _detail_code(response) == "EntrypointUnavailable"
 
 
 def test_unknown_entrypoint_returns_404_with_preload() -> None:
@@ -206,6 +212,203 @@ def test_unknown_entrypoint_returns_404_with_preload() -> None:
 
     response = client.post("/entry/missing", json={})
     assert response.status_code == 404
+    assert _detail_code(response) == "MissingEntrypoint"
+
+
+def test_worker_reports_preload_failure_with_phase_specific_code() -> None:
+    clear_entrypoints()
+
+    def preload() -> None:
+        raise TypeError("query entrypoint parameter must be annotated as harnyx_miner_sdk.query.Query")
+
+    harness = SandboxHarness(preload=preload)
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+    client = TestClient(app)
+
+    response = client.post("/entry/missing", json={})
+
+    assert response.status_code == 500
+    assert _detail_code(response) == "PreloadFailed"
+    assert response.json()["detail"]["exception"] == "TypeError"
+
+
+def test_worker_reports_preload_infrastructure_failure_with_explicit_code() -> None:
+    clear_entrypoints()
+
+    def preload() -> SandboxPreloadFailure:
+        return SandboxPreloadFailure(
+            code="PreloadInfrastructureFailed",
+            error="AGENT_PATH is required",
+            exception="ValueError",
+        )
+
+    harness = SandboxHarness(preload=preload)
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+    client = TestClient(app)
+
+    response = client.post("/entry/missing", json={})
+
+    assert response.status_code == 500
+    assert _detail_code(response) == "PreloadInfrastructureFailed"
+    assert response.json()["detail"]["exception"] == "ValueError"
+
+
+def test_worker_does_not_trust_miner_exception_named_like_infrastructure_error() -> None:
+    clear_entrypoints()
+
+    class SandboxPreloadInfrastructureError(RuntimeError):
+        pass
+
+    def preload() -> None:
+        raise SandboxPreloadInfrastructureError("miner-controlled preload failure")
+
+    harness = SandboxHarness(preload=preload)
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+    client = TestClient(app)
+
+    response = client.post("/entry/missing", json={})
+
+    assert response.status_code == 500
+    assert _detail_code(response) == "PreloadFailed"
+    assert response.json()["detail"]["exception"] == "SandboxPreloadInfrastructureError"
+
+
+def test_worker_reports_query_runtime_type_error_as_unhandled_exception() -> None:
+    clear_entrypoints()
+
+    @entrypoint("miner_runtime_type_error")
+    async def runtime_type_error(_request: dict[str, object]) -> dict[str, object]:
+        raise TypeError("query entrypoint parameter must be annotated as harnyx_miner_sdk.query.Query")
+
+    harness = SandboxHarness()
+    app = FastAPI()
+    app.include_router(harness.create_router(), prefix="/entry")
+    client = TestClient(app)
+
+    response = client.post("/entry/miner_runtime_type_error", json={"payload": {}, "context": {}})
+
+    assert response.status_code == 500
+    assert _detail_code(response) == "UnhandledException"
+    assert response.json()["detail"]["exception"] == "TypeError"
+
+
+def test_load_agent_from_env_requires_agent_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox_app, "_agent_loaded", False)
+    monkeypatch.delenv("AGENT_PATH", raising=False)
+    monkeypatch.delenv("AGENT_MODULE", raising=False)
+
+    assert sandbox_app._load_agent_from_env() == SandboxPreloadFailure(
+        code="PreloadInfrastructureFailed",
+        error="AGENT_PATH is required",
+        exception="ValueError",
+    )
+
+
+def test_load_agent_from_env_requires_present_agent_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(sandbox_app, "_agent_loaded", False)
+    missing_path = tmp_path / "missing-agent.py"
+    monkeypatch.setenv("AGENT_PATH", str(missing_path))
+    monkeypatch.delenv("AGENT_MODULE", raising=False)
+
+    assert sandbox_app._load_agent_from_env() == SandboxPreloadFailure(
+        code="PreloadInfrastructureFailed",
+        error="agent path is not present inside sandbox",
+        exception="FileNotFoundError",
+    )
+
+
+def test_load_agent_from_env_wraps_loader_os_error_as_preload_infrastructure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(sandbox_app, "_agent_loaded", False)
+    monkeypatch.setenv("AGENT_PATH", str(agent_path))
+    monkeypatch.delenv("AGENT_MODULE", raising=False)
+    monkeypatch.setattr(
+        sandbox_app.runpy,
+        "run_path",
+        lambda _path: (_ for _ in ()).throw(PermissionError(13, "denied", str(agent_path))),
+    )
+
+    assert sandbox_app._load_agent_from_env() == SandboxPreloadFailure(
+        code="PreloadInfrastructureFailed",
+        error="failed to read mounted agent path",
+        exception="PermissionError",
+    )
+
+
+def test_load_agent_from_env_ignores_miner_monkeypatch_of_preload_globals(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    miner_owned_path = tmp_path / "miner-owned.txt"
+    agent_path = tmp_path / "agent.py"
+    path_type = type(Path.cwd())
+    original_relative_to = path_type.relative_to
+    sandbox_app_dict = vars(sandbox_app)
+    missing = object()
+    original_loader_owned_helper = sandbox_app_dict.get("_is_loader_mounted_path_os_error", missing)
+    original_preload_failure_helper = sandbox_app_dict.get("_preload_infrastructure_failure", missing)
+    agent_path.write_text(
+        "\n".join(
+            [
+                "import pathlib",
+                "import harnyx_sandbox.app as sandbox_app",
+                "pathlib.PosixPath.relative_to = lambda self, *_args, **_kwargs: self",
+                "sandbox_app._is_loader_mounted_path_os_error = lambda *_args, **_kwargs: True",
+                (
+                    "sandbox_app._preload_infrastructure_failure = "
+                    "lambda *_args, **_kwargs: 'forced-infrastructure-failure'"
+                ),
+                f"raise PermissionError(13, 'denied', {str(miner_owned_path)!r})",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sandbox_app, "_agent_loaded", False)
+    monkeypatch.setenv("AGENT_PATH", str(agent_path))
+    monkeypatch.delenv("AGENT_MODULE", raising=False)
+
+    try:
+        with pytest.raises(PermissionError, match="denied"):
+            sandbox_app._load_agent_from_env()
+    finally:
+        path_type.relative_to = original_relative_to
+        if original_loader_owned_helper is missing:
+            sandbox_app_dict.pop("_is_loader_mounted_path_os_error", None)
+        else:
+            sandbox_app._is_loader_mounted_path_os_error = original_loader_owned_helper
+        if original_preload_failure_helper is missing:
+            sandbox_app_dict.pop("_preload_infrastructure_failure", None)
+        else:
+            sandbox_app._preload_infrastructure_failure = original_preload_failure_helper
+
+
+def test_load_agent_from_env_keeps_miner_runtime_os_error_miner_owned(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing_path = tmp_path / "missing.txt"
+    agent_path = tmp_path / "agent.py"
+    agent_path.write_text(
+        f"open({str(missing_path)!r}, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sandbox_app, "_agent_loaded", False)
+    monkeypatch.setenv("AGENT_PATH", str(agent_path))
+    monkeypatch.delenv("AGENT_MODULE", raising=False)
+
+    with pytest.raises(FileNotFoundError, match=str(missing_path)):
+        sandbox_app._load_agent_from_env()
 
 
 def test_harness_terminates_long_running_entrypoint(

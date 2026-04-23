@@ -11,7 +11,12 @@ from uuid import UUID
 
 import httpx
 
-from harnyx_commons.sandbox.agent_staging import MAX_AGENT_BYTES, AgentArtifact, stage_agent_source
+from harnyx_commons.sandbox.agent_staging import (
+    MAX_AGENT_BYTES,
+    AgentArtifact,
+    AgentSourceValidationError,
+    stage_agent_source,
+)
 from harnyx_validator.application.dto.evaluation import ScriptArtifactSpec
 from harnyx_validator.application.ports.platform import PlatformPort
 from harnyx_validator.infrastructure.tools.platform_client import PlatformClientError
@@ -52,24 +57,6 @@ def resolve_platform_agent_spec(
         artifact=artifact,
         platform_client=platform_client,
     )
-    if len(data) > MAX_AGENT_BYTES:
-        logger.error(
-            "Platform agent exceeds size limit",
-            extra={
-                "batch_id": str(batch_id),
-                "uid": artifact.uid,
-                "artifact_id": str(artifact.artifact_id),
-                "size_bytes": len(data),
-            },
-        )
-        raise ArtifactPreparationError(
-            error_code="artifact_size_invalid",
-            message=(
-                "platform agent exceeds size limit "
-                f"(size_bytes={len(data)} max_bytes={MAX_AGENT_BYTES})"
-            ),
-        )
-
     content_hash = hashlib.sha256(data).hexdigest()
     if content_hash != artifact.content_hash:
         logger.error(
@@ -97,6 +84,17 @@ def resolve_platform_agent_spec(
             state_dir=state_dir,
             container_root=container_root,
         )
+    except AgentSourceValidationError as exc:
+        logger.error(
+            "Platform agent failed script validation during staging",
+            extra={"batch_id": str(batch_id), "uid": artifact.uid, "artifact_id": str(artifact.artifact_id)},
+            exc_info=exc,
+        )
+        raise ArtifactPreparationError(
+            error_code="script_validation_failed",
+            message=str(exc),
+            exception_type=type(exc).__name__,
+        ) from exc
     except Exception as exc:
         logger.error(
             "Failed to stage platform agent",

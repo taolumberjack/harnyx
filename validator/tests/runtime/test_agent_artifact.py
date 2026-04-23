@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from harnyx_commons.sandbox.agent_staging import MAX_AGENT_BYTES
 from harnyx_validator.application.dto.evaluation import ScriptArtifactSpec
 from harnyx_validator.infrastructure.tools.platform_client import PlatformClientError
 from harnyx_validator.runtime import agent_artifact as agent_artifact_mod
@@ -95,3 +96,60 @@ def test_resolve_platform_agent_spec_does_not_retry_hash_mismatch(
 
     assert exc_info.value.error_code == "artifact_hash_mismatch"
     assert client.calls == 1
+
+
+def test_resolve_platform_agent_spec_maps_oversized_source_to_script_validation_failed(
+    tmp_path: Path,
+) -> None:
+    data = b"x" * (MAX_AGENT_BYTES + 1)
+    artifact = _artifact(content_hash=hashlib.sha256(data).hexdigest(), size_bytes=len(data))
+    client = _StaticPlatformClient(data=data)
+
+    with pytest.raises(ArtifactPreparationError, match="exceeds size limit") as exc_info:
+        resolve_platform_agent_spec(
+            batch_id=uuid4(),
+            artifact=artifact,
+            platform_client=client,
+            state_dir=tmp_path,
+            container_root="/sandbox/state",
+        )
+
+    assert exc_info.value.error_code == "script_validation_failed"
+
+
+def test_resolve_platform_agent_spec_maps_syntax_error_to_script_validation_failed(
+    tmp_path: Path,
+) -> None:
+    data = b"def broken(:\n"
+    artifact = _artifact(content_hash=hashlib.sha256(data).hexdigest(), size_bytes=len(data))
+    client = _StaticPlatformClient(data=data)
+
+    with pytest.raises(ArtifactPreparationError, match="failed bytecode compilation") as exc_info:
+        resolve_platform_agent_spec(
+            batch_id=uuid4(),
+            artifact=artifact,
+            platform_client=client,
+            state_dir=tmp_path,
+            container_root="/sandbox/state",
+        )
+
+    assert exc_info.value.error_code == "script_validation_failed"
+
+
+def test_resolve_platform_agent_spec_hash_mismatch_wins_before_source_validation(
+    tmp_path: Path,
+) -> None:
+    data = b"x" * (MAX_AGENT_BYTES + 1)
+    artifact = _artifact(content_hash="expected-hash", size_bytes=len(data))
+    client = _StaticPlatformClient(data=data)
+
+    with pytest.raises(ArtifactPreparationError, match="sha256 mismatch") as exc_info:
+        resolve_platform_agent_spec(
+            batch_id=uuid4(),
+            artifact=artifact,
+            platform_client=client,
+            state_dir=tmp_path,
+            container_root="/sandbox/state",
+        )
+
+    assert exc_info.value.error_code == "artifact_hash_mismatch"

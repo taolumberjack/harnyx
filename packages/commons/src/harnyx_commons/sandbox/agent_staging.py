@@ -23,6 +23,10 @@ class AgentArtifact:
     container_path: str
 
 
+class AgentSourceValidationError(ValueError):
+    """Raised when miner-provided source bytes violate the script contract."""
+
+
 def _container_path_for(*, staged_path: Path, state_dir: Path, container_root: str) -> str:
     rel = staged_path.relative_to(state_dir)
     rel_path = PurePosixPath("/".join(rel.parts))
@@ -70,11 +74,11 @@ def stage_agent_source(
     if not key:
         raise ValueError("key must be provided")
     if not data:
-        raise ValueError("agent source is empty")
+        raise AgentSourceValidationError("agent source is empty")
     if max_bytes <= 0:
         raise ValueError("max_bytes must be > 0")
     if len(data) > max_bytes:
-        raise ValueError(f"agent exceeds size limit (size_bytes={len(data)} max_bytes={max_bytes})")
+        raise AgentSourceValidationError(f"agent exceeds size limit (size_bytes={len(data)} max_bytes={max_bytes})")
 
     content_hash = hashlib.sha256(data).hexdigest()
     agent_path, container_path = agent_paths(
@@ -152,16 +156,17 @@ def _validate_agent_source(path: Path) -> None:
     try:
         source = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        raise ValueError("agent must be UTF-8 encoded") from exc
+        raise AgentSourceValidationError("agent must be UTF-8 encoded") from exc
     try:
         compile(source, str(path), "exec")
     except SyntaxError as exc:
         snippet = source[:_LOG_SNIPPET_LIMIT].replace("\n", "\\n")
-        raise ValueError(f"agent failed bytecode compilation: snippet={snippet!r}") from exc
+        raise AgentSourceValidationError(f"agent failed bytecode compilation: snippet={snippet!r}") from exc
 
 
 __all__ = [
     "AgentArtifact",
+    "AgentSourceValidationError",
     "DEFAULT_AGENT_FILENAME",
     "MAX_AGENT_BYTES",
     "agent_paths",

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from harnyx_commons.sandbox.agent_staging import stage_agent_source
+import pytest
+
+from harnyx_commons.sandbox.agent_staging import AgentSourceValidationError, stage_agent_source
 
 
 def _mode(path: Path) -> int:
@@ -44,3 +46,48 @@ def test_stage_agent_source_normalizes_bind_mount_permissions(tmp_path: Path) ->
     assert _mode(artifact.host_path.parent) == 0o755
     assert _mode(artifact.host_path) == 0o644
     assert _mode(checksum_path) == 0o644
+
+
+def test_stage_agent_source_rejects_empty_source_as_script_validation(tmp_path: Path) -> None:
+    with pytest.raises(AgentSourceValidationError, match="agent source is empty"):
+        stage_agent_source(
+            state_dir=tmp_path,
+            container_root="/workspace/.harnyx_state",
+            namespace="local_eval_agents",
+            key="artifact-1",
+            data=b"",
+        )
+
+
+def test_stage_agent_source_rejects_oversized_source_as_script_validation(tmp_path: Path) -> None:
+    with pytest.raises(AgentSourceValidationError, match="agent exceeds size limit"):
+        stage_agent_source(
+            state_dir=tmp_path,
+            container_root="/workspace/.harnyx_state",
+            namespace="local_eval_agents",
+            key="artifact-1",
+            data=b"x" * 5,
+            max_bytes=4,
+        )
+
+
+def test_stage_agent_source_rejects_non_utf8_source_as_script_validation(tmp_path: Path) -> None:
+    with pytest.raises(AgentSourceValidationError, match="agent must be UTF-8 encoded"):
+        stage_agent_source(
+            state_dir=tmp_path,
+            container_root="/workspace/.harnyx_state",
+            namespace="local_eval_agents",
+            key="artifact-1",
+            data=b"\xff",
+        )
+
+
+def test_stage_agent_source_rejects_syntax_error_as_script_validation(tmp_path: Path) -> None:
+    with pytest.raises(AgentSourceValidationError, match="agent failed bytecode compilation"):
+        stage_agent_source(
+            state_dir=tmp_path,
+            container_root="/workspace/.harnyx_state",
+            namespace="local_eval_agents",
+            key="artifact-1",
+            data=b"def broken(:\n",
+        )

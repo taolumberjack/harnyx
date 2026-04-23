@@ -679,6 +679,83 @@ class _UnhandledMinerCrashOrchestrator:
         )
 
 
+class _UnhandledMinerTypeErrorOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "sandbox invocation failed (...)",
+            status_code=500,
+            detail_code="UnhandledException",
+            detail_exception="TypeError",
+            detail_error="query entrypoint parameter must be annotated as harnyx_miner_sdk.query.Query",
+        )
+
+
+class _MissingEntrypointOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "sandbox entrypoint missing",
+            status_code=404,
+            detail_code="MissingEntrypoint",
+            detail_exception="KeyError",
+            detail_error="'query'",
+        )
+
+
+class _PreloadContractFailureOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "preload contract failed",
+            status_code=500,
+            detail_code="PreloadFailed",
+            detail_exception="TypeError",
+            detail_error="query entrypoint parameter must be annotated as harnyx_miner_sdk.query.Query",
+        )
+
+
+class _PreloadRuntimeErrorOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "preload runtime failed",
+            status_code=500,
+            detail_code="PreloadFailed",
+            detail_exception="RuntimeError",
+            detail_error="agent import failed",
+        )
+
+
+class _PreloadImportErrorOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "preload import failed",
+            status_code=500,
+            detail_code="PreloadFailed",
+            detail_exception="ImportError",
+            detail_error="missing miner dependency",
+        )
+
+
+class _PreloadInfrastructureFailureOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "preload infrastructure failed",
+            status_code=500,
+            detail_code="PreloadInfrastructureFailed",
+            detail_exception="RuntimeError",
+            detail_error="AGENT_PATH is required",
+        )
+
+
+class _EntrypointUnavailableOrchestrator:
+    async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
+        raise _sandbox_invocation_error(
+            "entrypoint unavailable",
+            status_code=500,
+            detail_code="EntrypointUnavailable",
+            detail_exception="KeyError",
+            detail_error="'query'",
+        )
+
+
 class _MinerResponseValidationOrchestrator:
     async def evaluate(self, request: MinerTaskRunRequest) -> TaskRunOutcome:
         raise MinerResponseValidationError("miner returned invalid response payload")
@@ -1907,6 +1984,165 @@ async def test_evaluation_runner_records_zero_score_for_unhandled_miner_exceptio
     assert submission.run.details.error is not None
     assert submission.run.details.error.code == "miner_unhandled_exception"
     assert evaluation_store.records == [submission]
+
+
+async def test_evaluation_runner_keeps_query_runtime_type_error_as_miner_unhandled_exception() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=_ClockSequence(
+            datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
+        ),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="runtime type error"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    result = await runner.evaluate_artifact(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, _UnhandledMinerTypeErrorOrchestrator()),
+    )
+
+    assert len(result.submissions) == 1
+    submission = result.submissions[0]
+    assert submission.run.details.error == EvaluationError(
+        code="miner_unhandled_exception",
+        message="query entrypoint parameter must be annotated as harnyx_miner_sdk.query.Query",
+    )
+
+
+@pytest.mark.parametrize(
+    ("orchestrator", "error_code"),
+    (
+        (_MissingEntrypointOrchestrator(), "script_validation_failed"),
+        (_PreloadContractFailureOrchestrator(), "script_validation_failed"),
+        (_PreloadRuntimeErrorOrchestrator(), "script_validation_failed"),
+        (_PreloadImportErrorOrchestrator(), "script_validation_failed"),
+    ),
+)
+async def test_evaluation_runner_records_zero_score_for_script_validation_failures(
+    orchestrator: TaskRunOrchestrator,
+    error_code: str,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=_ClockSequence(
+            datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+            datetime(2025, 10, 17, 12, 2, tzinfo=UTC),
+        ),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="script invalid"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    result = await runner.evaluate_artifact(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=orchestrator,
+    )
+
+    assert len(result.submissions) == 1
+    submission = result.submissions[0]
+    assert submission.score == 0.0
+    assert submission.run.details.error == EvaluationError(
+        code=error_code,
+        message=submission.run.details.error.message,
+    )
+    assert evaluation_store.records == [submission]
+
+
+@pytest.mark.parametrize(
+    "orchestrator",
+    (
+        _PreloadInfrastructureFailureOrchestrator(),
+        _EntrypointUnavailableOrchestrator(),
+    ),
+)
+async def test_evaluate_artifact_with_state_preserves_sandbox_infrastructure_failures(
+    orchestrator: TaskRunOrchestrator,
+) -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_task_parallelism=1,
+        ),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="sandbox infra"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+
+    with pytest.raises(ValidatorBatchFailedError) as exc_info:
+        await runner.evaluate_artifact_with_state(
+            batch_id=uuid4(),
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=orchestrator,
+            successful_baseline_tps=None,
+            timeout_observations_by_pair={},
+        )
+
+    exc = exc_info.value
+    assert exc.error_code == MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED
+    assert exc.failure_detail.error_code == "sandbox_invocation_failed"
 
 
 async def test_evaluation_runner_does_not_let_stale_provider_marker_poison_later_attempt() -> None:
