@@ -65,6 +65,7 @@ The command can:
 - discover the latest completed public batch
 - fetch a specific public batch by id
 - fetch the recorded batch detail, artifact metadata, and recorded result rows needed for comparison
+- continue with degraded recorded-platform context when batch detail succeeds but the public results endpoint is temporarily unavailable
 
 ## Execution Boundary
 
@@ -97,11 +98,18 @@ Both reports include:
 - local simulated champion-selection summary
 - raw head-to-head comparison in `vs-champion`
 - recorded platform context for comparison
+- explicit recorded-results availability metadata when the public results endpoint is unavailable
 - per-task details
 
 The evaluation config snapshot now also records the sandbox execution boundary, sandbox image, local tool-host mode, and the task-level / artifact-level parallelism used for the run.
 
 The JSON report is the machine-readable source of truth for automated analysis. The Markdown report is the human-readable summary.
+
+If batch detail resolves but recorded monitoring rows cannot be fetched, local eval now still completes the local run and writes a degraded report:
+
+- `recorded_platform_context.results` is `null`
+- `recorded_platform_context.results_status` explains the outage
+- per-task `recorded_platform_rows` are marked unavailable instead of pretending zero rows were fetched
 
 ## Local Selection Semantics
 

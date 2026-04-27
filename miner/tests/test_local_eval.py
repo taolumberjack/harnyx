@@ -36,7 +36,12 @@ from harnyx_commons.sandbox.manager import SandboxDeployment
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 from harnyx_miner import local_eval
-from harnyx_miner.platform_monitoring import PlatformMonitoringClient, SelectedBatchContext
+from harnyx_miner.platform_monitoring import (
+    PlatformMonitoringClient,
+    PlatformMonitoringRequestError,
+    RecordedBatchResultsSnapshot,
+    SelectedBatchContext,
+)
 from harnyx_miner_sdk.json_types import JsonValue
 from harnyx_validator.application.dto.evaluation import MinerTaskRunSubmission, ScriptArtifactSpec, TokenUsageSummary
 from harnyx_validator.application.services.evaluation_runner import (
@@ -289,6 +294,49 @@ def _recorded_rows(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ..
     return tuple(rows)
 
 
+def _recorded_results_snapshot(
+    rows: tuple[dict[str, object], ...],
+) -> RecordedBatchResultsSnapshot:
+    return RecordedBatchResultsSnapshot(rows=rows, error=None)
+
+
+def _unavailable_recorded_results_snapshot(*, path: str) -> RecordedBatchResultsSnapshot:
+    return RecordedBatchResultsSnapshot(
+        rows=None,
+        error=PlatformMonitoringRequestError(
+            path=path,
+            status_code=503,
+            detail="upstream connect error",
+        ),
+    )
+
+
+def _request_error_recorded_results_snapshot(*, path: str) -> RecordedBatchResultsSnapshot:
+    return RecordedBatchResultsSnapshot(
+        rows=None,
+        error=PlatformMonitoringRequestError(
+            path=path,
+            status_code=0,
+            detail="connection terminated",
+        ),
+    )
+
+
+def _selected_batch_context(
+    *,
+    batch_id,
+    source: str,
+    detail: dict[str, object],
+    recorded_results: RecordedBatchResultsSnapshot,
+) -> SelectedBatchContext:
+    return SelectedBatchContext(
+        batch_id=batch_id,
+        source=source,
+        detail=detail,
+        recorded_results=recorded_results,
+    )
+
+
 class _FakeMonitoringClient:
     def __init__(self, *, batch_context: SelectedBatchContext, champion_script: dict[str, object]) -> None:
         self.batch_context = batch_context
@@ -305,6 +353,23 @@ class _FakeMonitoringClient:
         self.script_calls += 1
         assert str(artifact_id) == str(self.champion_script["artifact_id"])
         return self.champion_script
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _RaisingMonitoringClient:
+    def __init__(self, *, error: Exception) -> None:
+        self.error = error
+        self.closed = False
+
+    def resolve_batch_context(self, batch_id) -> SelectedBatchContext:
+        del batch_id
+        raise self.error
+
+    def get_script(self, artifact_id) -> dict[str, object]:
+        del artifact_id
+        pytest.fail("champion script fetch should not be reached")
 
     def close(self) -> None:
         self.closed = True
@@ -561,11 +626,11 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -627,6 +692,7 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     assert report["tasks"][0]["target"]["answer"]["text"] == "target answer 0"
     assert report["tasks"][0]["opponent"]["answer"]["text"] == "champion answer 0"
     assert report["tasks"][0]["target"]["attempt_count"] == 2
+    assert report["recorded_platform_context"]["results_status"]["state"] == "available"
     assert report["recorded_platform_context"]["results"][0]["payload_json"] == {"source": "platform"}
     assert runtime.closed is True
     assert monitoring.closed is True
@@ -672,11 +738,11 @@ def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="explicit",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -724,7 +790,210 @@ def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     assert report["local_result_summary"]["head_to_head"] is None
     assert len(report["local_result_summary"]["leaderboard"]) == 1
     assert report["tasks"][0]["opponent"] is None
+    assert report["recorded_platform_context"]["results_status"]["state"] == "available"
     assert len(report["recorded_platform_context"]["results"]) == 1
+    assert len(runtime.calls) == 1
+
+
+def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    tasks = (_task(uuid4(), "solo task"),)
+    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    monitoring = _FakeMonitoringClient(
+        batch_context=_selected_batch_context(
+            batch_id=batch_id,
+            source="explicit",
+            detail=detail,
+            recorded_results=_unavailable_recorded_results_snapshot(
+                path=f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+            ),
+        ),
+        champion_script={
+            "uid": 2,
+            "artifact_id": str(champion_artifact_id),
+            "content_hash": "champion-hash",
+            "size_bytes": 128,
+            "content_b64": "",
+        },
+    )
+    runtime = _FakeRuntime(
+        batch_id=batch_id,
+        champion_artifact_id=champion_artifact_id,
+        tasks=tasks,
+    )
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path, answer="target only")
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(
+        local_eval.LocalEvaluationRuntime,
+        "create",
+        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+    )
+    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
+
+    local_eval.main(
+        [
+            "--agent-path",
+            str(agent_path),
+            "--batch-id",
+            str(batch_id),
+            "--mode",
+            "target-only",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    report = json.loads((tmp_path / f"local-eval-report-{batch_id}-target-only.json").read_text(encoding="utf-8"))
+    markdown = (tmp_path / f"local-eval-report-{batch_id}-target-only.md").read_text(encoding="utf-8")
+    captured = capsys.readouterr()
+
+    assert report["recorded_platform_context"]["results"] is None
+    assert report["recorded_platform_context"]["results_status"] == {
+        "state": "unavailable",
+        "error": {
+            "path": f"/v1/monitoring/miner-task-batches/{batch_id}/results",
+            "status_code": 503,
+            "detail": "upstream connect error",
+        },
+    }
+    assert report["tasks"][0]["recorded_platform_rows"] is None
+    assert "recorded platform results unavailable" in captured.err
+    assert "Recorded monitoring rows were unavailable for this run" in markdown
+    assert monitoring.script_calls == 0
+    assert len(runtime.calls) == 1
+
+
+def test_local_eval_vs_champion_continues_when_recorded_results_fetch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    tasks = (_task(uuid4(), "solo task"),)
+    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    monitoring = _FakeMonitoringClient(
+        batch_context=_selected_batch_context(
+            batch_id=batch_id,
+            source="latest-completed",
+            detail=detail,
+            recorded_results=_unavailable_recorded_results_snapshot(
+                path=f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+            ),
+        ),
+        champion_script={
+            "uid": 2,
+            "artifact_id": str(champion_artifact_id),
+            "content_hash": "champion-hash",
+            "size_bytes": 128,
+            "content_b64": base64.b64encode(
+                b"from harnyx_miner_sdk.decorators import entrypoint\n"
+                b"from harnyx_miner_sdk.query import Query, Response\n"
+                b'@entrypoint("query")\n'
+                b"async def query(query: Query) -> Response:\n"
+                b'    return Response(text="champion")\n'
+            ).decode("ascii"),
+        },
+    )
+    runtime = _FakeRuntime(
+        batch_id=batch_id,
+        champion_artifact_id=champion_artifact_id,
+        tasks=tasks,
+    )
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(
+        local_eval.LocalEvaluationRuntime,
+        "create",
+        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+    )
+    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
+
+    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    report = json.loads((tmp_path / f"local-eval-report-{batch_id}-vs-champion.json").read_text(encoding="utf-8"))
+
+    assert monitoring.script_calls == 1
+    assert report["recorded_platform_context"]["results"] is None
+    assert report["recorded_platform_context"]["results_status"]["state"] == "unavailable"
+    assert report["tasks"][0]["recorded_platform_rows"] is None
+    assert len(runtime.calls) == 2
+
+
+def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    tasks = (_task(uuid4(), "solo task"),)
+    detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
+    monitoring = _FakeMonitoringClient(
+        batch_context=_selected_batch_context(
+            batch_id=batch_id,
+            source="explicit",
+            detail=detail,
+            recorded_results=_request_error_recorded_results_snapshot(
+                path=f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+            ),
+        ),
+        champion_script={
+            "uid": 2,
+            "artifact_id": str(champion_artifact_id),
+            "content_hash": "champion-hash",
+            "size_bytes": 128,
+            "content_b64": "",
+        },
+    )
+    runtime = _FakeRuntime(
+        batch_id=batch_id,
+        champion_artifact_id=champion_artifact_id,
+        tasks=tasks,
+    )
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path, answer="target only")
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(
+        local_eval.LocalEvaluationRuntime,
+        "create",
+        staticmethod(lambda *, progress_reporter=None: _bind_progress(runtime, progress_reporter)),
+    )
+    monkeypatch.setattr(local_eval, "platform_base_url_from_env", lambda: "https://platform.example.com")
+
+    local_eval.main(
+        [
+            "--agent-path",
+            str(agent_path),
+            "--batch-id",
+            str(batch_id),
+            "--mode",
+            "target-only",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    report = json.loads((tmp_path / f"local-eval-report-{batch_id}-target-only.json").read_text(encoding="utf-8"))
+
+    assert report["recorded_platform_context"]["results"] is None
+    assert report["recorded_platform_context"]["results_status"] == {
+        "state": "unavailable",
+        "error": {
+            "path": f"/v1/monitoring/miner-task-batches/{batch_id}/results",
+            "status_code": 0,
+            "detail": "connection terminated",
+        },
+    }
+    assert report["tasks"][0]["recorded_platform_rows"] is None
     assert len(runtime.calls) == 1
 
 
@@ -741,11 +1010,11 @@ def test_local_eval_vs_champion_uses_platform_cascade_not_raw_total_only(
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -802,11 +1071,11 @@ def test_local_eval_head_to_head_winner_uses_raw_totals_not_rounded_totals(
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -863,11 +1132,11 @@ def test_local_eval_runs_target_and_champion_concurrently(
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -1054,11 +1323,11 @@ def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_fa
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -1209,11 +1478,11 @@ def test_local_eval_vs_champion_fails_before_runtime_when_champion_script_is_inv
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="explicit",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -1262,11 +1531,11 @@ def test_local_eval_vs_champion_preflight_does_not_execute_fetched_champion_code
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -1317,11 +1586,11 @@ def test_local_eval_logs_progress_to_stderr_and_keeps_stdout_json_clean(
     detail = _batch_detail(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     results = _recorded_rows(batch_id=batch_id, champion_artifact_id=champion_artifact_id, tasks=tasks)
     monitoring = _FakeMonitoringClient(
-        batch_context=SelectedBatchContext(
+        batch_context=_selected_batch_context(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            results=results,
+            recorded_results=_recorded_results_snapshot(results),
         ),
         champion_script={
             "uid": 2,
@@ -1365,6 +1634,73 @@ def test_local_eval_logs_progress_to_stderr_and_keeps_stdout_json_clean(
     assert "[local-eval] target task 1/2 complete" in captured.err
     assert "[local-eval] finished champion evaluation" in captured.err
     assert "[local-eval] reports written:" in captured.err
+
+
+def test_local_eval_still_fails_before_runtime_when_batch_detail_fetch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id = uuid4()
+    detail_path = f"/v1/monitoring/miner-task-batches/{batch_id}"
+    monitoring = _RaisingMonitoringClient(
+        error=PlatformMonitoringRequestError(
+            path=detail_path,
+            status_code=503,
+            detail="upstream connect error",
+        )
+    )
+    created = False
+
+    def _create_runtime(*, progress_reporter=None) -> _FakeRuntime:
+        nonlocal created
+        del progress_reporter
+        created = True
+        raise AssertionError("runtime should not be created")
+
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(local_eval.LocalEvaluationRuntime, "create", staticmethod(_create_runtime))
+
+    with pytest.raises(SystemExit, match=r"platform monitoring request failed \(503\): upstream connect error"):
+        local_eval.main(["--agent-path", str(agent_path), "--batch-id", str(batch_id), "--output-dir", str(tmp_path)])
+
+    assert created is False
+    assert monitoring.closed is True
+
+
+def test_local_eval_still_fails_before_runtime_when_latest_batch_lookup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    list_path = "/v1/monitoring/miner-task-batches"
+    monitoring = _RaisingMonitoringClient(
+        error=PlatformMonitoringRequestError(
+            path=list_path,
+            status_code=503,
+            detail="upstream connect error",
+        )
+    )
+    created = False
+
+    def _create_runtime(*, progress_reporter=None) -> _FakeRuntime:
+        nonlocal created
+        del progress_reporter
+        created = True
+        raise AssertionError("runtime should not be created")
+
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+
+    monkeypatch.setattr(local_eval.PlatformMonitoringClient, "from_env", staticmethod(lambda: monitoring))
+    monkeypatch.setattr(local_eval.LocalEvaluationRuntime, "create", staticmethod(_create_runtime))
+
+    with pytest.raises(SystemExit, match=r"platform monitoring request failed \(503\): upstream connect error"):
+        local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    assert created is False
+    assert monitoring.closed is True
 
 
 def test_platform_monitoring_client_pages_until_completed_batch() -> None:
@@ -1461,6 +1797,163 @@ def test_resolve_batch_context_rejects_explicit_non_completed_batch() -> None:
         RuntimeError,
         match=rf"miner-task batch {batch_id} is not completed \(status=initializing\)",
     ):
+        client.resolve_batch_context(batch_id)
+
+    assert client._client.calls == [
+        (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
+    ]
+
+
+def test_resolve_batch_context_records_results_failure_without_aborting() -> None:
+    batch_id = uuid4()
+    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def get(self, path: str, params=None):
+            self.calls.append((path, params))
+            request = httpx.Request("GET", f"https://platform.example.com{path}")
+            if path == f"/v1/monitoring/miner-task-batches/{batch_id}":
+                return httpx.Response(
+                    200,
+                    json={
+                        "summary": {
+                            "batch_id": str(batch_id),
+                            "status": "completed",
+                        }
+                    },
+                    request=request,
+                )
+            if path == results_path:
+                return httpx.Response(503, text="upstream connect error", request=request)
+            pytest.fail(f"unexpected path: {path}")
+
+        def close(self) -> None:
+            return None
+
+    client = PlatformMonitoringClient(base_url="https://platform.example.com")
+    client._client.close()
+    client._client = _StubClient()
+
+    context = client.resolve_batch_context(batch_id)
+
+    assert context.recorded_results.rows is None
+    assert context.recorded_results.error is not None
+    assert context.recorded_results.error.path == results_path
+    assert context.recorded_results.error.status_code == 503
+    assert client._client.calls == [
+        (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
+        (
+            results_path,
+            {
+                "include_failed_delivery_rows": "true",
+            },
+        ),
+    ]
+
+
+def test_resolve_batch_context_records_results_transport_failure_without_aborting() -> None:
+    batch_id = uuid4()
+    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def get(self, path: str, params=None):
+            self.calls.append((path, params))
+            request = httpx.Request("GET", f"https://platform.example.com{path}")
+            if path == f"/v1/monitoring/miner-task-batches/{batch_id}":
+                return httpx.Response(
+                    200,
+                    json={
+                        "summary": {
+                            "batch_id": str(batch_id),
+                            "status": "completed",
+                        }
+                    },
+                    request=request,
+                )
+            if path == results_path:
+                raise httpx.ConnectError("connection terminated", request=request)
+            pytest.fail(f"unexpected path: {path}")
+
+        def close(self) -> None:
+            return None
+
+    client = PlatformMonitoringClient(base_url="https://platform.example.com")
+    client._client.close()
+    client._client = _StubClient()
+
+    context = client.resolve_batch_context(batch_id)
+
+    assert context.recorded_results.rows is None
+    assert context.recorded_results.error is not None
+    assert context.recorded_results.error.path == results_path
+    assert context.recorded_results.error.status_code == 0
+    assert context.recorded_results.error.detail == "connection terminated"
+    assert client._client.calls == [
+        (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
+        (
+            results_path,
+            {
+                "include_failed_delivery_rows": "true",
+            },
+        ),
+    ]
+
+
+def test_resolve_batch_context_still_raises_when_latest_batch_lookup_fails() -> None:
+    class _StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def get(self, path: str, params=None):
+            self.calls.append((path, params))
+            request = httpx.Request("GET", f"https://platform.example.com{path}")
+            if path == "/v1/monitoring/miner-task-batches":
+                return httpx.Response(503, text="upstream connect error", request=request)
+            pytest.fail(f"unexpected path: {path}")
+
+        def close(self) -> None:
+            return None
+
+    client = PlatformMonitoringClient(base_url="https://platform.example.com")
+    client._client.close()
+    client._client = _StubClient()
+
+    with pytest.raises(PlatformMonitoringRequestError, match=r"platform monitoring request failed \(503\)"):
+        client.resolve_batch_context(None)
+
+    assert client._client.calls == [
+        ("/v1/monitoring/miner-task-batches", {"limit": 100}),
+    ]
+
+
+def test_resolve_batch_context_still_raises_when_batch_detail_request_fails() -> None:
+    batch_id = uuid4()
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def get(self, path: str, params=None):
+            self.calls.append((path, params))
+            request = httpx.Request("GET", f"https://platform.example.com{path}")
+            if path == f"/v1/monitoring/miner-task-batches/{batch_id}":
+                return httpx.Response(503, text="upstream connect error", request=request)
+            pytest.fail(f"unexpected path: {path}")
+
+        def close(self) -> None:
+            return None
+
+    client = PlatformMonitoringClient(base_url="https://platform.example.com")
+    client._client.close()
+    client._client = _StubClient()
+
+    with pytest.raises(PlatformMonitoringRequestError, match=r"platform monitoring request failed \(503\)"):
         client.resolve_batch_context(batch_id)
 
     assert client._client.calls == [

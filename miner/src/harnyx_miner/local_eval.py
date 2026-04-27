@@ -36,7 +36,12 @@ from harnyx_miner.agent_source import (
     require_existing_agent_path,
     validate_agent_bytes,
 )
-from harnyx_miner.platform_monitoring import PlatformMonitoringClient, SelectedBatchContext, platform_base_url_from_env
+from harnyx_miner.platform_monitoring import (
+    PlatformMonitoringClient,
+    RecordedBatchResultsSnapshot,
+    SelectedBatchContext,
+    platform_base_url_from_env,
+)
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission, ScriptArtifactSpec
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
 from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker
@@ -498,6 +503,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
         progress.log("resolving batch context")
         requested_batch_id = UUID(args.batch_id) if args.batch_id else None
         batch_context = monitoring.resolve_batch_context(requested_batch_id)
+        _log_recorded_results_status(progress=progress, batch_context=batch_context)
         tasks = _load_batch_tasks(batch_context.detail)
         progress.log(
             f"selected batch: batch_id={batch_context.batch_id} source={batch_context.source} tasks={len(tasks)}"
@@ -719,7 +725,8 @@ def _build_report(
         if champion_submissions is not None
         else {}
     )
-    recorded_rows = _group_recorded_rows(batch_context.results)
+    recorded_results = batch_context.recorded_results
+    recorded_rows = _group_recorded_rows(recorded_results.rows or ())
     leaderboard_entries = [
         _artifact_summary_entry(
             label="target",
@@ -819,14 +826,19 @@ def _build_report(
         },
         "recorded_platform_context": {
             "batch_detail": batch_context.detail,
-            "results": batch_context.results,
+            "results": recorded_results.rows,
+            "results_status": _serialize_recorded_results_status(recorded_results),
         },
         "tasks": [
             _task_report(
                 task=task,
                 target_submission=target_by_task.get(task.task_id),
                 champion_submission=champion_by_task.get(task.task_id),
-                recorded_rows=recorded_rows.get(task.task_id, ()),
+                recorded_rows=(
+                    recorded_rows.get(task.task_id, ())
+                    if recorded_results.rows is not None
+                    else None
+                ),
             )
             for task in tasks
         ],
@@ -838,7 +850,7 @@ def _task_report(
     task: MinerTask,
     target_submission: MinerTaskRunSubmission | None,
     champion_submission: MinerTaskRunSubmission | None,
-    recorded_rows: Sequence[dict[str, object]],
+    recorded_rows: Sequence[dict[str, object]] | None,
 ) -> dict[str, object]:
     return {
         "task_id": str(task.task_id),
@@ -850,8 +862,38 @@ def _task_report(
         },
         "target": _submission_detail(target_submission),
         "opponent": _submission_detail(champion_submission) if champion_submission is not None else None,
-        "recorded_platform_rows": list(recorded_rows),
+        "recorded_platform_rows": list(recorded_rows) if recorded_rows is not None else None,
     }
+
+
+def _serialize_recorded_results_status(batch_results: RecordedBatchResultsSnapshot) -> dict[str, object]:
+    if batch_results.error is None:
+        return {
+            "state": "available",
+            "error": None,
+        }
+    return {
+        "state": "unavailable",
+        "error": {
+            "path": batch_results.error.path,
+            "status_code": batch_results.error.status_code,
+            "detail": batch_results.error.detail,
+        },
+    }
+
+
+def _log_recorded_results_status(
+    *,
+    progress: _CliProgressReporter,
+    batch_context: SelectedBatchContext,
+) -> None:
+    error = batch_context.recorded_results.error
+    if error is None:
+        return
+    progress.log(
+        "recorded platform results unavailable: "
+        f"path={error.path} status_code={error.status_code} detail={error.detail}"
+    )
 
 
 def _submission_detail(submission: MinerTaskRunSubmission | None) -> dict[str, object] | None:
@@ -1171,7 +1213,7 @@ def _render_markdown_report(report: Mapping[str, object]) -> str:
         [
             "",
             "## Recorded Platform Context",
-            "- The JSON report contains the full batch detail and recorded monitoring rows for automated analysis.",
+            _render_recorded_platform_context_markdown(report),
             "",
             "## Per-Task Details",
         ]
@@ -1197,12 +1239,36 @@ def _render_markdown_report(report: Mapping[str, object]) -> str:
         opponent = task.get("opponent")
         if opponent is not None:
             lines.extend(_render_submission_markdown("Opponent", _require_mapping(opponent, label="task opponent")))
-        recorded_rows = _require_sequence(task.get("recorded_platform_rows"), label="recorded rows")
-        lines.append(
-            f"- Recorded platform rows: {len(recorded_rows)}"
-        )
+        lines.append(_render_recorded_rows_markdown(task))
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_recorded_platform_context_markdown(report: Mapping[str, object]) -> str:
+    recorded_context = _require_mapping(
+        report.get("recorded_platform_context"),
+        label="recorded platform context",
+    )
+    results_status = _require_mapping(
+        recorded_context.get("results_status"),
+        label="recorded results status",
+    )
+    status = _require_str(results_status.get("state"), label="recorded results status state")
+    if status == "available":
+        return "- The JSON report contains the full batch detail and recorded monitoring rows for automated analysis."
+    error = _require_mapping(results_status.get("error"), label="recorded results error")
+    return (
+        "- Recorded monitoring rows were unavailable for this run: "
+        f"{_require_str(error.get('detail'), label='recorded results error detail')}"
+    )
+
+
+def _render_recorded_rows_markdown(task: Mapping[str, object]) -> str:
+    raw_recorded_rows = task.get("recorded_platform_rows")
+    if raw_recorded_rows is None:
+        return "- Recorded platform rows: unavailable"
+    recorded_rows = _require_sequence(raw_recorded_rows, label="recorded rows")
+    return f"- Recorded platform rows: {len(recorded_rows)}"
 
 
 def _render_submission_markdown(label: str, submission: Mapping[str, object]) -> list[str]:

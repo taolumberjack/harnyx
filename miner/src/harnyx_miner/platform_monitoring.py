@@ -13,12 +13,32 @@ from dotenv import load_dotenv
 _QueryParamValue = str | int | float | None
 
 
+class PlatformMonitoringRequestError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        path: str,
+        status_code: int,
+        detail: str,
+    ) -> None:
+        self.path = path
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(f"platform monitoring request failed ({status_code}): {detail}")
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedBatchResultsSnapshot:
+    rows: tuple[dict[str, object], ...] | None
+    error: PlatformMonitoringRequestError | None
+
+
 @dataclass(frozen=True, slots=True)
 class SelectedBatchContext:
     batch_id: UUID
     source: str
     detail: dict[str, object]
-    results: tuple[dict[str, object], ...]
+    recorded_results: RecordedBatchResultsSnapshot
 
 
 def platform_base_url_from_env() -> str:
@@ -76,6 +96,13 @@ class PlatformMonitoringClient:
             raise RuntimeError("monitoring batch results response must be a JSON array")
         return tuple(dict(_require_mapping(row, label="monitoring result row")) for row in payload)
 
+    def get_batch_results_snapshot(self, batch_id: UUID) -> RecordedBatchResultsSnapshot:
+        try:
+            rows = self.get_batch_results(batch_id)
+        except PlatformMonitoringRequestError as exc:
+            return RecordedBatchResultsSnapshot(rows=None, error=exc)
+        return RecordedBatchResultsSnapshot(rows=rows, error=None)
+
     def get_script(self, artifact_id: UUID) -> dict[str, object]:
         return self._get_json_object(
             f"/v1/monitoring/miner-scripts/{artifact_id}",
@@ -91,12 +118,12 @@ class PlatformMonitoringClient:
             source = "latest-completed"
         detail = self.get_batch_detail(resolved_batch_id)
         _require_completed_batch_detail(detail, batch_id=resolved_batch_id)
-        results = self.get_batch_results(resolved_batch_id)
+        recorded_results = self.get_batch_results_snapshot(resolved_batch_id)
         return SelectedBatchContext(
             batch_id=resolved_batch_id,
             source=source,
             detail=detail,
-            results=results,
+            recorded_results=recorded_results,
         )
 
     def _get_json_object(
@@ -114,12 +141,24 @@ class PlatformMonitoringClient:
         *,
         params: Mapping[str, _QueryParamValue] | None = None,
     ) -> object:
-        response = self._client.get(path, params=params)
+        try:
+            response = self._client.get(path, params=params)
+        except httpx.RequestError as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            raise PlatformMonitoringRequestError(
+                path=path,
+                status_code=0,
+                detail=detail,
+            ) from exc
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = (response.text or "").strip()
-            raise RuntimeError(f"platform monitoring request failed ({response.status_code}): {detail}") from exc
+            raise PlatformMonitoringRequestError(
+                path=path,
+                status_code=response.status_code,
+                detail=detail,
+            ) from exc
         return response.json()
 
 
@@ -143,7 +182,9 @@ def _require_completed_batch_detail(detail: Mapping[str, object], *, batch_id: U
 
 
 __all__ = [
+    "PlatformMonitoringRequestError",
     "PlatformMonitoringClient",
+    "RecordedBatchResultsSnapshot",
     "SelectedBatchContext",
     "platform_base_url_from_env",
 ]
