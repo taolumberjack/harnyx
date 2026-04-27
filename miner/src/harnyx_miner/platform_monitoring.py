@@ -28,9 +28,38 @@ class PlatformMonitoringRequestError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class RecordedResultsScope:
+    batch_id: UUID
+    artifact_id: UUID
+    kind: str = "artifact"
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedResultsError:
+    detail: str
+    path: str | None = None
+    status_code: int | None = None
+
+    @classmethod
+    def from_request_error(cls, exc: PlatformMonitoringRequestError) -> RecordedResultsError:
+        return cls(path=exc.path, status_code=exc.status_code, detail=exc.detail)
+
+
+@dataclass(frozen=True, slots=True)
 class RecordedBatchResultsSnapshot:
     rows: tuple[dict[str, object], ...] | None
-    error: PlatformMonitoringRequestError | None
+    error: RecordedResultsError | None
+    scope: RecordedResultsScope | None
+
+    @classmethod
+    def unavailable_without_baseline(cls, batch_id: UUID) -> RecordedBatchResultsSnapshot:
+        return cls(
+            rows=None,
+            error=RecordedResultsError(
+                detail=f"batch {batch_id} does not expose a champion artifact for recorded context"
+            ),
+            scope=None,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,23 +114,35 @@ class PlatformMonitoringClient:
     def get_batch_detail(self, batch_id: UUID) -> dict[str, object]:
         return self._get_json_object(f"/v1/monitoring/miner-task-batches/{batch_id}")
 
-    def get_batch_results(self, batch_id: UUID) -> tuple[dict[str, object], ...]:
+    def get_recorded_results(
+        self,
+        *,
+        batch_id: UUID,
+        artifact_id: UUID,
+    ) -> tuple[dict[str, object], ...]:
         payload = self._request_json(
-            f"/v1/monitoring/miner-task-batches/{batch_id}/results",
-            params={
-                "include_failed_delivery_rows": "true",
-            },
+            f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{artifact_id}/results",
         )
         if not isinstance(payload, list):
-            raise RuntimeError("monitoring batch results response must be a JSON array")
+            raise RuntimeError("monitoring artifact results response must be a JSON array")
         return tuple(dict(_require_mapping(row, label="monitoring result row")) for row in payload)
 
-    def get_batch_results_snapshot(self, batch_id: UUID) -> RecordedBatchResultsSnapshot:
+    def get_recorded_results_snapshot(
+        self,
+        *,
+        batch_id: UUID,
+        artifact_id: UUID,
+    ) -> RecordedBatchResultsSnapshot:
+        scope = RecordedResultsScope(batch_id=batch_id, artifact_id=artifact_id)
         try:
-            rows = self.get_batch_results(batch_id)
+            rows = self.get_recorded_results(batch_id=batch_id, artifact_id=artifact_id)
         except PlatformMonitoringRequestError as exc:
-            return RecordedBatchResultsSnapshot(rows=None, error=exc)
-        return RecordedBatchResultsSnapshot(rows=rows, error=None)
+            return RecordedBatchResultsSnapshot(
+                rows=None,
+                error=RecordedResultsError.from_request_error(exc),
+                scope=None,
+            )
+        return RecordedBatchResultsSnapshot(rows=rows, error=None, scope=scope)
 
     def get_script(self, artifact_id: UUID) -> dict[str, object]:
         return self._get_json_object(
@@ -118,7 +159,15 @@ class PlatformMonitoringClient:
             source = "latest-completed"
         detail = self.get_batch_detail(resolved_batch_id)
         _require_completed_batch_detail(detail, batch_id=resolved_batch_id)
-        recorded_results = self.get_batch_results_snapshot(resolved_batch_id)
+        recorded_artifact_id = _recorded_context_artifact_id(detail)
+        recorded_results = (
+            self.get_recorded_results_snapshot(
+                batch_id=resolved_batch_id,
+                artifact_id=recorded_artifact_id,
+            )
+            if recorded_artifact_id is not None
+            else RecordedBatchResultsSnapshot.unavailable_without_baseline(resolved_batch_id)
+        )
         return SelectedBatchContext(
             batch_id=resolved_batch_id,
             source=source,
@@ -181,10 +230,20 @@ def _require_completed_batch_detail(detail: Mapping[str, object], *, batch_id: U
         raise RuntimeError(f"miner-task batch {batch_id} is not completed (status={status or 'unknown'})")
 
 
+def _recorded_context_artifact_id(detail: Mapping[str, object]) -> UUID | None:
+    summary = _require_mapping(detail.get("summary"), label="monitoring batch summary")
+    champion_artifact_id = summary.get("champion_artifact_id")
+    if champion_artifact_id in (None, ""):
+        return None
+    return UUID(str(champion_artifact_id))
+
+
 __all__ = [
     "PlatformMonitoringRequestError",
     "PlatformMonitoringClient",
     "RecordedBatchResultsSnapshot",
+    "RecordedResultsError",
+    "RecordedResultsScope",
     "SelectedBatchContext",
     "platform_base_url_from_env",
 ]

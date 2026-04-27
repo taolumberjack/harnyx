@@ -40,6 +40,8 @@ from harnyx_miner.platform_monitoring import (
     PlatformMonitoringClient,
     PlatformMonitoringRequestError,
     RecordedBatchResultsSnapshot,
+    RecordedResultsError,
+    RecordedResultsScope,
     SelectedBatchContext,
 )
 from harnyx_miner_sdk.json_types import JsonValue
@@ -295,30 +297,43 @@ def _recorded_rows(*, batch_id, champion_artifact_id, tasks: tuple[MinerTask, ..
 
 
 def _recorded_results_snapshot(
+    *,
+    batch_id: UUID,
+    champion_artifact_id: UUID,
     rows: tuple[dict[str, object], ...],
 ) -> RecordedBatchResultsSnapshot:
-    return RecordedBatchResultsSnapshot(rows=rows, error=None)
+    return RecordedBatchResultsSnapshot(
+        rows=rows,
+        error=None,
+        scope=RecordedResultsScope(batch_id=batch_id, artifact_id=champion_artifact_id),
+    )
 
 
 def _unavailable_recorded_results_snapshot(*, path: str) -> RecordedBatchResultsSnapshot:
     return RecordedBatchResultsSnapshot(
         rows=None,
-        error=PlatformMonitoringRequestError(
-            path=path,
-            status_code=503,
-            detail="upstream connect error",
+        error=RecordedResultsError.from_request_error(
+            PlatformMonitoringRequestError(
+                path=path,
+                status_code=503,
+                detail="upstream connect error",
+            )
         ),
+        scope=None,
     )
 
 
 def _request_error_recorded_results_snapshot(*, path: str) -> RecordedBatchResultsSnapshot:
     return RecordedBatchResultsSnapshot(
         rows=None,
-        error=PlatformMonitoringRequestError(
-            path=path,
-            status_code=0,
-            detail="connection terminated",
+        error=RecordedResultsError.from_request_error(
+            PlatformMonitoringRequestError(
+                path=path,
+                status_code=0,
+                detail="connection terminated",
+            )
         ),
+        scope=None,
     )
 
 
@@ -630,7 +645,11 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -693,6 +712,11 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     assert report["tasks"][0]["opponent"]["answer"]["text"] == "champion answer 0"
     assert report["tasks"][0]["target"]["attempt_count"] == 2
     assert report["recorded_platform_context"]["results_status"]["state"] == "available"
+    assert report["recorded_platform_context"]["results_scope"] == {
+        "kind": "artifact",
+        "batch_id": str(batch_id),
+        "artifact_id": str(champion_artifact_id),
+    }
     assert report["recorded_platform_context"]["results"][0]["payload_json"] == {"source": "platform"}
     assert runtime.closed is True
     assert monitoring.closed is True
@@ -742,7 +766,11 @@ def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
             batch_id=batch_id,
             source="explicit",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -791,6 +819,11 @@ def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     assert len(report["local_result_summary"]["leaderboard"]) == 1
     assert report["tasks"][0]["opponent"] is None
     assert report["recorded_platform_context"]["results_status"]["state"] == "available"
+    assert report["recorded_platform_context"]["results_scope"] == {
+        "kind": "artifact",
+        "batch_id": str(batch_id),
+        "artifact_id": str(champion_artifact_id),
+    }
     assert len(report["recorded_platform_context"]["results"]) == 1
     assert len(runtime.calls) == 1
 
@@ -810,7 +843,10 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
             source="explicit",
             detail=detail,
             recorded_results=_unavailable_recorded_results_snapshot(
-                path=f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+                path=(
+                    f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
+                    f"{champion_artifact_id}/results"
+                )
             ),
         ),
         champion_script={
@@ -858,11 +894,15 @@ def test_local_eval_target_only_continues_when_recorded_results_fetch_fails(
     assert report["recorded_platform_context"]["results_status"] == {
         "state": "unavailable",
         "error": {
-            "path": f"/v1/monitoring/miner-task-batches/{batch_id}/results",
+            "path": (
+                f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
+                f"{champion_artifact_id}/results"
+            ),
             "status_code": 503,
             "detail": "upstream connect error",
         },
     }
+    assert report["recorded_platform_context"]["results_scope"] is None
     assert report["tasks"][0]["recorded_platform_rows"] is None
     assert "recorded platform results unavailable" in captured.err
     assert "Recorded monitoring rows were unavailable for this run" in markdown
@@ -884,7 +924,10 @@ def test_local_eval_vs_champion_continues_when_recorded_results_fetch_fails(
             source="latest-completed",
             detail=detail,
             recorded_results=_unavailable_recorded_results_snapshot(
-                path=f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+                path=(
+                    f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
+                    f"{champion_artifact_id}/results"
+                )
             ),
         ),
         champion_script={
@@ -924,6 +967,7 @@ def test_local_eval_vs_champion_continues_when_recorded_results_fetch_fails(
     assert monitoring.script_calls == 1
     assert report["recorded_platform_context"]["results"] is None
     assert report["recorded_platform_context"]["results_status"]["state"] == "unavailable"
+    assert report["recorded_platform_context"]["results_scope"] is None
     assert report["tasks"][0]["recorded_platform_rows"] is None
     assert len(runtime.calls) == 2
 
@@ -942,7 +986,10 @@ def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
             source="explicit",
             detail=detail,
             recorded_results=_request_error_recorded_results_snapshot(
-                path=f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+                path=(
+                    f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
+                    f"{champion_artifact_id}/results"
+                )
             ),
         ),
         champion_script={
@@ -988,11 +1035,15 @@ def test_local_eval_target_only_continues_when_recorded_results_transport_fails(
     assert report["recorded_platform_context"]["results_status"] == {
         "state": "unavailable",
         "error": {
-            "path": f"/v1/monitoring/miner-task-batches/{batch_id}/results",
+            "path": (
+                f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/"
+                f"{champion_artifact_id}/results"
+            ),
             "status_code": 0,
             "detail": "connection terminated",
         },
     }
+    assert report["recorded_platform_context"]["results_scope"] is None
     assert report["tasks"][0]["recorded_platform_rows"] is None
     assert len(runtime.calls) == 1
 
@@ -1014,7 +1065,11 @@ def test_local_eval_vs_champion_uses_platform_cascade_not_raw_total_only(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -1075,7 +1130,11 @@ def test_local_eval_head_to_head_winner_uses_raw_totals_not_rounded_totals(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -1136,7 +1195,11 @@ def test_local_eval_runs_target_and_champion_concurrently(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -1327,7 +1390,11 @@ def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_fa
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -1482,7 +1549,11 @@ def test_local_eval_vs_champion_fails_before_runtime_when_champion_script_is_inv
             batch_id=batch_id,
             source="explicit",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -1535,7 +1606,11 @@ def test_local_eval_vs_champion_preflight_does_not_execute_fetched_champion_code
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -1590,7 +1665,11 @@ def test_local_eval_logs_progress_to_stderr_and_keeps_stdout_json_clean(
             batch_id=batch_id,
             source="latest-completed",
             detail=detail,
-            recorded_results=_recorded_results_snapshot(results),
+            recorded_results=_recorded_results_snapshot(
+                batch_id=batch_id,
+                champion_artifact_id=champion_artifact_id,
+                rows=results,
+            ),
         ),
         champion_script={
             "uid": 2,
@@ -1806,7 +1885,8 @@ def test_resolve_batch_context_rejects_explicit_non_completed_batch() -> None:
 
 def test_resolve_batch_context_records_results_failure_without_aborting() -> None:
     batch_id = uuid4()
-    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+    champion_artifact_id = uuid4()
+    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"
 
     class _StubClient:
         def __init__(self) -> None:
@@ -1822,6 +1902,7 @@ def test_resolve_batch_context_records_results_failure_without_aborting() -> Non
                         "summary": {
                             "batch_id": str(batch_id),
                             "status": "completed",
+                            "champion_artifact_id": str(champion_artifact_id),
                         }
                     },
                     request=request,
@@ -1843,20 +1924,17 @@ def test_resolve_batch_context_records_results_failure_without_aborting() -> Non
     assert context.recorded_results.error is not None
     assert context.recorded_results.error.path == results_path
     assert context.recorded_results.error.status_code == 503
+    assert context.recorded_results.scope is None
     assert client._client.calls == [
         (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
-        (
-            results_path,
-            {
-                "include_failed_delivery_rows": "true",
-            },
-        ),
+        (results_path, None),
     ]
 
 
 def test_resolve_batch_context_records_results_transport_failure_without_aborting() -> None:
     batch_id = uuid4()
-    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/results"
+    champion_artifact_id = uuid4()
+    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"
 
     class _StubClient:
         def __init__(self) -> None:
@@ -1872,6 +1950,7 @@ def test_resolve_batch_context_records_results_transport_failure_without_abortin
                         "summary": {
                             "batch_id": str(batch_id),
                             "status": "completed",
+                            "champion_artifact_id": str(champion_artifact_id),
                         }
                     },
                     request=request,
@@ -1894,14 +1973,56 @@ def test_resolve_batch_context_records_results_transport_failure_without_abortin
     assert context.recorded_results.error.path == results_path
     assert context.recorded_results.error.status_code == 0
     assert context.recorded_results.error.detail == "connection terminated"
+    assert context.recorded_results.scope is None
     assert client._client.calls == [
         (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
-        (
-            results_path,
-            {
-                "include_failed_delivery_rows": "true",
-            },
-        ),
+        (results_path, None),
+    ]
+
+
+def test_resolve_batch_context_without_champion_marks_recorded_results_unavailable() -> None:
+    batch_id = uuid4()
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def get(self, path: str, params=None):
+            self.calls.append((path, params))
+            request = httpx.Request("GET", f"https://platform.example.com{path}")
+            if path == f"/v1/monitoring/miner-task-batches/{batch_id}":
+                return httpx.Response(
+                    200,
+                    json={
+                        "summary": {
+                            "batch_id": str(batch_id),
+                            "status": "completed",
+                            "champion_artifact_id": None,
+                        }
+                    },
+                    request=request,
+                )
+            pytest.fail(f"unexpected path: {path}")
+
+        def close(self) -> None:
+            return None
+
+    client = PlatformMonitoringClient(base_url="https://platform.example.com")
+    client._client.close()
+    client._client = _StubClient()
+
+    context = client.resolve_batch_context(batch_id)
+
+    assert context.recorded_results.rows is None
+    assert context.recorded_results.scope is None
+    assert context.recorded_results.error is not None
+    assert context.recorded_results.error.path is None
+    assert context.recorded_results.error.status_code is None
+    assert context.recorded_results.error.detail == (
+        f"batch {batch_id} does not expose a champion artifact for recorded context"
+    )
+    assert client._client.calls == [
+        (f"/v1/monitoring/miner-task-batches/{batch_id}", None),
     ]
 
 
@@ -1961,8 +2082,10 @@ def test_resolve_batch_context_still_raises_when_batch_detail_request_fails() ->
     ]
 
 
-def test_get_batch_results_uses_lightweight_monitoring_route() -> None:
+def test_get_recorded_results_uses_artifact_monitoring_route() -> None:
     batch_id = uuid4()
+    champion_artifact_id = uuid4()
+    results_path = f"/v1/monitoring/miner-task-batches/{batch_id}/artifacts/{champion_artifact_id}/results"
 
     class _StubClient:
         def __init__(self) -> None:
@@ -1971,7 +2094,7 @@ def test_get_batch_results_uses_lightweight_monitoring_route() -> None:
         def get(self, path: str, params=None):
             self.calls.append((path, params))
             request = httpx.Request("GET", f"https://platform.example.com{path}")
-            if path == f"/v1/monitoring/miner-task-batches/{batch_id}/results":
+            if path == results_path:
                 return httpx.Response(200, json=[], request=request)
             pytest.fail(f"unexpected path: {path}")
 
@@ -1982,14 +2105,7 @@ def test_get_batch_results_uses_lightweight_monitoring_route() -> None:
     client._client.close()
     client._client = _StubClient()
 
-    rows = client.get_batch_results(batch_id)
+    rows = client.get_recorded_results(batch_id=batch_id, artifact_id=champion_artifact_id)
 
     assert rows == ()
-    assert client._client.calls == [
-        (
-            f"/v1/monitoring/miner-task-batches/{batch_id}/results",
-            {
-                "include_failed_delivery_rows": "true",
-            },
-        ),
-    ]
+    assert client._client.calls == [(results_path, None)]

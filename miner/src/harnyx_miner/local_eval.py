@@ -828,6 +828,7 @@ def _build_report(
             "batch_detail": batch_context.detail,
             "results": recorded_results.rows,
             "results_status": _serialize_recorded_results_status(recorded_results),
+            "results_scope": _serialize_recorded_results_scope(recorded_results),
         },
         "tasks": [
             _task_report(
@@ -872,13 +873,24 @@ def _serialize_recorded_results_status(batch_results: RecordedBatchResultsSnapsh
             "state": "available",
             "error": None,
         }
+    error: dict[str, object] = {"detail": batch_results.error.detail}
+    if batch_results.error.path is not None:
+        error["path"] = batch_results.error.path
+    if batch_results.error.status_code is not None:
+        error["status_code"] = batch_results.error.status_code
     return {
         "state": "unavailable",
-        "error": {
-            "path": batch_results.error.path,
-            "status_code": batch_results.error.status_code,
-            "detail": batch_results.error.detail,
-        },
+        "error": error,
+    }
+
+
+def _serialize_recorded_results_scope(batch_results: RecordedBatchResultsSnapshot) -> dict[str, object] | None:
+    if batch_results.scope is None:
+        return None
+    return {
+        "kind": batch_results.scope.kind,
+        "batch_id": str(batch_results.scope.batch_id),
+        "artifact_id": str(batch_results.scope.artifact_id),
     }
 
 
@@ -890,9 +902,11 @@ def _log_recorded_results_status(
     error = batch_context.recorded_results.error
     if error is None:
         return
+    path = error.path if error.path is not None else "local-eval-recorded-context"
+    status_code = str(error.status_code) if error.status_code is not None else "n/a"
     progress.log(
         "recorded platform results unavailable: "
-        f"path={error.path} status_code={error.status_code} detail={error.detail}"
+        f"path={path} status_code={status_code} detail={error.detail}"
     )
 
 
@@ -1255,7 +1269,10 @@ def _render_recorded_platform_context_markdown(report: Mapping[str, object]) -> 
     )
     status = _require_str(results_status.get("state"), label="recorded results status state")
     if status == "available":
-        return "- The JSON report contains the full batch detail and recorded monitoring rows for automated analysis."
+        return (
+            "- The JSON report contains the full batch detail and champion-artifact recorded monitoring rows "
+            "for automated analysis."
+        )
     error = _require_mapping(results_status.get("error"), label="recorded results error")
     return (
         "- Recorded monitoring rows were unavailable for this run: "

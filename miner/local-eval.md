@@ -55,7 +55,7 @@ uv run --package harnyx-miner harnyx-miner-local-eval \
 ### `target-only`
 
 - runs only your local artifact
-- still includes recorded platform batch context in the report
+- still includes bounded recorded platform batch context in the report when a champion artifact is available
 - useful when you want a quick iteration loop or when the batch has no champion artifact
 
 ## Batch Source
@@ -64,8 +64,8 @@ The command can:
 
 - discover the latest completed public batch
 - fetch a specific public batch by id
-- fetch the recorded batch detail, artifact metadata, and recorded result rows needed for comparison
-- continue with degraded recorded-platform context when batch detail succeeds but the public results endpoint is temporarily unavailable
+- fetch the recorded batch detail, artifact metadata, and champion-artifact recorded result rows needed for comparison
+- continue with degraded recorded-platform context when batch detail succeeds but the public artifact-results endpoint is temporarily unavailable
 
 ## Execution Boundary
 
@@ -97,18 +97,19 @@ Both reports include:
 - local leaderboard
 - local simulated champion-selection summary
 - raw head-to-head comparison in `vs-champion`
-- recorded platform context for comparison
-- explicit recorded-results availability metadata when the public results endpoint is unavailable
+- bounded recorded platform context for comparison
+- explicit recorded-results availability metadata when champion-artifact recorded rows are unavailable
 - per-task details
 
 The evaluation config snapshot now also records the sandbox execution boundary, sandbox image, local tool-host mode, and the task-level / artifact-level parallelism used for the run.
 
 The JSON report is the machine-readable source of truth for automated analysis. The Markdown report is the human-readable summary.
 
-If batch detail resolves but recorded monitoring rows cannot be fetched, local eval now still completes the local run and writes a degraded report:
+If batch detail resolves but champion-artifact recorded monitoring rows cannot be fetched, local eval still completes the local run and writes a degraded report:
 
 - `recorded_platform_context.results` is `null`
 - `recorded_platform_context.results_status` explains the outage
+- `recorded_platform_context.results_scope` is `null`
 - per-task `recorded_platform_rows` are marked unavailable instead of pretending zero rows were fetched
 
 ## Local Selection Semantics
