@@ -6,6 +6,7 @@ import base64
 import binascii
 import contextlib
 import json
+import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -75,6 +76,7 @@ _DEFAULT_OUTPUT_PREFIX = "local-eval-report"
 _DEFAULT_PUBLISHED_SANDBOX_NETWORK = "bridge"
 _DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM = SchedulerConfig.artifact_task_parallelism
 _LOCAL_SANDBOX_HOST_PROBE_ADDRESS = "127.0.0.1"
+_REPO_FRESHNESS_GIT_TIMEOUT_SECONDS = 5.0
 
 
 def _emit_progress(message: str) -> None:
@@ -496,6 +498,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     progress = _CliProgressReporter()
+    _warn_if_repo_not_latest(progress=progress, repo_path=Path.cwd())
 
     monitoring = PlatformMonitoringClient.from_env()
     runtime: LocalEvaluationRuntime | None = None
@@ -624,6 +627,56 @@ async def _amain(argv: Sequence[str] | None) -> None:
             }
         )
     )
+
+
+def _warn_if_repo_not_latest(*, progress: _CliProgressReporter, repo_path: Path) -> None:
+    warning = _repo_freshness_warning(repo_path)
+    if warning is None:
+        return
+    progress.log(warning)
+
+
+def _repo_freshness_warning(repo_path: Path) -> str | None:
+    local_head = _git_stdout(repo_path, "rev-parse", "HEAD")
+    remote_head = _git_remote_head(repo_path)
+    if local_head is None or remote_head is None:
+        return None
+    if local_head == remote_head:
+        return None
+    return (
+        "repository is not at latest origin/HEAD; local eval will continue, "
+        "but update before comparing final results"
+    )
+
+
+def _git_remote_head(repo_path: Path) -> str | None:
+    output = _git_stdout(repo_path, "ls-remote", "origin", "HEAD")
+    if output is None:
+        return None
+    parts = output.split(maxsplit=1)
+    if not parts:
+        return None
+    return parts[0]
+
+
+def _git_stdout(repo_path: Path, *args: str) -> str | None:
+    command = ["git", "-C", str(repo_path), *args]
+    try:
+        completed = subprocess.run(  # noqa: S603 - internal read-only Git query
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_REPO_FRESHNESS_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    output = completed.stdout.strip()
+    if not output:
+        return None
+    return output
 
 
 def _require_completed_local_eval_outcome(
