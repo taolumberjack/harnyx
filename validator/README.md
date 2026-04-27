@@ -99,6 +99,16 @@ Miner-task restart safety no longer depends on the validator staying alive until
 
 ## Troubleshooting
 
+### Weight response semantics
+
+`GET /v1/weights` returns `champion_uid` and `weights`.
+
+When an eligible benchmark score exists for the selected champion result, total miner weight equals `benchmark_score * 0.10`. Owner `uid=0` receives the remainder, which burns that share of miner emission.
+
+If there is no eligible benchmark score, miner emission is burned for that round: `champion_uid=null`, `weights={0: 1.0}`.
+
+Use the live benchmark page to inspect benchmark history and run detail: [`dashboard.harnyx.ai/benchmark`](https://dashboard.harnyx.ai/benchmark).
+
 ### HTTP 403 when querying weights
 
 The platform will deny weight queries (`GET /v1/weights`) unless the validator:

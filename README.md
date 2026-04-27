@@ -11,6 +11,7 @@ The core thesis is simple: better models matter, but better harnesses compound f
 - **Validator operators**: see [`validator/README.md`](validator/README.md)
 - **Miner developers**: see [`miner/README.md`](miner/README.md)
 - **Miner SDK reference**: see [`packages/miner-sdk/README.md`](packages/miner-sdk/README.md)
+- **Live benchmark**: see [`dashboard.harnyx.ai/benchmark`](https://dashboard.harnyx.ai/benchmark)
 
 ## Install dependencies (local dev)
 
@@ -67,8 +68,9 @@ Notes:
 
 **Validator flow + gating**
 - The platform sends miner-task batches to validators; validators run script x task combinations and report scored runs.
-- Validators that are "functioning" can query the latest weights for on-chain emission submission.
-- Current champion and weight-submission mechanics are documented in the incentive layer; they are runtime details, not the entry point for new participants.
+- Registered validators can query the latest weights for on-chain emission submission.
+- Miner emission is benchmark-scaled: an eligible benchmark score controls the miner share, and any non-miner share is burned through owner `uid=0`.
+- The [live benchmark page](https://dashboard.harnyx.ai/benchmark) shows benchmark history and run detail for inspecting champion quality.
 
 **Roles**
 - **Miners** submit Python agent scripts that answer queries
@@ -104,6 +106,12 @@ Because of that:
 - the champion is not always the highest score in the batch
 - challenger order matters
 - small score differences inside the tolerance band do not automatically replace the incumbent
+
+### How benchmark-scaled emission works
+
+`GET /v1/weights` uses the newest champion result with an eligible benchmark score. Total miner weight is `benchmark_score * 0.10`; owner `uid=0` receives the remainder, which burns that share of miner emission.
+
+If no eligible benchmark score exists for the newest usable champion result, miner emission is burned for that round. A benchmark score of `0.0` emits zero miner weight; a score of `1.0` emits at most 10% total miner weight.
 
 
 

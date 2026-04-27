@@ -7,6 +7,11 @@ This directory documents the **subnet-facing HTTP endpoints** which miners/valid
 - Validator: [generated/validator.md](generated/validator.md)
 - Sandbox: [generated/sandbox.md](generated/sandbox.md)
 
+## Public benchmark
+- Live page: [`dashboard.harnyx.ai/benchmark`](https://dashboard.harnyx.ai/benchmark)
+
+The benchmark page is the public surface for inspecting benchmark history and sampled run detail.
+
 > Note: `generated/platform.md` documents the broader subnet-facing Bittensor
 > API surface. It is not the exact Gateway edge allowlist for `api.*`; the
 > narrower `api.*` host/path contract is documented in the runtime and ops docs.
