@@ -674,6 +674,24 @@ async def test_bedrock_provider_accepts_native_kimi_model_id(monkeypatch: pytest
     assert response.raw_text == "56"
 
 
+async def test_bedrock_provider_accepts_native_minimax_m2_5_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_session(
+        monkeypatch,
+        events=(
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "56"}}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 2, "totalTokens": 7}}},
+        ),
+    )
+    provider = _provider()
+    request = replace(_base_request(), model="minimax.minimax-m2.5")
+
+    response = await provider.invoke(request)
+
+    assert response.raw_text == "56"
+
+
 def test_bedrock_provider_classifies_client_errors() -> None:
     exc = ClientError(
         error_response={

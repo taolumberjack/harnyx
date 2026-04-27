@@ -134,6 +134,60 @@ async def test_bedrock_adapter_uses_provider_specific_kimi_alias() -> None:
     assert delegate.requests[0].model == "moonshotai.kimi-k2.5"
 
 
+async def test_bedrock_adapter_uses_provider_specific_minimax_m2_5_alias() -> None:
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="bedrock", delegate=delegate)
+
+    request = LlmRequest(
+        provider="bedrock",
+        model="MiniMaxAI/MiniMax-M2.5-TEE",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    assert delegate.requests[0].model == "minimax.minimax-m2.5"
+
+
+async def test_vertex_maas_adapter_uses_provider_specific_deepseek_v3_2_alias() -> None:
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="vertex-maas", delegate=delegate)
+
+    request = LlmRequest(
+        provider="vertex-maas",
+        model="deepseek-ai/DeepSeek-V3.2-TEE",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    assert delegate.requests[0].model == "deepseek-ai/deepseek-v3.2-maas"
+
+
+async def test_vertex_maas_adapter_uses_provider_specific_qwen3_235b_alias() -> None:
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="vertex-maas", delegate=delegate)
+
+    request = LlmRequest(
+        provider="vertex-maas",
+        model="Qwen/Qwen3-235B-A22B-Instruct-2507-TEE",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    assert delegate.requests[0].model == "qwen3-235b-a22b-instruct-2507-maas"
+
+
 async def test_bedrock_adapter_does_not_fall_back_to_global_kimi_alias() -> None:
     aliases = {"moonshotai/Kimi-K2.5-TEE": "wrong-global-alias"}
     delegate = StubProvider()

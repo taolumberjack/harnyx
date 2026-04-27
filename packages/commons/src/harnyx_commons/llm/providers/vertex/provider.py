@@ -63,8 +63,10 @@ _API_VERSION = "v1beta1"
 _CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 _VERTEX_MAAS_OPENAI_CHAT_MODELS = frozenset(
     {
+        "deepseek-ai/deepseek-v3.2-maas",
         "publishers/openai/models/gpt-oss-20b-maas",
         "publishers/openai/models/gpt-oss-120b-maas",
+        "qwen3-235b-a22b-instruct-2507-maas",
         "openai/gpt-oss-20b-tee",
         "openai/gpt-oss-120b-tee",
     }
