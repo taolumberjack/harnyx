@@ -176,12 +176,16 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     assert "`validated_citations` are independently retrieved and verified" in system_prompt
     assert "Only `validated_citations` count as citation evidence" in system_prompt
     assert "Evaluate factual correctness claim by claim" in system_prompt
+    assert "Identify the concrete facts the query asks for" in system_prompt
+    assert "coverage failure" in system_prompt
     assert "A citation note supports a factual claim only when it contains usable grounding text" in system_prompt
     assert "Treat uncited factual claims as unsupported by default" in system_prompt
     assert "trivial common knowledge in context" in system_prompt
     assert "specific, non-obvious, search-dependent, or materially load-bearing" in system_prompt
     assert "time-sensitive" in system_prompt
     assert "no factual-correctness credit" in system_prompt
+    assert "each side of the comparison" in system_prompt
+    assert "Do not infer deep research from citation count" in system_prompt
     assert "When uncertain whether a claim is trivial common knowledge or needs support" in system_prompt
     assert "claims are backed by relevant citation evidence" in system_prompt
     assert "Too many irrelevant validated citations should count against answer quality" in system_prompt
