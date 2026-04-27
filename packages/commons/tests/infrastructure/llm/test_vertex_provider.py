@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
+from google.genai import errors
 from pydantic import BaseModel
 
 from harnyx_commons.clients import CHUTES
@@ -101,6 +102,31 @@ def test_vertex_classify_stream_error_preserves_server_retry_policy(code: int | 
 
     assert retryable is True
     assert reason == f"stream_error:{code}:server_error:temporarily unavailable"
+
+
+@pytest.mark.parametrize("code", [429, 500, 502, 503, 504, 529])
+def test_vertex_classify_google_api_error_retries_transient_codes(code: int) -> None:
+    exc = errors.APIError(
+        code,
+        {"error": {"code": code, "message": "temporary failure", "status": "TRANSIENT"}},
+    )
+
+    retryable, reason = VertexLlmProvider._classify_exception(exc)
+
+    assert retryable is True
+    assert reason.startswith(f"api_error:{code}:")
+
+
+def test_vertex_classify_google_api_error_does_not_retry_client_errors() -> None:
+    exc = errors.APIError(
+        400,
+        {"error": {"code": 400, "message": "bad request", "status": "INVALID_ARGUMENT"}},
+    )
+
+    retryable, reason = VertexLlmProvider._classify_exception(exc)
+
+    assert retryable is False
+    assert reason.startswith("api_error:400:")
 
 
 @pytest.fixture(autouse=True)

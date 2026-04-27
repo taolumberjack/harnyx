@@ -417,7 +417,7 @@ class VertexLlmProvider(BaseLlmProvider):
             case errors.APIError():
                 code = exc.code
                 message = str(exc)
-                retryable = code in {429, 503, 529}
+                retryable = isinstance(code, int) and (code == 429 or code >= 500)
                 return retryable, f"api_error:{code}:{message}"
             case OpenAiStreamError():
                 return exc.retryable, exc.reason
