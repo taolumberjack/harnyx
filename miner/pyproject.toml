@@ -13,7 +13,7 @@ dependencies = [
   "bittensor==9.9.0",
   "harnyx-miner-sdk>=0.1.1",
   "harnyx-commons>=0.1.1",
-  "harnyx-validator>=20260329.post0",
+  "harnyx-validator>=20260428.post0",
 ]
 
 [project.scripts]

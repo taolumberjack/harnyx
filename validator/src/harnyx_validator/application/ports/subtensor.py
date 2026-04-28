@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 
@@ -31,6 +32,34 @@ class ValidatorNodeInfo:
     version_key: int | None
 
 
+class WeightSubmissionCadenceStatus(StrEnum):
+    """Result status for validator weight-submission cadence checks."""
+
+    OPEN = "open"
+    UNREGISTERED = "unregistered"
+    METADATA_UNAVAILABLE = "metadata_unavailable"
+    RATE_LIMITED = "rate_limited"
+
+
+@dataclass(frozen=True, slots=True)
+class WeightSubmissionCadence:
+    """Chain-owned weight-submission cadence state for the active validator."""
+
+    status: WeightSubmissionCadenceStatus
+    validator_uid: int | None
+    commit_reveal_enabled: bool
+    current_block: int | None
+    last_update_block: int | None
+    blocks_since_last_update: int | None
+    weights_rate_limit: int | None
+
+    @property
+    def can_submit(self) -> bool:
+        """Return True when the validator should attempt weight submission now."""
+
+        return self.status is WeightSubmissionCadenceStatus.OPEN
+
+
 class SubtensorClientPort(Protocol):
     """Abstract client responsible for subtensor interactions."""
 
@@ -54,6 +83,9 @@ class SubtensorClientPort(Protocol):
 
     def last_update_block(self, uid: int) -> int | None:
         """Return the block height of the most recent weight update for ``uid``."""
+
+    def weight_submission_cadence(self, netuid: int) -> WeightSubmissionCadence:
+        """Return chain-owned cadence state for validator weight submission."""
 
     def validator_info(self) -> ValidatorNodeInfo:
         """Return validator node metadata (UID, version key, etc.)."""
@@ -81,4 +113,6 @@ __all__ = [
     "MetagraphSnapshot",
     "SubtensorClientPort",
     "ValidatorNodeInfo",
+    "WeightSubmissionCadence",
+    "WeightSubmissionCadenceStatus",
 ]

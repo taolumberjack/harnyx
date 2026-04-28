@@ -11,6 +11,7 @@ from harnyx_validator.application.ports.subtensor import (
     MetagraphSnapshot,
     SubtensorClientPort,
     ValidatorNodeInfo,
+    WeightSubmissionCadence,
 )
 
 from .bittensor import BittensorSubtensorClient
@@ -73,6 +74,10 @@ class RuntimeSubtensorClient(SubtensorClientPort):
     def last_update_block(self, uid: int) -> int | None:
         with self._lock:
             return self._delegate().last_update_block(uid)
+
+    def weight_submission_cadence(self, netuid: int) -> WeightSubmissionCadence:
+        with self._lock:
+            return self._delegate().weight_submission_cadence(netuid)
 
     def validator_info(self) -> ValidatorNodeInfo:
         with self._lock:

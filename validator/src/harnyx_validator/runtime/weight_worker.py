@@ -6,10 +6,7 @@ from datetime import UTC, datetime
 
 from harnyx_commons.runtime.base_worker import BaseWorker
 from harnyx_validator.application.status import StatusProvider
-from harnyx_validator.application.submit_weights import (
-    DEFAULT_MIN_BLOCKS,
-    WeightSubmissionService,
-)
+from harnyx_validator.application.submit_weights import WeightSubmissionService
 from harnyx_validator.infrastructure.observability.sentry import capture_exception
 
 # Default polling interval in seconds
@@ -20,7 +17,7 @@ class WeightWorker(BaseWorker):
     """Background worker that submits weights on a tempo-aware schedule.
 
     This worker polls periodically and submits weights to Subtensor when
-    the submission window is open (based on min_blocks since last update).
+    the subtensor client's chain-owned cadence status is open.
     """
 
     worker_name = "validator-weight-worker"
@@ -80,7 +77,6 @@ def create_weight_worker(
 
 
 __all__ = [
-    "DEFAULT_MIN_BLOCKS",
     "DEFAULT_POLL_INTERVAL",
     "WeightWorker",
     "create_weight_worker",

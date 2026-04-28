@@ -9,12 +9,8 @@ from datetime import datetime
 
 from harnyx_validator.application.ports.platform import PlatformPort
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
-from harnyx_validator.application.scheduling.gate import is_submission_window_open
 
 weights_logger = logging.getLogger("harnyx_validator.weights.ranking")
-
-# Default minimum blocks between weight submissions
-DEFAULT_MIN_BLOCKS = 100
 
 
 @dataclass(frozen=True)
@@ -36,29 +32,31 @@ class WeightSubmissionService:
         netuid: int,
         clock: Callable[[], datetime],
         platform: PlatformPort,
-        min_blocks: int = DEFAULT_MIN_BLOCKS,
     ) -> None:
         self._subtensor = subtensor
         self._netuid = netuid
         self._clock = clock
         self._platform = platform
-        self._min_blocks = min_blocks
 
     def try_submit(self) -> WeightSubmissionResult | None:
-        """Submit weights if the submission window is open.
+        """Submit weights if the subtensor-owned cadence status is open.
 
         Returns the submission result if weights were submitted, or None if
-        the window is not yet open.
+        the validator should not attempt submission yet.
         """
-        info = self._subtensor.validator_info()
-        if not is_submission_window_open(
-            self._subtensor,
-            info.uid,
-            min_blocks=self._min_blocks,
-        ):
+        cadence = self._subtensor.weight_submission_cadence(self._netuid)
+        if not cadence.can_submit:
             weights_logger.debug(
                 "weight submission window closed",
-                extra={"uid": info.uid, "min_blocks": self._min_blocks},
+                extra={
+                    "uid": cadence.validator_uid,
+                    "status": cadence.status.value,
+                    "commit_reveal_enabled": cadence.commit_reveal_enabled,
+                    "current_block": cadence.current_block,
+                    "last_update_block": cadence.last_update_block,
+                    "blocks_since_last_update": cadence.blocks_since_last_update,
+                    "weights_rate_limit": cadence.weights_rate_limit,
+                },
             )
             return None
         return self.submit()
@@ -86,4 +84,4 @@ class WeightSubmissionService:
         return WeightSubmissionResult(champion_uid=champion_uid, weights=weights, tx_hash=tx_hash)
 
 
-__all__ = ["WeightSubmissionResult", "WeightSubmissionService", "DEFAULT_MIN_BLOCKS"]
+__all__ = ["WeightSubmissionResult", "WeightSubmissionService"]

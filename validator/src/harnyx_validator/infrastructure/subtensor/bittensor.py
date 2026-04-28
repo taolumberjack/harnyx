@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 
 import bittensor as bt
 from bittensor.core.errors import MetadataError
+from bittensor.core.extrinsics.set_weights import set_weights_extrinsic
 from bittensor.core.settings import version_as_int
 from bittensor.utils.weight_utils import convert_and_normalize_weights_and_uids
 from bittensor_drand import get_encrypted_commit, get_encrypted_commitment
@@ -21,6 +22,8 @@ from harnyx_validator.application.ports.subtensor import (
     MetagraphSnapshot,
     SubtensorClientPort,
     ValidatorNodeInfo,
+    WeightSubmissionCadence,
+    WeightSubmissionCadenceStatus,
 )
 
 from .hotkey import create_wallet
@@ -28,9 +31,12 @@ from .hotkey import create_wallet
 logger = logging.getLogger("harnyx_validator.subtensor")
 
 _COMMIT_REVEAL_MAX_RETRIES = 5
+_PLAIN_SET_WEIGHTS_MAX_RETRIES = 5
 _COMMIT_REVEAL_VERSION = 4
 _DEFAULT_BLOCK_TIME_SECONDS = 12.0
 _NO_WEIGHT_ATTEMPT_MESSAGE = "No attempt made. Perhaps it is too soon to commit weights!"
+_LastUpdateValue: TypeAlias = int | None
+_LastUpdateValues: TypeAlias = dict[int, _LastUpdateValue] | list[_LastUpdateValue]
 
 
 class _SubtensorWeightTarget(BaseModel):
@@ -168,11 +174,23 @@ class BittensorSubtensorClient(SubtensorClientPort):
             return None
         self._ensure_ready()
         subtensor = self._require_subtensor()
-        metagraph = subtensor.metagraph(self.settings.netuid)
-        last_update = metagraph.last_update
-        if last_update is None or uid >= len(last_update):
+        last_update = self._query_last_update_values(
+            subtensor=subtensor,
+            netuid=self.settings.netuid,
+        )
+        if last_update is None:
             return None
-        return int(last_update[uid])
+        return self._last_update_for_uid(last_update, uid)
+
+    def weight_submission_cadence(self, netuid: int) -> WeightSubmissionCadence:
+        self._ensure_ready()
+        subtensor = self._require_subtensor()
+        wallet = self._require_wallet()
+        return self._read_weight_submission_cadence(
+            subtensor=subtensor,
+            wallet=wallet,
+            netuid=netuid,
+        )
 
     def validator_info(self) -> ValidatorNodeInfo:
         snapshot = self.fetch_metagraph()
@@ -194,26 +212,30 @@ class BittensorSubtensorClient(SubtensorClientPort):
         subtensor = self._require_subtensor()
         wallet = self._require_wallet()
         uids, normalized = self._normalize_weights(weights)
+        cadence = self._read_weight_submission_cadence(
+            subtensor=subtensor,
+            wallet=wallet,
+            netuid=self.settings.netuid,
+        )
         logger.debug(
-            "calling subtensor.set_weights",
+            "submitting weights to subtensor",
             extra={"uids": uids, "wait_for_inclusion": self.settings.wait_for_inclusion},
         )
-        if subtensor.commit_reveal_enabled(netuid=self.settings.netuid):
+        if cadence.commit_reveal_enabled:
             success, message = self._submit_commit_reveal_weights(
                 subtensor=subtensor,
                 wallet=wallet,
                 uids=uids,
                 normalized=normalized,
+                cadence=cadence,
             )
         else:
-            success, message = subtensor.set_weights(
+            success, message = self._submit_plain_weights(
+                subtensor=subtensor,
                 wallet=wallet,
-                netuid=self.settings.netuid,
-                weights=normalized,
                 uids=uids,
-                wait_for_inclusion=self.settings.wait_for_inclusion,
-                wait_for_finalization=self.settings.wait_for_finalization,
-                period=self.settings.transaction_period,
+                normalized=normalized,
+                cadence=cadence,
             )
         logger.debug(
             "subtensor.set_weights returned",
@@ -339,28 +361,10 @@ class BittensorSubtensorClient(SubtensorClientPort):
         wallet: bt.Wallet,
         uids: list[int],
         normalized: list[float],
+        cadence: WeightSubmissionCadence,
     ) -> tuple[bool, str]:
-        validator_uid = subtensor.get_uid_for_hotkey_on_subnet(
-            wallet.hotkey.ss58_address,
-            self.settings.netuid,
-        )
-        if validator_uid is None:
-            return (
-                False,
-                f"Hotkey {wallet.hotkey.ss58_address} not registered in subnet {self.settings.netuid}",
-            )
-
-        blocks_since_last_update = subtensor.blocks_since_last_update(
-            self.settings.netuid,
-            int(validator_uid),
-        )
-        weights_rate_limit = subtensor.weights_rate_limit(self.settings.netuid)
-        if (
-            blocks_since_last_update is None
-            or weights_rate_limit is None
-            or int(blocks_since_last_update) <= int(weights_rate_limit)
-        ):
-            return False, _NO_WEIGHT_ATTEMPT_MESSAGE
+        if not cadence.can_submit:
+            return False, self._cadence_refusal_message(cadence, wallet)
 
         success = False
         message = _NO_WEIGHT_ATTEMPT_MESSAGE
@@ -384,6 +388,40 @@ class BittensorSubtensorClient(SubtensorClientPort):
                 message = str(exc)
             if success:
                 return True, f"reveal_round:{reveal_round}"
+        return False, message
+
+    def _submit_plain_weights(
+        self,
+        *,
+        subtensor: bt.Subtensor,
+        wallet: bt.Wallet,
+        uids: list[int],
+        normalized: list[float],
+        cadence: WeightSubmissionCadence,
+    ) -> tuple[bool, str]:
+        if not cadence.can_submit:
+            return False, self._cadence_refusal_message(cadence, wallet)
+
+        success = False
+        message = _NO_WEIGHT_ATTEMPT_MESSAGE
+        for _ in range(_PLAIN_SET_WEIGHTS_MAX_RETRIES):
+            success, message = set_weights_extrinsic(
+                subtensor=subtensor,
+                wallet=wallet,
+                netuid=self.settings.netuid,
+                uids=uids,
+                weights=normalized,
+                version_key=version_as_int,
+                wait_for_inclusion=self.settings.wait_for_inclusion,
+                wait_for_finalization=self.settings.wait_for_finalization,
+                period=self.settings.transaction_period,
+            )
+            if success:
+                return True, message
+            logger.warning(
+                "plain weight submission attempt failed",
+                extra={"set_weights_message": message},
+            )
         return False, message
 
     def _build_commit_reveal_call(
@@ -437,6 +475,184 @@ class BittensorSubtensorClient(SubtensorClientPort):
             return int(subtensor.get_current_block())
         except Exception:  # pragma: no cover - informational fallback
             return -1
+
+    def _read_weight_submission_cadence(
+        self,
+        *,
+        subtensor: bt.Subtensor,
+        wallet: bt.Wallet,
+        netuid: int,
+    ) -> WeightSubmissionCadence:
+        hotkey = wallet.hotkey
+        hotkey_addr = hotkey.ss58_address if hotkey is not None else ""
+        validator_uid_raw = subtensor.get_uid_for_hotkey_on_subnet(hotkey_addr, netuid)
+        validator_uid = self._normalize_validator_uid(validator_uid_raw)
+        if validator_uid is None:
+            return self._cadence(
+                status=WeightSubmissionCadenceStatus.UNREGISTERED,
+                validator_uid=None,
+                commit_reveal_enabled=False,
+                current_block=None,
+                last_update_block=None,
+                blocks_since_last_update=None,
+                weights_rate_limit=None,
+            )
+
+        commit_reveal_enabled = self._query_commit_reveal_enabled(
+            subtensor=subtensor,
+            netuid=netuid,
+        )
+        current_block = self._query_current_block(subtensor=subtensor)
+        weights_rate_limit = self._query_weights_rate_limit(subtensor=subtensor, netuid=netuid)
+        last_update_values = self._query_last_update_values(subtensor=subtensor, netuid=netuid)
+        if (
+            commit_reveal_enabled is None
+            or current_block is None
+            or weights_rate_limit is None
+            or last_update_values is None
+        ):
+            return self._cadence(
+                status=WeightSubmissionCadenceStatus.METADATA_UNAVAILABLE,
+                validator_uid=validator_uid,
+                commit_reveal_enabled=False if commit_reveal_enabled is None else commit_reveal_enabled,
+                current_block=current_block,
+                last_update_block=None,
+                blocks_since_last_update=None,
+                weights_rate_limit=weights_rate_limit,
+            )
+
+        last_update_block = self._last_update_for_uid(last_update_values, validator_uid)
+        if last_update_block is None:
+            return self._cadence(
+                status=WeightSubmissionCadenceStatus.OPEN,
+                validator_uid=validator_uid,
+                commit_reveal_enabled=commit_reveal_enabled,
+                current_block=current_block,
+                last_update_block=None,
+                blocks_since_last_update=None,
+                weights_rate_limit=weights_rate_limit,
+            )
+
+        blocks_since_last_update = current_block - last_update_block
+        if commit_reveal_enabled:
+            threshold_open = blocks_since_last_update > weights_rate_limit
+        else:
+            threshold_open = blocks_since_last_update >= weights_rate_limit
+        status = (
+            WeightSubmissionCadenceStatus.OPEN
+            if threshold_open
+            else WeightSubmissionCadenceStatus.RATE_LIMITED
+        )
+        return self._cadence(
+            status=status,
+            validator_uid=validator_uid,
+            commit_reveal_enabled=commit_reveal_enabled,
+            current_block=current_block,
+            last_update_block=last_update_block,
+            blocks_since_last_update=blocks_since_last_update,
+            weights_rate_limit=weights_rate_limit,
+        )
+
+    @staticmethod
+    def _normalize_validator_uid(value: int | None) -> int | None:
+        if value is None or value < 0:
+            return None
+        return value
+
+    @staticmethod
+    def _cadence(
+        *,
+        status: WeightSubmissionCadenceStatus,
+        validator_uid: int | None,
+        commit_reveal_enabled: bool,
+        current_block: int | None,
+        last_update_block: int | None,
+        blocks_since_last_update: int | None,
+        weights_rate_limit: int | None,
+    ) -> WeightSubmissionCadence:
+        return WeightSubmissionCadence(
+            status=status,
+            validator_uid=validator_uid,
+            commit_reveal_enabled=commit_reveal_enabled,
+            current_block=current_block,
+            last_update_block=last_update_block,
+            blocks_since_last_update=blocks_since_last_update,
+            weights_rate_limit=weights_rate_limit,
+        )
+
+    def _cadence_refusal_message(self, cadence: WeightSubmissionCadence, wallet: bt.Wallet) -> str:
+        if cadence.status is WeightSubmissionCadenceStatus.UNREGISTERED:
+            hotkey = wallet.hotkey
+            hotkey_addr = hotkey.ss58_address if hotkey is not None else ""
+            return f"Hotkey {hotkey_addr} not registered in subnet {self.settings.netuid}"
+        return _NO_WEIGHT_ATTEMPT_MESSAGE
+
+    @staticmethod
+    def _query_commit_reveal_enabled(*, subtensor: bt.Subtensor, netuid: int) -> bool | None:
+        try:
+            return bool(subtensor.commit_reveal_enabled(netuid=netuid))
+        except Exception as exc:
+            logger.debug("unable to read commit-reveal flag", exc_info=exc)
+            return None
+
+    @staticmethod
+    def _query_current_block(*, subtensor: bt.Subtensor) -> int | None:
+        try:
+            return int(subtensor.get_current_block())
+        except Exception as exc:
+            logger.debug("unable to read current block for weight cadence", exc_info=exc)
+            return None
+
+    @staticmethod
+    def _query_weights_rate_limit(*, subtensor: bt.Subtensor, netuid: int) -> int | None:
+        try:
+            value = subtensor.weights_rate_limit(netuid)
+        except Exception as exc:
+            logger.debug("unable to read weight rate limit", exc_info=exc)
+            return None
+        return None if value is None else int(value)
+
+    @staticmethod
+    def _query_last_update_values(*, subtensor: bt.Subtensor, netuid: int) -> _LastUpdateValues | None:
+        try:
+            values = subtensor.get_hyperparameter(param_name="LastUpdate", netuid=netuid)
+        except Exception as exc:
+            logger.debug("unable to read LastUpdate metadata", exc_info=exc)
+            return None
+        return BittensorSubtensorClient._normalize_last_update_values(values)
+
+    @staticmethod
+    def _normalize_last_update_values(values: object) -> _LastUpdateValues | None:
+        if isinstance(values, Mapping):
+            normalized: dict[int, _LastUpdateValue] = {}
+            for key, value in values.items():
+                if not isinstance(key, int) or (value is not None and not isinstance(value, int)):
+                    return None
+                normalized[key] = value
+            return normalized
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+            return None
+        normalized_values: list[_LastUpdateValue] = []
+        for value in values:
+            if value is not None and not isinstance(value, int):
+                return None
+            normalized_values.append(value)
+        return normalized_values
+
+    @staticmethod
+    def _last_update_for_uid(values: _LastUpdateValues, uid: int) -> int | None:
+        if uid < 0:
+            return None
+        try:
+            if isinstance(values, dict):
+                value = values.get(uid)
+            else:
+                if uid >= len(values):
+                    return None
+                value = values[uid]
+        except IndexError:
+            return None
+        return value
 
     def _query_version_key(self) -> int | None:
         try:

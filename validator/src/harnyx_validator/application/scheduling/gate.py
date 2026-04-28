@@ -11,9 +11,6 @@ class _SubtensorForGate(Protocol):
     def current_block(self) -> int:
         ...
 
-    def last_update_block(self, uid: int) -> int | None:
-        ...
-
     def fetch_commitment(self, uid: int) -> CommitmentRecord | None:
         ...
 
@@ -27,50 +24,6 @@ class _SubtensorForGate(Protocol):
         reference_block: int | None = None,
     ) -> int:
         ...
-
-
-def is_submission_window_open(
-    subtensor: _SubtensorForGate,
-    uid: int,
-    *,
-    min_blocks: int,
-) -> bool:
-    """Return ``True`` when the validator can safely submit new weights."""
-
-    now = subtensor.current_block()
-    last_raw = subtensor.last_update_block(uid)
-
-    # If the validator has never submitted weights, allow the first submission immediately.
-    if last_raw is None:
-        return True
-
-    last = int(last_raw)
-    return (now - last) >= max(0, min_blocks)
-
-
-def seconds_until_window(
-    subtensor: _SubtensorForGate,
-    uid: int,
-    *,
-    min_blocks: int,
-    block_time_seconds: int,
-    jitter_seconds: int = 0,
-) -> float:
-    """Estimate how long to wait before another submission window opens."""
-
-    now = subtensor.current_block()
-    last = subtensor.last_update_block(uid) or 0
-    blocks_remaining = max(0, min_blocks - (now - last))
-    jitter = (uid % (max(1, jitter_seconds + 1))) if jitter_seconds > 0 else 0
-    return max(0.0, blocks_remaining * float(block_time_seconds) - float(jitter))
-
-
-def submission_window_index(now_block: int, min_blocks: int) -> int:
-    """Return the submission cadence bucket derived from ``min_blocks``."""
-
-    if min_blocks <= 0:
-        return 0
-    return max(0, now_block) // min_blocks
 
 
 def commitment_marker(uid: int, epoch: int, *, prefix: str = "harnyx:weights:v1") -> str:
@@ -146,7 +99,4 @@ __all__ = [
     "commitment_marker",
     "current_chain_epoch_index",
     "is_current_epoch_committed",
-    "is_submission_window_open",
-    "submission_window_index",
-    "seconds_until_window",
 ]
