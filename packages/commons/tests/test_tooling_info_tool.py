@@ -40,12 +40,11 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "search_items" not in payload["pricing"]
 
     model_prices = payload["pricing"]["llm_chat"]["models"]
-    assert model_prices["openai/gpt-oss-20b-TEE"]["input_per_million"] == pytest.approx(0.03)
-    assert model_prices["openai/gpt-oss-20b-TEE"]["output_per_million"] == pytest.approx(0.11)
-    assert model_prices["openai/gpt-oss-20b-TEE"]["reasoning_per_million"] == pytest.approx(0.11)
     assert model_prices["openai/gpt-oss-120b-TEE"]["input_per_million"] == pytest.approx(0.09)
     assert model_prices["openai/gpt-oss-120b-TEE"]["output_per_million"] == pytest.approx(0.36)
     assert model_prices["openai/gpt-oss-120b-TEE"]["reasoning_per_million"] == pytest.approx(0.36)
+    assert "openai/gpt-oss-20b-TEE" not in payload["allowed_tool_models"]
+    assert "openai/gpt-oss-20b-TEE" not in model_prices
     assert "openai/gpt-oss-20b" not in payload["allowed_tool_models"]
     assert "openai/gpt-oss-120b" not in payload["allowed_tool_models"]
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" in payload["allowed_tool_models"]
@@ -85,15 +84,18 @@ def test_qwen_tool_model_pricing_ignores_reasoning_tokens() -> None:
     assert cost == pytest.approx(0.90)
 
 
-def test_openai_tool_model_pricing_matches_current_chutes_rates() -> None:
+def test_openai_gpt_oss_120b_tool_model_pricing_matches_current_chutes_rate() -> None:
     usage = LlmUsage(
         prompt_tokens=1_000_000,
         completion_tokens=1_000_000,
         reasoning_tokens=1_000_000,
     )
 
-    cost_20b = price_llm(parse_tool_model("openai/gpt-oss-20b-TEE"), usage)
     cost_120b = price_llm(parse_tool_model("openai/gpt-oss-120b-TEE"), usage)
 
-    assert cost_20b == pytest.approx(0.25)
     assert cost_120b == pytest.approx(0.81)
+
+
+def test_retired_openai_gpt_oss_20b_tool_model_is_rejected() -> None:
+    with pytest.raises(ValueError, match="not allowed for validator tools"):
+        parse_tool_model("openai/gpt-oss-20b-TEE")
