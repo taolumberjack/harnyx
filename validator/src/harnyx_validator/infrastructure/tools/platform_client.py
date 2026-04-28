@@ -13,6 +13,9 @@ from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec
 from harnyx_validator.application.ports.platform import ChampionWeights, PlatformPort
 from harnyx_validator.infrastructure.parsers import parse_batch
 
+_GET_ATTEMPTS = 2
+_TRANSIENT_CONNECT_EXCEPTIONS = (httpx.ConnectTimeout, httpx.ConnectError)
+
 
 class PlatformClientError(RuntimeError):
     """Raised when the platform responds with an unexpected status."""
@@ -58,13 +61,22 @@ class HttpPlatformClient(PlatformPort):
             headers["Content-Type"] = "application/json"
         return headers
 
+    def _get(self, path: str) -> httpx.Response:
+        for attempt in range(_GET_ATTEMPTS):
+            try:
+                with self._client() as client:
+                    return client.get(
+                        path,
+                        headers=self._request_headers("GET", path, b""),
+                    )
+            except _TRANSIENT_CONNECT_EXCEPTIONS:
+                if attempt == _GET_ATTEMPTS - 1:
+                    raise
+        raise RuntimeError("platform GET retry loop exhausted without response")
+
     def get_miner_task_batch(self, batch_id: UUID) -> MinerTaskBatchSpec:
         path = f"/v1/miner-task-batches/batch/{batch_id}"
-        with self._client() as client:
-            response = client.get(
-                path,
-                headers=self._request_headers("GET", path, b""),
-            )
+        response = self._get(path)
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(
                 status_code=response.status_code,
@@ -74,11 +86,7 @@ class HttpPlatformClient(PlatformPort):
 
     def fetch_artifact(self, batch_id: UUID, artifact_id: UUID) -> bytes:
         path = f"/v1/miner-task-batches/{batch_id}/artifacts/{artifact_id}"
-        with self._client() as client:
-            response = client.get(
-                path,
-                headers=self._request_headers("GET", path, b""),
-            )
+        response = self._get(path)
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(
                 status_code=response.status_code,
@@ -88,11 +96,7 @@ class HttpPlatformClient(PlatformPort):
 
     def get_champion_weights(self) -> ChampionWeights:
         path = "/v1/weights"
-        with self._client() as client:
-            response = client.get(
-                path,
-                headers=self._request_headers("GET", path, b""),
-            )
+        response = self._get(path)
         if response.status_code != httpx.codes.OK:
             raise PlatformClientError(
                 status_code=response.status_code,
