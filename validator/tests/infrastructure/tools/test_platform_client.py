@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import socket
 from uuid import uuid4
 
 import bittensor as bt
@@ -194,40 +195,23 @@ def test_get_champion_weights_retries_transient_connect_timeout() -> None:
         _assert_signed(request, keypair)
 
 
-def test_get_miner_task_batch_retries_transient_connect_error() -> None:
+def test_get_miner_task_batch_does_not_retry_broad_connect_error() -> None:
     batch_id = uuid4()
-    task_id = uuid4()
-    artifact_id = uuid4()
-    champion_artifact_id = uuid4()
-    budget_usd = 0.123
     keypair = _keypair()
-    transport = _FlakyTransport(
-        first_exception=httpx.ConnectError,
-        success_response=_batch_response(
-            batch_id=batch_id,
-            task_id=task_id,
-            artifact_id=artifact_id,
-            champion_artifact_id=champion_artifact_id,
-            budget_usd=budget_usd,
-        ),
-    )
+    connect_error = httpx.ConnectError("connect failed")
+    transport = _AlwaysFailTransport(exceptions=[connect_error])
     client = HttpPlatformClient(
         base_url="https://mock.local",
         hotkey=keypair,
         transport=httpx.MockTransport(transport),
     )
 
-    batch = client.get_miner_task_batch(batch_id)
+    with pytest.raises(httpx.ConnectError) as exc_info:
+        client.get_miner_task_batch(batch_id)
 
+    assert exc_info.value is connect_error
     expected_path = f"/v1/miner-task-batches/batch/{batch_id}"
-    assert batch.batch_id == batch_id
-    assert batch.tasks[0].task_id == task_id
-    assert [request.url.path for request in transport.requests] == [
-        expected_path,
-        expected_path,
-    ]
-    for request in transport.requests:
-        _assert_signed(request, keypair)
+    assert [request.url.path for request in transport.requests] == [expected_path]
 
 
 def test_fetch_artifact_retries_transient_connect_timeout() -> None:
@@ -270,6 +254,36 @@ def test_get_miner_task_batch_raises_original_exception_after_retry_exhaustion()
     )
 
     with pytest.raises(httpx.ConnectTimeout) as exc_info:
+        client.get_miner_task_batch(batch_id)
+
+    assert exc_info.value is final_exception
+    expected_path = f"/v1/miner-task-batches/batch/{batch_id}"
+    assert [request.url.path for request in transport.requests] == [
+        expected_path,
+        expected_path,
+    ]
+
+
+def test_get_miner_task_batch_retries_connect_error_with_temporary_dns_cause() -> None:
+    batch_id = uuid4()
+    keypair = _keypair()
+    connect_error = httpx.ConnectError("connect failed")
+    connect_error.__cause__ = socket.gaierror(socket.EAI_AGAIN, "temporary dns")
+    final_exception = httpx.ConnectError("second connect failed")
+    final_exception.__cause__ = socket.gaierror(socket.EAI_AGAIN, "temporary dns")
+    transport = _AlwaysFailTransport(
+        exceptions=[
+            connect_error,
+            final_exception,
+        ]
+    )
+    client = HttpPlatformClient(
+        base_url="https://mock.local",
+        hotkey=keypair,
+        transport=httpx.MockTransport(transport),
+    )
+
+    with pytest.raises(httpx.ConnectError) as exc_info:
         client.get_miner_task_batch(batch_id)
 
     assert exc_info.value is final_exception

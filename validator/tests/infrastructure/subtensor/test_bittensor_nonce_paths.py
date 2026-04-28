@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import socket
 from types import SimpleNamespace
 from typing import Any, cast
 
+import httpx
 import pytest
 
 from harnyx_commons.config.subtensor import SubtensorSettings
@@ -218,6 +220,66 @@ def test_submit_weights_retries_commit_reveal_when_attempt_raises(
 
     assert tx_hash.startswith("reveal_round:")
     assert len(subtensor.sign_calls) == 2
+
+
+def test_commit_reveal_preserves_deterministic_return_after_transient_network_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transient = httpx.ConnectTimeout("connect timed out")
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    subtensor.sign_side_effects = [transient] + [(False, "chain rejected")] * 5
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.submit_weights({7: 1.0})
+
+    assert str(exc_info.value) == "set_weights failed: chain rejected"
+    assert exc_info.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ConnectionError("connect failed"),
+        httpx.ConnectError("connect failed"),
+        TimeoutError("local timeout"),
+        socket.gaierror(socket.EAI_NONAME, "permanent dns"),
+        httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
+    ],
+)
+def test_commit_reveal_does_not_treat_non_transient_transport_shapes_as_transient(
+    monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
+) -> None:
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    subtensor.sign_side_effects = [exc] * 5
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.submit_weights({7: 1.0})
+
+    assert str(exc_info.value).startswith("set_weights failed:")
+    assert exc_info.value.__cause__ is None
+
+
+def test_commit_reveal_raises_wrapper_from_final_transient_after_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final_exception = httpx.ConnectTimeout("final timeout")
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    subtensor.sign_side_effects = [
+        httpx.ConnectTimeout("timeout 1"),
+        httpx.ConnectTimeout("timeout 2"),
+        httpx.ConnectTimeout("timeout 3"),
+        httpx.ConnectTimeout("timeout 4"),
+        final_exception,
+    ]
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(RuntimeError, match="commit-reveal weight submission attempts failed") as exc_info:
+        client.submit_weights({7: 1.0})
+
+    assert exc_info.value.__cause__ is final_exception
 
 
 @pytest.mark.parametrize("validator_uid", [None, -1])

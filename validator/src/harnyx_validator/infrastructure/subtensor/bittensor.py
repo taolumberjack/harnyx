@@ -25,6 +25,7 @@ from harnyx_validator.application.ports.subtensor import (
     WeightSubmissionCadence,
     WeightSubmissionCadenceStatus,
 )
+from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
 from .hotkey import create_wallet
 
@@ -368,7 +369,10 @@ class BittensorSubtensorClient(SubtensorClientPort):
 
         success = False
         message = _NO_WEIGHT_ATTEMPT_MESSAGE
+        transient_failure: Exception | None = None
+        all_failures_transient = True
         for _ in range(_COMMIT_REVEAL_MAX_RETRIES):
+            attempt_failed_transient = False
             try:
                 call, reveal_round = self._build_commit_reveal_call(
                     subtensor=subtensor,
@@ -383,11 +387,23 @@ class BittensorSubtensorClient(SubtensorClientPort):
                     wait_for_finalization=self.settings.wait_for_finalization,
                 )
             except Exception as exc:
+                cause = classify_transient_network_failure(exc)
+                if cause is None:
+                    all_failures_transient = False
+                    transient_failure = None
+                else:
+                    transient_failure = exc
+                    attempt_failed_transient = True
                 logger.warning("commit-reveal weight submission attempt failed", exc_info=exc)
                 success = False
                 message = str(exc)
             if success:
                 return True, f"reveal_round:{reveal_round}"
+            if not attempt_failed_transient:
+                all_failures_transient = False
+                transient_failure = None
+        if all_failures_transient and transient_failure is not None:
+            raise RuntimeError("commit-reveal weight submission attempts failed") from transient_failure
         return False, message
 
     def _submit_plain_weights(

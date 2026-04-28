@@ -12,9 +12,9 @@ from harnyx_commons.bittensor import build_canonical_request
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec
 from harnyx_validator.application.ports.platform import ChampionWeights, PlatformPort
 from harnyx_validator.infrastructure.parsers import parse_batch
+from harnyx_validator.infrastructure.transient_network import classify_transient_network_failure
 
 _GET_ATTEMPTS = 2
-_TRANSIENT_CONNECT_EXCEPTIONS = (httpx.ConnectTimeout, httpx.ConnectError)
 
 
 class PlatformClientError(RuntimeError):
@@ -69,8 +69,8 @@ class HttpPlatformClient(PlatformPort):
                         path,
                         headers=self._request_headers("GET", path, b""),
                     )
-            except _TRANSIENT_CONNECT_EXCEPTIONS:
-                if attempt == _GET_ATTEMPTS - 1:
+            except httpx.TransportError as exc:
+                if classify_transient_network_failure(exc) is None or attempt == _GET_ATTEMPTS - 1:
                     raise
         raise RuntimeError("platform GET retry loop exhausted without response")
 
