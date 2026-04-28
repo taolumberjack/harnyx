@@ -11,7 +11,7 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
-REASONING_MODEL = "tngtech/DeepSeek-TNG-R1T2-Chimera-TEE"
+REASONING_MODEL = "openai/gpt-oss-120b-TEE"
 
 
 class JsonObjectAnswer(BaseModel):
