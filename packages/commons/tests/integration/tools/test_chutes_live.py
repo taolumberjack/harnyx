@@ -14,14 +14,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio(
 REASONING_MODEL = "tngtech/DeepSeek-TNG-R1T2-Chimera-TEE"
 
 
-@pytest.fixture(autouse=True)
-def _use_chutes_live_retry_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("EXTERNAL_CLIENT_RETRY_ATTEMPTS", "5")
-    monkeypatch.setenv("EXTERNAL_CLIENT_RETRY_INITIAL_MS", "15000")
-    monkeypatch.setenv("EXTERNAL_CLIENT_RETRY_MAX_MS", "120000")
-    monkeypatch.setenv("EXTERNAL_CLIENT_RETRY_JITTER", "0.2")
-
-
 class JsonObjectAnswer(BaseModel):
     ping: str
     count: int
