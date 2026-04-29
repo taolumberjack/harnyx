@@ -123,5 +123,5 @@ validator/            # validator runtime + operator docs
 sandbox/              # sandbox runtime (run by validators, not miners)
 packages/
   miner-sdk/          # SDK imported by miner scripts
-  commons/            # shared utilities (sandbox runner, tools, etc.)
+  commons/            # shared utilities plus public miner incentive logic
 ```

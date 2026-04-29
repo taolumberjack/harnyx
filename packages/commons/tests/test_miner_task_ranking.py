@@ -4,15 +4,27 @@ from uuid import uuid4
 
 import pytest
 
+from harnyx_commons.domain.miner_task import EvaluationDetails, ScoreBreakdown
+from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_commons.miner_task_emission import compose_champion_weights
 from harnyx_commons.miner_task_ranking import (
     ArtifactAggregateBundle,
     ArtifactRankingRow,
     CascadeConfig,
     RankingCascade,
     aggregate_ranking_rows,
-    compose_champion_weights,
     ordered_challengers,
+    run_ranking_cost_usd,
 )
+
+
+def test_run_ranking_cost_usd_sums_llm_and_search_tool_costs() -> None:
+    details = EvaluationDetails(
+        score_breakdown=ScoreBreakdown(comparison_score=1.0, total_score=1.0, scoring_version="test"),
+        total_tool_usage=ToolUsageSummary(llm_cost=0.12, search_tool_cost=0.03),
+    )
+
+    assert run_ranking_cost_usd(details) == pytest.approx(0.15)
 
 
 def test_aggregate_ranking_rows_uses_per_task_validator_medians() -> None:

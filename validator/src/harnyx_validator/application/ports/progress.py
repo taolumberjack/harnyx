@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol, TypedDict
+from typing import Protocol
 from uuid import UUID
 
+from harnyx_commons.miner_task_failure_policy import ProviderFailureEvidence
 from harnyx_validator.application.dto.evaluation import MinerTaskBatchSpec, MinerTaskRunSubmission
-
-
-class ProviderFailureEvidence(TypedDict):
-    provider: str
-    model: str
-    total_calls: int
-    failed_calls: int
 
 
 class ProgressRecorder(Protocol):

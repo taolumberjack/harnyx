@@ -25,6 +25,7 @@ from harnyx_commons.miner_task_ranking import (
     aggregate_ranking_rows,
     ordered_challengers,
 )
+from harnyx_commons.miner_task_scoring import EvaluationScoringConfig, EvaluationScoringService
 from harnyx_commons.sandbox.agent_staging import stage_agent_source
 from harnyx_commons.sandbox.manager import SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
@@ -60,7 +61,6 @@ from harnyx_validator.application.services.evaluation_runner import (
     ArtifactEvaluationOutcome,
     EvaluationRunner,
 )
-from harnyx_validator.application.services.evaluation_scoring import EvaluationScoringConfig, EvaluationScoringService
 from harnyx_validator.infrastructure.http.local_tool_host import LocalToolHostHandle, start_local_tool_host
 from harnyx_validator.runtime.bootstrap import (
     _build_local_eval_tooling_clients,
