@@ -23,7 +23,6 @@ from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.llm.provider_types import (
     BEDROCK_PROVIDER,
     CHUTES_PROVIDER,
-    VERTEX_MAAS_PROVIDER,
     VERTEX_PROVIDER,
     LlmProviderName,
     normalize_reasoning_effort,
@@ -49,6 +48,7 @@ from harnyx_commons.llm.schema import (
 from harnyx_commons.observability.langfuse import (
     build_generation_metadata,
     build_generation_output_payload,
+    derive_standalone_llm_trace_name,
     record_child_observation_best_effort,
     start_llm_generation,
     update_generation_best_effort,
@@ -58,7 +58,6 @@ ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
     BEDROCK_PROVIDER,
     CHUTES_PROVIDER,
     VERTEX_PROVIDER,
-    VERTEX_MAAS_PROVIDER,
 )
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -154,6 +153,8 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             "reasoning_effort": request.reasoning_effort,
             "timeout_seconds": request.timeout_seconds,
         }
+        if request.use_case is not None:
+            data["use_case"] = request.use_case
         data |= request.internal_metadata or {}
         data |= request.extra or {}
 
@@ -168,6 +169,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             span_attributes["llm.reasoning_effort"] = str(request.reasoning_effort)
 
         tracer = trace.get_tracer("harnyx_commons.llm")
+        standalone_trace_name = derive_standalone_llm_trace_name(request=request)
         with tracer.start_as_current_span(
             "llm.invoke",
             kind=SpanKind.CLIENT,
@@ -176,6 +178,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             with start_llm_generation(
                 provider_label=self._provider_label,
                 request=request,
+                trace_name=standalone_trace_name,
             ) as generation:
                 self._llm_logger.debug("llm.invoke.start", extra={"data": data})
                 start = time.perf_counter()

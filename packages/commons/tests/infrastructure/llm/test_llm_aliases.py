@@ -11,9 +11,15 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
-from harnyx_commons.tools.runtime_invoker import ALLOWED_TOOL_MODELS
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+VERTEX_ALIASED_TOOL_MODELS = {
+    "deepseek-ai/DeepSeek-V3.1-TEE": "deepseek-ai/deepseek-v3.1-maas",
+    "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
+    "openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
+    "Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
+}
 
 
 class StubProvider:
@@ -40,14 +46,14 @@ class StubProvider:
 
 async def test_adapter_prefers_provider_specific_entry() -> None:
     aliases = {
-        "vertex-maas:openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
+        "vertex:openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
         "openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas-global",
     }
     delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name="vertex-maas", delegate=delegate, model_aliases=aliases)
+    provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate, model_aliases=aliases)
 
     request = LlmRequest(
-        provider="vertex-maas",
+        provider="vertex",
         model="openai/gpt-oss-20b-TEE",
         messages=(),
         temperature=None,
@@ -63,10 +69,10 @@ async def test_adapter_prefers_provider_specific_entry() -> None:
 async def test_adapter_falls_back_to_global_entry() -> None:
     aliases = {"openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas"}
     delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name="vertex-maas", delegate=delegate, model_aliases=aliases)
+    provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate, model_aliases=aliases)
 
     request = LlmRequest(
-        provider="vertex-maas",
+        provider="vertex",
         model="openai/gpt-oss-20b-TEE",
         messages=(),
         temperature=None,
@@ -152,12 +158,12 @@ async def test_bedrock_adapter_uses_provider_specific_minimax_m2_5_alias() -> No
     assert delegate.requests[0].model == "minimax.minimax-m2.5"
 
 
-async def test_vertex_maas_adapter_uses_provider_specific_deepseek_v3_2_alias() -> None:
+async def test_vertex_adapter_uses_provider_specific_deepseek_v3_2_alias() -> None:
     delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name="vertex-maas", delegate=delegate)
+    provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate)
 
     request = LlmRequest(
-        provider="vertex-maas",
+        provider="vertex",
         model="deepseek-ai/DeepSeek-V3.2-TEE",
         messages=(),
         temperature=None,
@@ -170,12 +176,12 @@ async def test_vertex_maas_adapter_uses_provider_specific_deepseek_v3_2_alias() 
     assert delegate.requests[0].model == "deepseek-ai/deepseek-v3.2-maas"
 
 
-async def test_vertex_maas_adapter_uses_provider_specific_qwen3_235b_alias() -> None:
+async def test_vertex_adapter_uses_provider_specific_qwen3_235b_alias() -> None:
     delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name="vertex-maas", delegate=delegate)
+    provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate)
 
     request = LlmRequest(
-        provider="vertex-maas",
+        provider="vertex",
         model="Qwen/Qwen3-235B-A22B-Instruct-2507-TEE",
         messages=(),
         temperature=None,
@@ -207,19 +213,13 @@ async def test_bedrock_adapter_does_not_fall_back_to_global_kimi_alias() -> None
     assert delegate.requests[0].model == "moonshotai/Kimi-K2.5-TEE"
 
 
-@pytest.mark.parametrize("model", ALLOWED_TOOL_MODELS)
-async def test_adapter_applies_default_vertex_maas_aliases(model: str) -> None:
-    expected_aliases = {
-        "openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
-        "openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
-        "Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
-    }
-    expected = expected_aliases[model]
+@pytest.mark.parametrize(("model", "expected"), VERTEX_ALIASED_TOOL_MODELS.items())
+async def test_adapter_applies_default_vertex_aliases(model: str, expected: str) -> None:
     delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name="vertex-maas", delegate=delegate)
+    provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate)
 
     request = LlmRequest(
-        provider="vertex-maas",
+        provider="vertex",
         model=model,
         messages=(),
         temperature=None,
@@ -232,13 +232,13 @@ async def test_adapter_applies_default_vertex_maas_aliases(model: str) -> None:
     assert delegate.requests[0].model == expected
 
 
-@pytest.mark.parametrize("model", ALLOWED_TOOL_MODELS)
-async def test_adapter_leaves_open_model_ids_unchanged_for_vertex(model: str) -> None:
+@pytest.mark.parametrize("model", VERTEX_ALIASED_TOOL_MODELS)
+async def test_adapter_leaves_open_model_ids_unchanged_for_chutes(model: str) -> None:
     delegate = StubProvider()
-    provider = LlmProviderAdapter(provider_name="vertex", delegate=delegate)
+    provider = LlmProviderAdapter(provider_name="chutes", delegate=delegate)
 
     request = LlmRequest(
-        provider="vertex",
+        provider="chutes",
         model=model,
         messages=(),
         temperature=None,

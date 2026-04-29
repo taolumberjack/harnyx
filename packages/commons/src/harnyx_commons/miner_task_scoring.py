@@ -210,7 +210,7 @@ class EvaluationScoringService:
             max_output_tokens=self._config.max_output_tokens,
             reasoning_effort=self._config.reasoning_effort,
             timeout_seconds=self._config.timeout_seconds,
-            internal_metadata={"use_case": "miner_task_pairwise_judge"},
+            use_case="miner_task_pairwise_judge",
         )
         response = await self._llm.invoke(request)
         parsed = response.postprocessed

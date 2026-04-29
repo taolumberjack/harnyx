@@ -1,12 +1,13 @@
 # harnyx-commons
 
-Shared utilities for the Harnyx Subnet workspace.
+Shared utilities and transparent incentive-mechanism logic for the Harnyx Subnet workspace.
 
 This package provides:
 
+- **Miner incentive rules** — miner-task dataset/reference generation, validator scoring, failure attribution, ranking aggregation, champion selection, benchmark scoring, and benchmark-scaled emission math
 - **Sandbox runner** — Docker container lifecycle management for validators (start/stop sandbox containers, HTTP client for calling sandbox entrypoints)
 - **Tool infrastructure** — LLM and search tool adapters, cost tracking, budget validation
 - **Observability** — logging and tracing utilities
 - **Domain types** — shared data structures (queries, responses, sessions, scores, etc.)
 
-This is an internal package used by `harnyx-validator`.
+Platform services, validator runtime orchestration, storage, auth, deployment, and other infrastructure remain outside this package. The miner-task modules here are the public source of truth for the business rules that affect scoring, champion selection, and emissions.

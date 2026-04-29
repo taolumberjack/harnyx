@@ -54,9 +54,13 @@ class _VertexMaasChatRequest(BaseModel):
         request_parts = OpenAiChatRequestParts.from_request(
             request,
             provider_name="Vertex MaaS",
-            image_error_message="vertex-maas GPT OSS requests do not support image content parts",
-            tool_mix_error_message="vertex-maas tool messages cannot mix text and input_tool_result parts",
-            tool_count_error_message="vertex-maas tool messages must include exactly one input_tool_result part",
+            image_error_message="Vertex MaaS OpenAI-compatible requests do not support image content parts",
+            tool_mix_error_message=(
+                "Vertex MaaS OpenAI-compatible tool messages cannot mix text and input_tool_result parts"
+            ),
+            tool_count_error_message=(
+                "Vertex MaaS OpenAI-compatible tool messages must include exactly one input_tool_result part"
+            ),
         )
         payload = cls(
             model=vertex_maas_openai_chat_model_name(request.model),

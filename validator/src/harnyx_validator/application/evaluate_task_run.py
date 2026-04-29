@@ -22,6 +22,7 @@ from harnyx_commons.domain.tool_usage import (
 from harnyx_commons.llm.pricing import ALLOWED_TOOL_MODELS, parse_tool_model, price_llm, price_search
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.miner_task_scoring import EvaluationScoringService
 from harnyx_commons.tools.types import SearchToolName, is_search_tool
 from harnyx_validator.application.dto.evaluation import (
     EntrypointInvocationRequest,
@@ -30,7 +31,6 @@ from harnyx_validator.application.dto.evaluation import (
     TokenUsageSummary,
 )
 from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker
-from harnyx_validator.application.services.evaluation_scoring import EvaluationScoringService
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
 logger = logging.getLogger("harnyx_validator.task_run")

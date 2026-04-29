@@ -74,7 +74,6 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=60.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),
@@ -119,7 +118,6 @@ def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> No
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=60.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),
@@ -155,7 +153,6 @@ def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=60.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),
@@ -204,7 +201,6 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
         vertex=VertexSettings.model_construct(
             gcp_project_id=None,
             gcp_location=None,
-            vertex_maas_gcp_location="us-central1",
             vertex_timeout_seconds=60.0,
             gcp_service_account_credential_b64=SecretStr(""),
         ),
@@ -265,7 +261,6 @@ def test_create_scoring_service_uses_effective_route_model_and_provider() -> Non
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=60.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),
@@ -328,7 +323,6 @@ def test_build_llm_clients_allows_bedrock_scoring_route(
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=60.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),

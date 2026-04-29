@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from uuid import UUID
+
+import pytest
+
+from harnyx_commons.miner_task_benchmark import (
+    BENCHMARK_SAMPLE_SIZE,
+    BenchmarkItemOutcome,
+    BenchmarkItemState,
+    BenchmarkRunState,
+    aggregate_benchmark_metrics,
+    project_benchmark_run_state,
+    sample_benchmark_items,
+    unsupported_benchmark_scoring_version_error,
+)
+
+
+class _SampleItem:
+    def __init__(self, item_index: int) -> None:
+        self.item_index = item_index
+
+
+def test_aggregate_benchmark_metrics_scores_terminal_items_only() -> None:
+    metrics = aggregate_benchmark_metrics(
+        (
+            BenchmarkItemOutcome(state=BenchmarkItemState.COMPLETED, is_correct=True),
+            BenchmarkItemOutcome(state=BenchmarkItemState.COMPLETED, is_correct=False),
+            BenchmarkItemOutcome(state=BenchmarkItemState.FAILED, is_correct=None),
+        )
+    )
+
+    assert metrics.completed_item_count == 2
+    assert metrics.failed_item_count == 1
+    assert metrics.correct_item_count == 1
+    assert metrics.mean_total_score == pytest.approx(1 / 3)
+    assert metrics.derive_state() is BenchmarkRunState.PARTIAL_SUCCESS
+
+
+def test_aggregate_benchmark_metrics_keeps_score_empty_without_terminal_items() -> None:
+    metrics = aggregate_benchmark_metrics(
+        (
+            BenchmarkItemOutcome(state=BenchmarkItemState.QUEUED, is_correct=None),
+            BenchmarkItemOutcome(state=BenchmarkItemState.RUNNING, is_correct=None),
+        )
+    )
+
+    assert metrics.queued_item_count == 1
+    assert metrics.running_item_count == 1
+    assert metrics.completed_item_count == 0
+    assert metrics.failed_item_count == 0
+    assert metrics.mean_total_score is None
+    assert metrics.derive_state() is BenchmarkRunState.RUNNING
+
+
+def test_project_benchmark_run_state_marks_terminal_unfinished_run_failed() -> None:
+    metrics = aggregate_benchmark_metrics(
+        (BenchmarkItemOutcome(state=BenchmarkItemState.QUEUED, is_correct=None),)
+    )
+
+    assert (
+        project_benchmark_run_state(metrics=metrics, backing_batch_is_terminal=True)
+        is BenchmarkRunState.FAILED
+    )
+
+
+def test_project_benchmark_run_state_marks_terminal_mixed_run_partial_success() -> None:
+    metrics = aggregate_benchmark_metrics(
+        (
+            BenchmarkItemOutcome(state=BenchmarkItemState.COMPLETED, is_correct=True),
+            BenchmarkItemOutcome(state=BenchmarkItemState.QUEUED, is_correct=None),
+        )
+    )
+
+    assert (
+        project_benchmark_run_state(metrics=metrics, backing_batch_is_terminal=True)
+        is BenchmarkRunState.PARTIAL_SUCCESS
+    )
+
+
+def test_sample_benchmark_items_is_deterministic_and_sorted_by_item_index() -> None:
+    items = tuple(_SampleItem(index) for index in range(BENCHMARK_SAMPLE_SIZE + 5))
+
+    first = sample_benchmark_items(
+        items=items,
+        run_id=UUID("00000000-0000-4000-8000-000000000001"),
+        dataset_version="dataset-v1",
+        scoring_version="correctness-v1",
+    )
+    second = sample_benchmark_items(
+        items=items,
+        run_id=UUID("00000000-0000-4000-8000-000000000001"),
+        dataset_version="dataset-v1",
+        scoring_version="correctness-v1",
+    )
+
+    assert len(first) == BENCHMARK_SAMPLE_SIZE
+    assert first == second
+    assert tuple(item.item_index for item in first) == tuple(sorted(item.item_index for item in first))
+
+
+def test_unsupported_benchmark_scoring_version_error_names_expected_version() -> None:
+    exc = unsupported_benchmark_scoring_version_error("other")
+
+    assert "unsupported benchmark scoring_version 'other'" in str(exc)
+    assert "expected 'correctness-v1'" in str(exc)

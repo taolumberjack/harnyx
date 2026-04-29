@@ -42,12 +42,23 @@ class AbstractLlmRequest(ToolLlmRequest, ABC):
     output_mode: str = "text"
     output_schema: type[BaseModel] | None = None
     postprocessor: Callable[[LlmResponse], PostprocessResult] | None = None
-    internal_metadata: Mapping[str, Any] | None = None
+    use_case: str | None = None
+    internal_metadata: Mapping[str, object] | None = None
     extra: Mapping[str, Any] | None = None
     reasoning_effort: str | None = None
     include: Sequence[str] | None = None
     timeout_seconds: float | None = None
     allow_postprocess_recovery: bool = True
+
+    def __post_init__(self) -> None:
+        if self.internal_metadata is not None and "use_case" in self.internal_metadata:
+            raise ValueError("LLM request use_case must be provided via the typed use_case field")
+        if self.use_case is None:
+            return
+        normalized_use_case = self.use_case.strip()
+        if not normalized_use_case:
+            raise ValueError("LLM request use_case must not be blank")
+        object.__setattr__(self, "use_case", normalized_use_case)
 
 
 @dataclass(frozen=True)
@@ -59,6 +70,7 @@ class GroundedLlmRequest(AbstractLlmRequest):
     output_schema: None = None
 
     def __post_init__(self) -> None:  # pragma: no cover - simple guard
+        super().__post_init__()
         if not supports_grounded_requests(provider=self.provider, model=self.model):
             raise ValueError(f"grounded mode not supported for provider/model '{self.provider}:{self.model}'")
         if self.tools and _is_vertex_claude_model(self.model):
@@ -76,6 +88,7 @@ class LlmRequest(AbstractLlmRequest):
     output_schema: type[BaseModel] | None = None
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         if self.output_mode == "structured" and self.output_schema is None:
             raise ValueError("structured output requires output_schema")
         if self.output_mode != "structured" and self.output_schema is not None:

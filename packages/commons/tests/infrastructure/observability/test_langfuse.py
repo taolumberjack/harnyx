@@ -41,7 +41,11 @@ def _request(*, extra: dict[str, object] | None = None) -> LlmRequest:
     )
 
 
-def _request_with_metadata(metadata: dict[str, object]) -> LlmRequest:
+def _request_with_metadata(
+    metadata: dict[str, object],
+    *,
+    use_case: str | None = None,
+) -> LlmRequest:
     return LlmRequest(
         provider="openai",
         model="gpt-5-mini",
@@ -54,6 +58,7 @@ def _request_with_metadata(metadata: dict[str, object]) -> LlmRequest:
         temperature=None,
         max_output_tokens=64,
         output_mode="text",
+        use_case=use_case,
         internal_metadata=metadata,
     )
 
@@ -323,10 +328,10 @@ def test_build_generation_metadata_merges_internal_metadata_with_canonical_serve
     monkeypatch.setenv("OTEL_SERVICE_NAME", "harnyx-platform-worker")
     request = _request_with_metadata(
         {
-            "use_case": "claim_generation",
             "feed_run_id": "feed-run-123",
             "server": "caller-supplied-server",
-        }
+        },
+        use_case="claim_generation",
     )
 
     metadata = langfuse.build_generation_metadata(
@@ -353,6 +358,116 @@ def test_derive_tags_uses_only_low_cardinality_dimensions() -> None:
     )
 
     assert tags == ["server:harnyx-platform-worker", "use_case:claim_generation"]
+
+
+def test_derive_standalone_llm_trace_name_uses_string_use_case() -> None:
+    request = _request_with_metadata({}, use_case=" miner_task_pairwise_judge ")
+
+    assert langfuse.derive_standalone_llm_trace_name(request=request) == "miner_task_pairwise_judge"
+
+
+def test_derive_standalone_llm_trace_name_preserves_explicit_langfuse_trace_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CaptureContextManager:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            return False
+
+    request = _request_with_metadata({}, use_case="miner_task_pairwise_judge")
+
+    monkeypatch.setattr(langfuse, "get_client", lambda: object())
+    monkeypatch.setattr(
+        langfuse,
+        "propagate_attributes",
+        lambda **kwargs: CaptureContextManager(),
+    )
+
+    with langfuse.propagate_trace_attributes_best_effort(trace_name="content_review_job"):
+        assert langfuse.has_active_langfuse_trace_name() is True
+        assert langfuse.derive_standalone_llm_trace_name(request=request) is None
+
+    assert langfuse.has_active_langfuse_trace_name() is False
+
+
+def test_trace_name_context_stays_inactive_when_propagate_enter_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raising_propagate_attributes(**kwargs: object) -> object:
+        raise RuntimeError("propagate start failed")
+
+    request = _request_with_metadata({}, use_case="miner_task_pairwise_judge")
+
+    monkeypatch.setattr(langfuse, "get_client", lambda: object())
+    monkeypatch.setattr(langfuse, "propagate_attributes", _raising_propagate_attributes)
+
+    with langfuse.propagate_trace_attributes_best_effort(trace_name="content_review_job"):
+        assert langfuse.has_active_langfuse_trace_name() is False
+        assert langfuse.derive_standalone_llm_trace_name(request=request) == "miner_task_pairwise_judge"
+
+
+def test_derive_standalone_llm_trace_name_requires_typed_use_case() -> None:
+    assert langfuse.derive_standalone_llm_trace_name(request=_request_with_metadata({})) is None
+    with pytest.raises(ValueError, match="typed use_case field"):
+        _request_with_metadata({"use_case": "miner_task_pairwise_judge"})
+    with pytest.raises(ValueError, match="must not be blank"):
+        _request_with_metadata({}, use_case="   ")
+
+
+def test_generation_scope_propagates_trace_name_with_existing_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CaptureGeneration:
+        def update(self, **kwargs: object) -> None:
+            return None
+
+    class ObservationContextManager:
+        def __enter__(self) -> CaptureGeneration:
+            return CaptureGeneration()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            return False
+
+    class PropagateContextManager:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
+            return False
+
+    class CaptureClient:
+        def start_as_current_observation(self, **kwargs: object) -> ObservationContextManager:
+            captured_observation_kwargs.update(kwargs)
+            return ObservationContextManager()
+
+    captured_propagate_kwargs: dict[str, object] = {}
+    captured_observation_kwargs: dict[str, object] = {}
+
+    def _fake_propagate_attributes(**kwargs: object) -> PropagateContextManager:
+        captured_propagate_kwargs.update(kwargs)
+        return PropagateContextManager()
+
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "test-server")
+    monkeypatch.setattr(langfuse, "propagate_attributes", _fake_propagate_attributes)
+
+    request = _request_with_metadata({}, use_case="miner_task_pairwise_judge")
+    scope = langfuse._LangfuseGenerationScope(
+        client=CaptureClient(),
+        provider_label="bedrock",
+        request=request,
+        trace_name="miner_task_pairwise_judge",
+    )
+
+    with scope as generation:
+        assert isinstance(generation, CaptureGeneration)
+
+    assert captured_propagate_kwargs == {
+        "trace_name": "miner_task_pairwise_judge",
+        "tags": ["server:test-server", "use_case:miner_task_pairwise_judge"],
+    }
+    assert captured_observation_kwargs["name"] == "llm.invoke"
 
 
 def test_propagate_trace_attributes_best_effort_noops_when_unconfigured(
@@ -532,7 +647,7 @@ def test_generation_scope_enter_error_path_does_not_raise_when_propagate_cleanup
     monkeypatch.setattr(
         langfuse,
         "propagate_attributes",
-        lambda *, tags: RaisingPropagateContextManager(),
+        lambda *, trace_name=None, tags: RaisingPropagateContextManager(),
     )
     caplog.set_level("ERROR", logger="harnyx_commons.observability.langfuse")
 

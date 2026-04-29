@@ -31,6 +31,7 @@ from harnyx_commons.domain.tool_usage import (
     SearchToolUsageSummary,
     ToolUsageSummary,
 )
+from harnyx_commons.miner_task_scoring import EvaluationScoringConfig
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment
 from harnyx_commons.sandbox.options import SandboxOptions
@@ -51,7 +52,6 @@ from harnyx_validator.application.services.evaluation_runner import (
     ArtifactFailure,
     ValidatorBatchFailureDetail,
 )
-from harnyx_validator.application.services.evaluation_scoring import EvaluationScoringConfig
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
 

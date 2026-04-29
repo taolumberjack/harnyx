@@ -436,7 +436,7 @@ async def test_execute_tool_rejects_expired_session() -> None:
 @pytest.mark.parametrize(
     "model",
     [
-        "openai/gpt-oss-20b-TEE",
+        "openai/gpt-oss-120b-TEE",
         "Qwen/Qwen3-Next-80B-A3B-Instruct",
     ],
 )
@@ -521,7 +521,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
 
 
 async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat() -> None:
-    request_model = "openai/gpt-oss-20b-TEE"
+    request_model = "openai/gpt-oss-120b-TEE"
     stale_payload_model = "Qwen/Qwen3-Next-80B-A3B-Instruct"
     session = make_session(budget_usd=1.0)
     token = generate_token()
@@ -661,7 +661,7 @@ async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> 
         tool="llm_chat",
         args=(),
         kwargs={
-            "model": "openai/gpt-oss-20b-TEE",
+            "model": "openai/gpt-oss-120b-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
     )
@@ -674,7 +674,7 @@ async def test_execute_tool_records_llm_elapsed_ms_only_in_receipt_details() -> 
     assert receipt.details.request_payload == {
         "args": [],
         "kwargs": {
-            "model": "openai/gpt-oss-20b-TEE",
+            "model": "openai/gpt-oss-120b-TEE",
             "messages": [{"role": "user", "content": "ping"}],
         },
     }

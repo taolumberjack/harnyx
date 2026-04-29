@@ -178,7 +178,7 @@ class RuntimeToolInvoker(ToolInvoker):
                     model: {
                         "input_per_million": rates.input_per_million,
                         "output_per_million": rates.output_per_million,
-                        "reasoning_per_million": rates.reasoning_per_million,
+                        "reasoning_per_million": rates.billable_reasoning_per_million,
                     }
                     for model, rates in MODEL_PRICING.items()
                 },
@@ -321,7 +321,7 @@ class RuntimeToolInvoker(ToolInvoker):
             tool_choice=invocation.tool_choice,
             include=invocation.include,
             reasoning_effort=invocation.reasoning_effort,
-            internal_metadata={"use_case": "tool_runtime_invoker"},
+            use_case="tool_runtime_invoker",
             extra=dict(invocation.model_extra) if invocation.model_extra else None,
         )
 

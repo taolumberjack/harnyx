@@ -266,6 +266,28 @@ async def test_iter_openai_sse_events_raises_upstream_in_band_error() -> None:
 
 
 @pytest.mark.anyio("asyncio")
+async def test_iter_openai_sse_events_classifies_truncated_json_as_retryable_stream_error() -> None:
+    response = httpx.Response(
+        200,
+        text='data: {"choices":[{"delta":{"content":"unterminated',
+    )
+
+    with pytest.raises(OpenAiStreamError) as exc_info:
+        async for _ in iter_openai_sse_events(
+            response,
+            invalid_data_message="invalid_data",
+            invalid_event_message="invalid_event",
+        ):
+            pass
+
+    exc = exc_info.value
+    assert exc.message == "invalid_data"
+    assert exc.code == 502
+    assert exc.error_type == "server_error"
+    assert exc.retryable is True
+
+
+@pytest.mark.anyio("asyncio")
 async def test_iter_openai_sse_events_rejects_wrapped_event_envelope() -> None:
     response = httpx.Response(
         200,

@@ -350,6 +350,12 @@ def _parse_sse_event_payload(
         return None
     try:
         envelope, payload = _OpenAiStreamEnvelope.from_json(raw_payload)
+    except json.JSONDecodeError as exc:
+        raise OpenAiStreamError(
+            message=invalid_data_message,
+            error_type="server_error",
+            code=502,
+        ) from exc
     except ValidationError as exc:
         raise RuntimeError(invalid_event_message) from exc
     except ValueError as exc:

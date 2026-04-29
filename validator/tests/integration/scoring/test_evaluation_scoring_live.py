@@ -9,7 +9,7 @@ from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, 
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
-from harnyx_validator.application.services.evaluation_scoring import (
+from harnyx_commons.miner_task_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
 )

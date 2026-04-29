@@ -17,13 +17,15 @@ from harnyx_commons.tools.types import SearchToolName
 
 # Canonical model ids allowed for tool LLM calls.
 ToolModelName = Literal[
-    "openai/gpt-oss-20b-TEE",
+    "deepseek-ai/DeepSeek-V3.1-TEE",
+    "deepseek-ai/DeepSeek-V3.2-TEE",
     "openai/gpt-oss-120b-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
 ]
 
 ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
-    "openai/gpt-oss-20b-TEE",
+    "deepseek-ai/DeepSeek-V3.1-TEE",
+    "deepseek-ai/DeepSeek-V3.2-TEE",
     "openai/gpt-oss-120b-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
 )
@@ -55,10 +57,17 @@ class ModelPricing:
     output_per_million: float
     reasoning_per_million: float
 
+    @property
+    def billable_reasoning_per_million(self) -> float:
+        if self.reasoning_per_million != 0.0:
+            return self.reasoning_per_million
+        return self.output_per_million
+
 
 # Chutes reference rates keyed by canonical model id.
 MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
-    "openai/gpt-oss-20b-TEE": ModelPricing(0.03, 0.11, 0.11),
+    "deepseek-ai/DeepSeek-V3.1-TEE": ModelPricing(0.27, 1.00, 0.0),
+    "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
     "openai/gpt-oss-120b-TEE": ModelPricing(0.09, 0.36, 0.36),
     "Qwen/Qwen3-Next-80B-A3B-Instruct": ModelPricing(0.10, 0.80, 0.0),
 }
@@ -74,7 +83,7 @@ def price_llm(model: ToolModelName, usage: LlmUsage) -> float:
 
     cost_input = (prompt_tokens / 1_000_000) * pricing.input_per_million
     cost_output = (completion_tokens / 1_000_000) * pricing.output_per_million
-    cost_reasoning = (reasoning_tokens / 1_000_000) * pricing.reasoning_per_million
+    cost_reasoning = (reasoning_tokens / 1_000_000) * pricing.billable_reasoning_per_million
     return cost_input + cost_output + cost_reasoning
 
 

@@ -31,7 +31,6 @@ def _settings() -> Settings:
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=60.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),

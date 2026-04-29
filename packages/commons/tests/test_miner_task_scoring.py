@@ -306,7 +306,7 @@ async def test_scoring_service_accepts_chosen_answer_alias_from_live_shape() -> 
     )
     service = EvaluationScoringService(
         llm_provider=AliasStubLlmProvider(["first", "second"]),
-        config=EvaluationScoringConfig(provider="vertex", model="judge-model"),
+        config=EvaluationScoringConfig(provider="vertex-maas", model="judge-model"),
     )
 
     score = await service.score(task=task, response=Response(text="Miner says 42."))

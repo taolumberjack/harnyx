@@ -125,6 +125,7 @@ class _SubtensorStub:
 
     def blocks_since_last_update(self, netuid: int, uid: int) -> int:
         assert netuid == 1
+        self.blocks_since_last_update_calls.append(uid)
         assert uid == self.validator_uid
         return self.blocks_since_last_update_value
 
@@ -220,6 +221,21 @@ def test_submit_weights_retries_commit_reveal_when_attempt_raises(
 
     assert tx_hash.startswith("reveal_round:")
     assert len(subtensor.sign_calls) == 2
+
+
+def test_submit_weights_treats_negative_validator_uid_as_unregistered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subtensor = _SubtensorStub(commit_reveal_enabled=True)
+    subtensor.validator_uid = -1
+    client = _make_client(monkeypatch, subtensor=subtensor)
+
+    with pytest.raises(RuntimeError, match="not registered"):
+        client.submit_weights({7: 1.0})
+
+    assert subtensor.sign_calls == []
+    assert subtensor.set_reveal_commitment_calls == []
+    assert subtensor.set_weights_calls == []
 
 
 def test_commit_reveal_preserves_deterministic_return_after_transient_network_failure(

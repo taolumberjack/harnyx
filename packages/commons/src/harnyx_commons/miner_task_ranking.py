@@ -8,6 +8,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from harnyx_commons.domain.miner_task import EvaluationDetails
+
 ScoreVector = list[float]
 _SCORE_PRECISION = 12
 
@@ -209,14 +211,54 @@ def ordered_challengers(
     return [artifact_id for artifact_id in candidate_artifact_ids if artifact_id not in incumbents]
 
 
-def compose_champion_weights(champion_uid: int | None) -> dict[int, float]:
-    if champion_uid is None:
-        return {}
-    return {champion_uid: 1.0}
-
-
 def _normalize_score(value: float) -> float:
     return round(float(value), _SCORE_PRECISION)
+
+
+def run_ranking_cost_usd(details: EvaluationDetails) -> float:
+    return float(details.total_tool_usage.llm_cost + details.total_tool_usage.search_tool_cost)
+
+
+def run_contribution_score(
+    *,
+    is_completed: bool,
+    score: float | None,
+    details: EvaluationDetails | None,
+) -> float:
+    if not is_completed:
+        raise ValueError("only completed runs contribute to aggregates")
+    if details is None:
+        raise ValueError("completed runs must include details")
+    if details.error is not None:
+        if score != 0.0:
+            raise ValueError("failed completed runs must contribute a zero score")
+        return 0.0
+
+    breakdown = details.score_breakdown
+    if breakdown is None:
+        raise ValueError("successful completed runs must include score breakdown details")
+    if score is None:
+        raise ValueError("successful completed runs must include a score")
+    if not math.isclose(score, breakdown.total_score, rel_tol=1e-9, abs_tol=1e-9):
+        raise ValueError("completed run score must match details.score_breakdown.total_score")
+    return float(breakdown.total_score)
+
+
+def summarized_run_contribution_score(
+    *,
+    is_completed: bool,
+    score: float | None,
+    has_error: bool,
+) -> float:
+    if not is_completed:
+        raise ValueError("only completed runs contribute to aggregates")
+    if has_error:
+        if score != 0.0:
+            raise ValueError("failed completed runs must contribute a zero score")
+        return 0.0
+    if score is None:
+        raise ValueError("successful completed runs must include a score")
+    return float(score)
 
 
 def _is_meaningfully_lower(
@@ -271,6 +313,8 @@ __all__ = [
     "TIME_REDUCTION_MIN_MS",
     "TIME_REDUCTION_REQUIRED",
     "aggregate_ranking_rows",
-    "compose_champion_weights",
     "ordered_challengers",
+    "run_contribution_score",
+    "run_ranking_cost_usd",
+    "summarized_run_contribution_score",
 ]

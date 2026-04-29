@@ -23,6 +23,10 @@ from harnyx_commons.llm.provider_factory import build_cached_llm_provider_regist
 from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
 from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
+from harnyx_commons.miner_task_scoring import (
+    EvaluationScoringConfig,
+    EvaluationScoringService,
+)
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
@@ -52,10 +56,6 @@ from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker, Sa
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
 from harnyx_validator.application.ports.platform import PlatformPort
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
-from harnyx_validator.application.services.evaluation_scoring import (
-    EvaluationScoringConfig,
-    EvaluationScoringService,
-)
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.application.submit_weights import WeightSubmissionService
 from harnyx_validator.infrastructure.auth.sr25519 import BittensorSr25519InboundVerifier
@@ -366,7 +366,7 @@ def _resolve_scoring_judge_route(settings: Settings) -> ResolvedLlmRoute:
         default_provider=settings.llm.scoring_llm_provider,
         model=_effective_scoring_llm_model(settings),
         overrides=settings.llm.llm_model_provider_overrides,
-        allowed_providers={"bedrock", "chutes", "vertex", "vertex-maas"},
+        allowed_providers={"bedrock", "chutes", "vertex"},
     )
 
 

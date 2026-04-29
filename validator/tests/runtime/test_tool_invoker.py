@@ -290,7 +290,7 @@ async def test_runtime_invoker_does_not_expose_internal_provider_metadata_for_ll
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
         llm_provider=stub_provider,
-        llm_provider_name="vertex-maas",
+        llm_provider_name="vertex",
         allowed_models=ALLOWED_TOOL_MODELS,
     )
 
@@ -306,7 +306,7 @@ async def test_runtime_invoker_does_not_expose_internal_provider_metadata_for_ll
     assert isinstance(invocation_output, ToolInvocationOutput)
     assert "harnyx_provider" not in invocation_output.public_payload
     assert "harnyx_model" not in invocation_output.public_payload
-    assert stub_provider.calls[0].provider == "vertex-maas"
+    assert stub_provider.calls[0].provider == "vertex"
     assert stub_provider.calls[0].model == ALLOWED_TOOL_MODELS[0]
 
 

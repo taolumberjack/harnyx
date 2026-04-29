@@ -12,18 +12,17 @@ from dataclasses import replace
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 
-# Translate the public open-model ids only for the explicit Vertex MaaS
-# contract. Plain `vertex` stays on the standard Vertex model surface.
 _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
     "bedrock:openai/gpt-oss-20b-TEE": "openai.gpt-oss-20b-1:0",
     "bedrock:openai/gpt-oss-120b-TEE": "openai.gpt-oss-120b-1:0",
     "bedrock:MiniMaxAI/MiniMax-M2.5-TEE": "minimax.minimax-m2.5",
     "bedrock:moonshotai/Kimi-K2.5-TEE": "moonshotai.kimi-k2.5",
-    "vertex-maas:deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
-    "vertex-maas:openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
-    "vertex-maas:openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
-    "vertex-maas:Qwen/Qwen3-235B-A22B-Instruct-2507-TEE": "qwen3-235b-a22b-instruct-2507-maas",
-    "vertex-maas:Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
+    "vertex:deepseek-ai/DeepSeek-V3.1-TEE": "deepseek-ai/deepseek-v3.1-maas",
+    "vertex:deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
+    "vertex:openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
+    "vertex:openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
+    "vertex:Qwen/Qwen3-235B-A22B-Instruct-2507-TEE": "qwen3-235b-a22b-instruct-2507-maas",
+    "vertex:Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
 }
 
 

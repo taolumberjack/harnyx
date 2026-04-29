@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import re
 import socket
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -14,6 +15,14 @@ _CONNECTION_INTERRUPTED_ERRNOS = {
     errno.ECONNRESET,
     errno.ETIMEDOUT,
 }
+_WEBSOCKET_HANDSHAKE_TIMEOUT_MESSAGES = frozenset(
+    {
+        "timed out while waiting for handshake response",
+    }
+)
+_SSL_HANDSHAKE_TIMEOUT_MESSAGE = re.compile(
+    r"^_ssl\.c:\d+: The handshake operation timed out$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +38,11 @@ def classify_transient_network_failure(exc: BaseException) -> TransientNetworkCa
     """Return sanitized cause metadata when an exception is clearly transient network failure."""
 
     for candidate in _exception_chain(exc):
+        if _is_websocket_handshake_timeout(candidate):
+            return TransientNetworkCause(
+                kind="websocket_handshake_timeout",
+                exception_type=type(candidate).__name__,
+            )
         if isinstance(candidate, socket.gaierror) and candidate.errno == socket.EAI_AGAIN:
             return TransientNetworkCause(
                 kind="temporary_dns",
@@ -55,6 +69,16 @@ def classify_transient_network_failure(exc: BaseException) -> TransientNetworkCa
                 exception_type=type(candidate).__name__,
             )
     return None
+
+
+def _is_websocket_handshake_timeout(exc: BaseException) -> bool:
+    if type(exc) is not TimeoutError:
+        return False
+    message = str(exc)
+    return (
+        message in _WEBSOCKET_HANDSHAKE_TIMEOUT_MESSAGES
+        or _SSL_HANDSHAKE_TIMEOUT_MESSAGE.fullmatch(message) is not None
+    )
 
 
 def _exception_chain(exc: BaseException) -> Iterator[BaseException]:

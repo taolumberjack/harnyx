@@ -26,10 +26,26 @@ from harnyx_commons.domain.miner_task import (
     is_delivery_disqualifying_validator_pair_error,
 )
 from harnyx_commons.domain.session import SessionStatus
-from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.miner_task_failure_policy import (
+    SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION,
+    TERMINAL_TIMEOUT_ERROR_MESSAGE,
+    TIMEOUT_REVIEW_MAX_OBSERVATIONS,
+    TIMEOUT_TPS_SLOWDOWN_FACTOR,
+    ProviderFailureEvidence,
+    TimeoutAttributionKind,
+    TimeoutObservationEvidence,
+    classify_timeout_attribution,
+    is_provider_caused_terminal_failure,
+    is_script_validation_sandbox_invocation,
+    is_timeout_sandbox_invocation,
+    provider_batch_failure_evidence,
+    provider_batch_failure_message,
+    slowest_successful_llm_tps,
+    successful_llm_samples,
+)
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
@@ -43,7 +59,7 @@ from harnyx_validator.application.invoke_entrypoint import (
     SandboxInvocationError,
 )
 from harnyx_validator.application.ports.evaluation_record import EvaluationRecordPort
-from harnyx_validator.application.ports.progress import ProgressRecorder, ProviderFailureEvidence
+from harnyx_validator.application.ports.progress import ProgressRecorder
 from harnyx_validator.application.ports.subtensor import SubtensorClientPort
 from harnyx_validator.domain.evaluation import MinerTaskRun
 
@@ -57,11 +73,6 @@ CompletedArtifactBaseline = Callable[[], float | None]
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
 LOCAL_RETRY_ATTEMPTS = 2
-PROVIDER_BATCH_MIN_TOTAL_CALLS = 10
-PROVIDER_BATCH_MIN_FAILURE_RATE = 0.95
-TIMEOUT_REVIEW_MAX_OBSERVATIONS = 3
-TIMEOUT_TPS_SLOWDOWN_FACTOR = 2.0
-TERMINAL_TIMEOUT_ERROR_MESSAGE = "terminal timeout"
 
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
@@ -109,12 +120,6 @@ class AttemptControlKind(StrEnum):
     REVIEW_TIMEOUT = "review_timeout"
     TIMEOUT_UNRESOLVED = "timeout_unresolved"
     VALIDATOR_BATCH_FAILURE = "validator_batch_failure"
-
-
-class TimeoutAttributionKind(StrEnum):
-    # Timeout ownership result, not the persisted/public error code.
-    MINER_OWNED = "miner_owned"
-    NOT_MINER_OWNED = "not_miner_owned"
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,20 +205,6 @@ class _ArtifactDispatchState:
     slowest_successful_tps: float | None = None
     validator_failure: ValidatorBatchFailedError | None = None
     unexpected_failure: Exception | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SuccessfulLlmSample:
-    elapsed_ms: float
-    total_tokens: int
-    llm_tps: float
-
-
-@dataclass(frozen=True, slots=True)
-class TimeoutObservationEvidence:
-    successful_llm_samples: tuple[SuccessfulLlmSample, ...]
-    session_summary: ToolUsageSummary
-    session_elapsed_ms: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,7 +600,10 @@ class EvaluationRunner:
                 )
             )
         except SandboxInvocationError as exc:
-            if _is_timeout_sandbox_invocation(exc):
+            if is_timeout_sandbox_invocation(
+                status_code=exc.status_code,
+                detail_exception=exc.detail_exception,
+            ):
                 return _review_timeout_decision(exc)
             provider_failures = self._consume_provider_failures(issued.session.session_id)
             return self._non_timeout_failure_decision(
@@ -658,7 +652,7 @@ class EvaluationRunner:
                 session_id=issued.session.session_id,
                 outcome=outcome,
             ),
-            successful_baseline_tps=_slowest_successful_llm_tps(outcome.tool_receipts),
+            successful_baseline_tps=slowest_successful_llm_tps(outcome.tool_receipts),
         )
 
     async def record_failure_for_artifact(
@@ -872,7 +866,7 @@ class EvaluationRunner:
             session_id=session_id,
             envelope=envelope,
         )
-        timeout_attribution = _classify_timeout_attribution(
+        timeout_attribution = classify_timeout_attribution(
             observation=observation,
             successful_baseline_tps=successful_baseline_tps,
             prior_timeout_observations=prior_timeout_observations,
@@ -939,15 +933,15 @@ class EvaluationRunner:
         final_attempt: bool,
     ) -> TaskAttemptDecision:
         if _is_provider_caused_terminal_failure(exc):
-            provider_batch_evidence = _provider_batch_failure_evidence(provider_failures)
+            provider_batch_evidence = provider_batch_failure_evidence(provider_failures)
             if provider_batch_evidence is not None:
                 return _validator_batch_failure_decision(
                     ValidatorBatchFailedError(
                         error_code=MinerTaskErrorCode.PROVIDER_BATCH_FAILURE,
-                        message=_provider_batch_failure_message(provider_batch_evidence),
+                        message=provider_batch_failure_message(provider_batch_evidence),
                         failure_detail=ValidatorBatchFailureDetail(
                             error_code=MinerTaskErrorCode.PROVIDER_BATCH_FAILURE,
-                            error_message=_provider_batch_failure_message(provider_batch_evidence),
+                            error_message=provider_batch_failure_message(provider_batch_evidence),
                             occurred_at=self._clock(),
                             artifact_id=artifact.artifact_id,
                             task_id=task.task_id,
@@ -985,7 +979,9 @@ class EvaluationRunner:
                 )
             )
 
-        if isinstance(exc, SandboxInvocationError) and _is_script_validation_sandbox_invocation(exc):
+        if isinstance(exc, SandboxInvocationError) and is_script_validation_sandbox_invocation(
+            detail_code=exc.detail_code,
+        ):
             return _submission_decision(
                 self._record_task_failure(
                     batch_id=batch_id,
@@ -999,7 +995,7 @@ class EvaluationRunner:
                 )
             )
 
-        if isinstance(exc, SandboxInvocationError) and exc.detail_code == _SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION:
+        if isinstance(exc, SandboxInvocationError) and exc.detail_code == SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION:
             return _submission_decision(
                 self._record_task_failure(
                     batch_id=batch_id,
@@ -1079,7 +1075,7 @@ class EvaluationRunner:
         _, session_summary = self._summarize_session(envelope)
         receipts = tuple(self._receipts.for_session(session_id))
         return TimeoutObservationEvidence(
-            successful_llm_samples=_successful_llm_samples(receipts),
+            successful_llm_samples=successful_llm_samples(receipts),
             session_summary=session_summary,
             session_elapsed_ms=_elapsed_ms(
                 issued_at=envelope.session.issued_at,
@@ -1136,34 +1132,14 @@ class EvaluationRunner:
         return issued
 
 
-def _provider_batch_failure_evidence(
-    provider_failures: tuple[ProviderFailureEvidence, ...],
-) -> ProviderFailureEvidence | None:
-    for evidence in provider_failures:
-        if evidence["total_calls"] < PROVIDER_BATCH_MIN_TOTAL_CALLS:
-            continue
-        if evidence["failed_calls"] / evidence["total_calls"] <= PROVIDER_BATCH_MIN_FAILURE_RATE:
-            continue
-        return evidence
-    return None
-
-
-def _provider_batch_failure_message(evidence: ProviderFailureEvidence) -> str:
-    return (
-        "provider failure threshold reached "
-        f"(provider={evidence['provider']} model={evidence['model']} "
-        f"failed_calls={evidence['failed_calls']} total_calls={evidence['total_calls']})"
-    )
-
-
 def _is_provider_caused_terminal_failure(exc: Exception) -> bool:
     if not isinstance(exc, SandboxInvocationError):
         return False
-    if exc.detail_code != _SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION:
-        return False
-    if exc.detail_exception != "ToolInvocationError":
-        return False
-    return exc.detail_error == "tool invocation failed with 400: tool execution failed"
+    return is_provider_caused_terminal_failure(
+        detail_code=exc.detail_code,
+        detail_exception=exc.detail_exception,
+        detail_error=exc.detail_error,
+    )
 
 
 def _submission_decision(
@@ -1251,90 +1227,6 @@ def _exception_type_name(exc: Exception | None) -> str | None:
     if exc is None:
         return None
     return type(exc).__name__
-
-
-_SANDBOX_TIMEOUT_EXCEPTIONS = frozenset({"TimeoutError", "TimeoutException"})
-_SANDBOX_DETAIL_CODE_UNHANDLED_EXCEPTION = "UnhandledException"
-_SANDBOX_DETAIL_CODE_MISSING_ENTRYPOINT = "MissingEntrypoint"
-_SANDBOX_DETAIL_CODE_PRELOAD_FAILED = "PreloadFailed"
-_SANDBOX_DETAIL_CODE_PRELOAD_INFRASTRUCTURE_FAILED = "PreloadInfrastructureFailed"
-
-
-def _is_timeout_sandbox_invocation(exc: SandboxInvocationError) -> bool:
-    return exc.status_code == 504 and exc.detail_exception in _SANDBOX_TIMEOUT_EXCEPTIONS
-
-
-def _is_script_validation_sandbox_invocation(exc: Exception) -> bool:
-    if not isinstance(exc, SandboxInvocationError):
-        return False
-    if exc.detail_code == _SANDBOX_DETAIL_CODE_MISSING_ENTRYPOINT:
-        return True
-    return exc.detail_code == _SANDBOX_DETAIL_CODE_PRELOAD_FAILED
-
-
-def _successful_llm_samples(receipts: Sequence[ToolCall]) -> tuple[SuccessfulLlmSample, ...]:
-    samples: list[SuccessfulLlmSample] = []
-    for receipt in receipts:
-        if not receipt.is_successful() or receipt.tool != "llm_chat":
-            continue
-        execution = receipt.details.execution
-        if execution is None or execution.elapsed_ms is None or execution.elapsed_ms <= 0:
-            continue
-        total_tokens = _receipt_total_tokens(receipt)
-        if total_tokens is None or total_tokens <= 0:
-            continue
-        samples.append(
-            SuccessfulLlmSample(
-                elapsed_ms=execution.elapsed_ms,
-                total_tokens=total_tokens,
-                llm_tps=total_tokens / (execution.elapsed_ms / 1000.0),
-            )
-        )
-    return tuple(samples)
-
-
-def _receipt_total_tokens(receipt: ToolCall) -> int | None:
-    response_payload = receipt.details.response_payload
-    if not isinstance(response_payload, dict):
-        return None
-    usage = response_payload.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    total_tokens = usage.get("total_tokens")
-    if not isinstance(total_tokens, int):
-        return None
-    return total_tokens
-
-
-def _classify_timeout_attribution(
-    *,
-    observation: TimeoutObservationEvidence,
-    successful_baseline_tps: float | None,
-    prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
-) -> TimeoutAttributionKind | None:
-    comparable_samples = observation.successful_llm_samples
-    exhausted = len(prior_timeout_observations) + 1 >= TIMEOUT_REVIEW_MAX_OBSERVATIONS
-    threshold_tps = (
-        None
-        if successful_baseline_tps is None
-        else successful_baseline_tps / TIMEOUT_TPS_SLOWDOWN_FACTOR
-    )
-    if threshold_tps is None:
-        return TimeoutAttributionKind.MINER_OWNED if exhausted else None
-    if any(sample.llm_tps >= threshold_tps for sample in comparable_samples):
-        return TimeoutAttributionKind.MINER_OWNED
-    if not exhausted:
-        return None
-    if comparable_samples and all(sample.llm_tps < threshold_tps for sample in comparable_samples):
-        return TimeoutAttributionKind.NOT_MINER_OWNED
-    return TimeoutAttributionKind.MINER_OWNED
-
-
-def _slowest_successful_llm_tps(receipts: Sequence[ToolCall]) -> float | None:
-    samples = _successful_llm_samples(receipts)
-    if not samples:
-        return None
-    return min(sample.llm_tps for sample in samples)
 
 
 def _merge_slowest_successful_tps(

@@ -6,6 +6,7 @@ import logging
 import os
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
+from contextvars import ContextVar, Token
 from dataclasses import asdict, is_dataclass
 from types import TracebackType
 from typing import Literal, Protocol, cast
@@ -28,6 +29,10 @@ _SERVER_LABEL_ENV_VARS = ("OTEL_SERVICE_NAME", "K_SERVICE", "SERVICE_NAME")
 _LOW_CARDINALITY_TAG_KEYS = ("server", "use_case")
 _UNKNOWN_SERVER_LABEL = "unknown"
 _LANGFUSE_CLIENT: Langfuse | None = None
+_ACTIVE_LANGFUSE_TRACE_NAME: ContextVar[str | None] = ContextVar(
+    "harnyx_langfuse_trace_name",
+    default=None,
+)
 
 
 class LangfuseGeneration(Protocol):
@@ -41,10 +46,12 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
         client: Langfuse | None,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> None:
         self._client = client
         self._provider_label = provider_label
         self._request = request
+        self._trace_name = trace_name
         self._observation_cm: AbstractContextManager[object] | None = None
         self._propagate_cm: AbstractContextManager[object] | None = None
 
@@ -58,10 +65,10 @@ class _LangfuseGenerationScope(AbstractContextManager[LangfuseGeneration | None]
         )
         try:
             tags = _derive_tags(metadata)
-            if tags:
+            if self._trace_name is not None or tags:
                 self._propagate_cm = cast(
                     AbstractContextManager[object],
-                    propagate_attributes(tags=tags),
+                    propagate_attributes(trace_name=self._trace_name, tags=tags),
                 )
                 self._propagate_cm.__enter__()
             self._observation_cm = cast(
@@ -159,6 +166,7 @@ class _LangfuseTraceAttributesScope(AbstractContextManager[None]):
         self._metadata = metadata
         self._tags = tags
         self._propagate_cm: AbstractContextManager[object] | None = None
+        self._trace_name_token: Token[str | None] | None = None
 
     def __enter__(self) -> None:
         metadata_payload = _normalize_trace_metadata(self._metadata)
@@ -185,8 +193,11 @@ class _LangfuseTraceAttributesScope(AbstractContextManager[None]):
                 ),
             )
             self._propagate_cm.__enter__()
+            if self._trace_name is not None:
+                self._trace_name_token = _ACTIVE_LANGFUSE_TRACE_NAME.set(self._trace_name)
         except Exception:
             self._propagate_cm = None
+            self._trace_name_token = None
             _LOGGER.exception(
                 "langfuse.trace.propagate_start_failed",
                 extra={
@@ -222,6 +233,10 @@ class _LangfuseTraceAttributesScope(AbstractContextManager[None]):
                 },
             )
             return False
+        finally:
+            if self._trace_name_token is not None:
+                _ACTIVE_LANGFUSE_TRACE_NAME.reset(self._trace_name_token)
+                self._trace_name_token = None
 
 
 def get_client() -> Langfuse | None:
@@ -244,6 +259,7 @@ def start_llm_generation(
     *,
     provider_label: str,
     request: AbstractLlmRequest,
+    trace_name: str | None = None,
 ) -> AbstractContextManager[LangfuseGeneration | None]:
     """Start a Langfuse generation scope for an LLM call.
 
@@ -256,7 +272,18 @@ def start_llm_generation(
         client=client,
         provider_label=provider_label,
         request=request,
+        trace_name=trace_name,
     )
+
+
+def derive_standalone_llm_trace_name(*, request: AbstractLlmRequest) -> str | None:
+    if has_active_langfuse_trace_name():
+        return None
+    return request.use_case
+
+
+def has_active_langfuse_trace_name() -> bool:
+    return _ACTIVE_LANGFUSE_TRACE_NAME.get() is not None
 
 
 def propagate_trace_attributes_best_effort(
@@ -416,6 +443,8 @@ def build_generation_metadata(
     merged: dict[str, object] = {str(key): value for key, value in internal_metadata.items()}
     merged["provider"] = provider_label
     merged["server"] = _resolve_server_label()
+    if request.use_case is not None:
+        merged["use_case"] = request.use_case
     if metadata is not None:
         merged.update({str(key): value for key, value in metadata.items()})
     return merged
@@ -568,7 +597,9 @@ __all__ = [
     "build_generation_input_payload",
     "build_generation_metadata",
     "build_generation_output_payload",
+    "derive_standalone_llm_trace_name",
     "get_client",
+    "has_active_langfuse_trace_name",
     "propagate_trace_attributes_best_effort",
     "record_child_observation_best_effort",
     "start_llm_generation",

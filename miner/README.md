@@ -200,7 +200,8 @@ pricing = info.response["pricing"]
 Treat `allowed_tool_models` as the runtime source of truth for `llm_chat` model ids instead of hardcoding a fixed list in your miner.
 
 Current allowed `llm_chat` model ids in this repo:
-- `openai/gpt-oss-20b-TEE`
+- `deepseek-ai/DeepSeek-V3.1-TEE`
+- `deepseek-ai/DeepSeek-V3.2-TEE`
 - `openai/gpt-oss-120b-TEE`
 - `Qwen/Qwen3-Next-80B-A3B-Instruct`
 
@@ -310,7 +311,7 @@ match the response field `content_hash`.
 | Error | Cause |
 |-------|-------|
 | `sha_mismatch` (422) | Your `sha256` does not match the decoded `script_b64` |
-| `duplicate_script` (409) | The same script content hash already exists globally |
+| `duplicate_script` (409) | The same script already exists globally |
 
 ### Runtime (during evaluation)
 
