@@ -55,8 +55,16 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
         MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].output_per_million
     )
     assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["reasoning_per_million"] == pytest.approx(
-        MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].reasoning_per_million
+        MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].billable_reasoning_per_million
     )
+    for model in ("deepseek-ai/DeepSeek-V3.1-TEE", "deepseek-ai/DeepSeek-V3.2-TEE"):
+        assert model in payload["allowed_tool_models"]
+        assert MODEL_PRICING[model].reasoning_per_million == pytest.approx(0.0)
+        assert model_prices[model]["input_per_million"] == pytest.approx(MODEL_PRICING[model].input_per_million)
+        assert model_prices[model]["output_per_million"] == pytest.approx(MODEL_PRICING[model].output_per_million)
+        assert model_prices[model]["reasoning_per_million"] == pytest.approx(
+            MODEL_PRICING[model].billable_reasoning_per_million
+        )
 
 
 async def test_tooling_info_default_surface_matches_miner_contract() -> None:
@@ -72,16 +80,16 @@ async def test_tooling_info_default_surface_matches_miner_contract() -> None:
     assert "search_items" not in payload["pricing"]
 
 
-def test_qwen_tool_model_pricing_ignores_reasoning_tokens() -> None:
+def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     usage = LlmUsage(
         prompt_tokens=1_000_000,
         completion_tokens=1_000_000,
         reasoning_tokens=1_000_000,
     )
 
-    cost = price_llm(parse_tool_model("Qwen/Qwen3-Next-80B-A3B-Instruct"), usage)
-
-    assert cost == pytest.approx(0.90)
+    assert price_llm(parse_tool_model("Qwen/Qwen3-Next-80B-A3B-Instruct"), usage) == pytest.approx(1.70)
+    assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.1-TEE"), usage) == pytest.approx(2.27)
+    assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.2-TEE"), usage) == pytest.approx(1.12)
 
 
 def test_openai_gpt_oss_120b_tool_model_pricing_matches_current_chutes_rate() -> None:

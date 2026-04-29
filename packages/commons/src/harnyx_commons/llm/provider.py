@@ -23,7 +23,6 @@ from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.llm.provider_types import (
     BEDROCK_PROVIDER,
     CHUTES_PROVIDER,
-    VERTEX_MAAS_PROVIDER,
     VERTEX_PROVIDER,
     LlmProviderName,
     normalize_reasoning_effort,
@@ -58,7 +57,6 @@ ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
     BEDROCK_PROVIDER,
     CHUTES_PROVIDER,
     VERTEX_PROVIDER,
-    VERTEX_MAAS_PROVIDER,
 )
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)

@@ -366,7 +366,7 @@ def _resolve_scoring_judge_route(settings: Settings) -> ResolvedLlmRoute:
         default_provider=settings.llm.scoring_llm_provider,
         model=_effective_scoring_llm_model(settings),
         overrides=settings.llm.llm_model_provider_overrides,
-        allowed_providers={"bedrock", "chutes", "vertex", "vertex-maas"},
+        allowed_providers={"bedrock", "chutes", "vertex"},
     )
 
 

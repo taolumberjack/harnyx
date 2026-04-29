@@ -61,16 +61,22 @@ from .gemini_stream_codec import GeminiAccumulatedResponse
 # richer tool attribution in observability.
 _API_VERSION = "v1beta1"
 _CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+VERTEX_MAAS_DEFAULT_LOCATION = "global"
 _VERTEX_MAAS_OPENAI_CHAT_MODELS = frozenset(
     {
+        "deepseek-ai/deepseek-v3.1-maas",
         "deepseek-ai/deepseek-v3.2-maas",
         "publishers/openai/models/gpt-oss-20b-maas",
         "publishers/openai/models/gpt-oss-120b-maas",
+        "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
         "qwen3-235b-a22b-instruct-2507-maas",
         "openai/gpt-oss-20b-tee",
         "openai/gpt-oss-120b-tee",
     }
 )
+_VERTEX_MAAS_MODEL_LOCATIONS = {
+    "deepseek-ai/deepseek-v3.1-maas": "us-central1",
+}
 
 
 class VertexLlmProvider(BaseLlmProvider):
@@ -254,6 +260,7 @@ class VertexLlmProvider(BaseLlmProvider):
 
     async def _call_vertex_maas_chat_completions(self, request: AbstractLlmRequest) -> LlmResponse:
         payload = _VertexMaasChatRequest.from_request(request)
+        location = _vertex_maas_location_for(model=request.model)
         access_token = await self._vertex_maas_access_token()
         request_kwargs: dict[str, Any] = {
             "headers": {
@@ -270,7 +277,7 @@ class VertexLlmProvider(BaseLlmProvider):
         ttft_ms: float | None = None
         async with self._http_client.stream(
             "POST",
-            _vertex_maas_chat_completions_url(project=self._project, location=self._location),
+            _vertex_maas_chat_completions_url(project=self._project, location=location),
             **request_kwargs,
         ) as response:
             response.raise_for_status()
@@ -468,9 +475,13 @@ def _vertex_stream_text_fragments(value: object) -> tuple[str, ...]:
 
 
 def _should_use_vertex_maas_openai_chat(request: AbstractLlmRequest) -> bool:
-    provider = (request.provider or "").strip().lower()
     model = request.model.strip().lower()
-    return provider == "vertex-maas" and model in _VERTEX_MAAS_OPENAI_CHAT_MODELS
+    return model in _VERTEX_MAAS_OPENAI_CHAT_MODELS
+
+
+def _vertex_maas_location_for(*, model: str) -> str:
+    normalized_model = model.strip().lower()
+    return _VERTEX_MAAS_MODEL_LOCATIONS.get(normalized_model, VERTEX_MAAS_DEFAULT_LOCATION)
 
 
 def _vertex_maas_chat_completions_url(*, project: str, location: str) -> str:
@@ -496,4 +507,4 @@ def _anthropic_messages_from_request(
     return system_content, messages
 
 
-__all__ = ["VertexLlmProvider"]
+__all__ = ["VERTEX_MAAS_DEFAULT_LOCATION", "VertexLlmProvider"]

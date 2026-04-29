@@ -200,6 +200,8 @@ pricing = info.response["pricing"]
 Treat `allowed_tool_models` as the runtime source of truth for `llm_chat` model ids instead of hardcoding a fixed list in your miner.
 
 Current allowed `llm_chat` model ids in this repo:
+- `deepseek-ai/DeepSeek-V3.1-TEE`
+- `deepseek-ai/DeepSeek-V3.2-TEE`
 - `openai/gpt-oss-120b-TEE`
 - `Qwen/Qwen3-Next-80B-A3B-Instruct`
 

@@ -297,7 +297,7 @@ async def test_vertex_provider_invokes_generative_model(
 
     request = LlmRequest(
         provider="vertex",
-        model="publishers/openai/models/gpt-oss-20b-maas",
+        model="gemini-2.5-pro",
         messages=(
             LlmMessage(
                 role="system",
@@ -334,7 +334,7 @@ async def test_vertex_provider_invokes_generative_model(
     assert client_kwargs["credentials"] is None
 
     model_call = captured["model_stream_call"]
-    assert model_call["model"] == "publishers/openai/models/gpt-oss-20b-maas"
+    assert model_call["model"] == "gemini-2.5-pro"
     assert model_call["contents"][0].role == "user"
     config = model_call["config"]
     assert config.system_instruction == "stay concise"
@@ -984,7 +984,7 @@ async def test_vertex_maas_gpt_oss_routes_to_chat_completions(
     monkeypatch.setattr(provider, "_vertex_maas_access_token", _async_return("access-token"))
 
     request = LlmRequest(
-        provider="vertex-maas",
+        provider="vertex",
         model="publishers/openai/models/gpt-oss-120b-maas",
         messages=(
             LlmMessage(
@@ -1028,7 +1028,7 @@ async def test_vertex_maas_gpt_oss_routes_to_chat_completions(
     assert data["ttft_ms"] >= 0.0
 
 
-async def test_vertex_provider_keeps_vertex_gpt_oss_on_generate_content(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_vertex_provider_routes_maas_models_to_chat_completions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     captured: dict[str, Any] = {}
     _patch_google_client(monkeypatch, captured)
@@ -1056,8 +1056,51 @@ async def test_vertex_provider_keeps_vertex_gpt_oss_on_generate_content(monkeypa
 
     await provider.invoke(request)
 
-    assert "model_stream_call" in captured
-    assert "http_call" not in captured
+    assert "model_stream_call" not in captured
+    assert "http_call" in captured
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_location", "expected_host"),
+    (
+        ("deepseek-ai/deepseek-v3.1-maas", "us-central1", "https://us-central1-aiplatform.googleapis.com"),
+        ("deepseek-ai/deepseek-v3.2-maas", "global", "https://aiplatform.googleapis.com"),
+        ("publishers/openai/models/gpt-oss-120b-maas", "global", "https://aiplatform.googleapis.com"),
+        ("publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas", "global", "https://aiplatform.googleapis.com"),
+    ),
+)
+async def test_vertex_maas_chat_completions_uses_model_location(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    expected_location: str,
+    expected_host: str,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+    _patch_vertex_maas_http_client(monkeypatch, captured)
+
+    provider = VertexLlmProvider(project="demo-project", location="us-west4", timeout=30.0)
+    monkeypatch.setattr(provider, "_vertex_maas_access_token", _async_return("access-token"))
+
+    await provider.invoke(
+        LlmRequest(
+            provider="vertex",
+            model=model,
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text("hello"),),
+                ),
+            ),
+            temperature=None,
+            max_output_tokens=64,
+        )
+    )
+
+    http_call = captured["http_call"]
+    assert http_call["url"].startswith(expected_host)
+    assert f"/locations/{expected_location}/" in http_call["url"]
 
 
 async def test_vertex_provider_raw_response_metadata_is_json_safe(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1150,7 +1193,7 @@ async def test_vertex_provider_normalizes_assistant_and_tool_roles(monkeypatch: 
 
     request = LlmRequest(
         provider="vertex",
-        model="publishers/openai/models/gpt-oss-20b-maas",
+        model="gemini-2.5-pro",
         messages=(
             LlmMessage(
                 role="user",
@@ -1282,7 +1325,7 @@ class _StructuredPairwisePreference(BaseModel):
 
 def test_vertex_maas_chat_payload_supports_structured_output() -> None:
     request = LlmRequest(
-        provider="vertex-maas",
+        provider="vertex",
         model="publishers/openai/models/gpt-oss-120b-maas",
         messages=(
             LlmMessage(
@@ -1698,7 +1741,7 @@ async def test_vertex_claude_stream_default_reconstructs_final_response(
 
 async def test_vertex_maas_payload_forces_stream_even_when_extra_overrides() -> None:
     request = LlmRequest(
-        provider="vertex-maas",
+        provider="vertex",
         model="publishers/openai/models/gpt-oss-120b-maas",
         messages=(
             LlmMessage(
@@ -1913,7 +1956,7 @@ async def test_vertex_serializes_input_tool_result_as_function_response(monkeypa
 
     request = LlmRequest(
         provider="vertex",
-        model="publishers/openai/models/gpt-oss-20b-maas",
+        model="gemini-2.5-pro",
         messages=(
             LlmMessage(
                 role="user",

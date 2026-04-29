@@ -58,7 +58,6 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
         vertex_settings=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=45.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),
@@ -68,9 +67,10 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
     second = resolver("chutes")
     third = resolver("bedrock")
     fourth = resolver("vertex")
-    fifth = resolver("vertex-maas")
 
     assert first is second
+    with pytest.raises(ValueError, match="vertex-maas"):
+        resolver("vertex-maas")
     assert captured == [
         (
             "_FakeChutesProvider",
@@ -100,20 +100,9 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
                 "max_concurrent": 11,
             },
         ),
-        (
-            "_FakeVertexProvider",
-            {
-                "project": "project",
-                "location": "us-east5",
-                "timeout": 45.0,
-                "service_account_b64": "vertex-creds",
-                "max_concurrent": 11,
-            },
-        ),
     ]
     assert third.provider_name == "bedrock"
     assert fourth.provider_name == "vertex"
-    assert fifth.provider_name == "vertex-maas"
 
 
 async def test_build_cached_llm_provider_registry_closes_cached_providers_once(
@@ -140,7 +129,6 @@ async def test_build_cached_llm_provider_registry_closes_cached_providers_once(
         vertex_settings=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=45.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),
@@ -183,7 +171,6 @@ async def test_build_cached_llm_provider_registry_closes_later_providers_after_f
         vertex_settings=VertexSettings.model_construct(
             gcp_project_id="project",
             gcp_location="us-central1",
-            vertex_maas_gcp_location="us-east5",
             vertex_timeout_seconds=45.0,
             gcp_service_account_credential_b64=SecretStr("vertex-creds"),
         ),

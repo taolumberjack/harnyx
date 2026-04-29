@@ -12,6 +12,10 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
 REASONING_MODEL = "openai/gpt-oss-120b-TEE"
+DEEPSEEK_TOOL_MODELS = (
+    "deepseek-ai/DeepSeek-V3.1-TEE",
+    "deepseek-ai/DeepSeek-V3.2-TEE",
+)
 
 
 class JsonObjectAnswer(BaseModel):
@@ -139,3 +143,33 @@ async def test_chutes_reasoning_live_normalizes_string_reasoning_payload() -> No
     reasoning = response.choices[0].message.reasoning
     assert isinstance(reasoning, str)
     assert reasoning.strip()
+
+
+@pytest.mark.parametrize("model", DEEPSEEK_TOOL_MODELS)
+async def test_chutes_deepseek_tool_model_completion_live(model: str) -> None:
+    api_key, _, timeout = _provider_settings()
+    provider = ChutesLlmProvider(
+        base_url=CHUTES.base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )
+    request = LlmRequest(
+        provider="chutes",
+        model=model,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text('Reply with only "ok".'),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=32,
+        timeout_seconds=180.0,
+    )
+
+    try:
+        response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text

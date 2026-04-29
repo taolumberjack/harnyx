@@ -143,18 +143,6 @@ def _build_provider(
             ),
         )
 
-    if provider_name == "vertex-maas":
-        return LlmProviderAdapter(
-            provider_name=provider_name,
-            delegate=VertexLlmProvider(
-                project=vertex_settings.gcp_project_id,
-                location=vertex_settings.vertex_maas_gcp_location,
-                timeout=vertex_settings.vertex_timeout_seconds,
-                service_account_b64=vertex_settings.gcp_sa_credential_b64_value,
-                max_concurrent=max_concurrent,
-            ),
-        )
-
     raise ValueError(f"unsupported llm provider: {provider_name}")
 
 
@@ -164,7 +152,7 @@ def _max_concurrent_for_provider(
 ) -> int:
     if provider_name == "bedrock":
         return llm_settings.bedrock_max_concurrent
-    if provider_name in {"vertex", "vertex-maas"}:
+    if provider_name == "vertex":
         return llm_settings.vertex_max_concurrent
     if provider_name == "chutes":
         return llm_settings.chutes_max_concurrent

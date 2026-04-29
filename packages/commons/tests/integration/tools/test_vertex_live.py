@@ -16,18 +16,18 @@ from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessage
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 
 
-async def test_vertex_maas_qwen_alias_completion_live() -> None:
+async def test_vertex_qwen_maas_alias_completion_live() -> None:
     vertex = VertexSettings()
     project = vertex.gcp_project_id
-    location = vertex.vertex_maas_gcp_location
+    location = vertex.gcp_location
     credentials_b64 = vertex.gcp_sa_credential_b64_value
 
     assert project, "GCP_PROJECT_ID must be configured"
-    assert location, "VERTEX_MAAS_GCP_LOCATION must be configured"
+    assert location, "GCP_LOCATION must be configured"
     assert credentials_b64, "Vertex credentials must be configured"
 
     provider = LlmProviderAdapter(
-        provider_name="vertex-maas",
+        provider_name="vertex",
         delegate=VertexLlmProvider(
             project=project,
             location=location,
@@ -38,7 +38,7 @@ async def test_vertex_maas_qwen_alias_completion_live() -> None:
     )
     try:
         request = LlmRequest(
-            provider="vertex-maas",
+            provider="vertex",
             model="Qwen/Qwen3-Next-80B-A3B-Instruct",
             messages=(
                 LlmMessage(
@@ -60,18 +60,18 @@ async def test_vertex_maas_qwen_alias_completion_live() -> None:
         await provider.aclose()
 
 
-async def test_vertex_maas_openai_completion_live() -> None:
+async def test_vertex_openai_maas_completion_live() -> None:
     vertex = VertexSettings()
     project = vertex.gcp_project_id
-    location = vertex.vertex_maas_gcp_location
+    location = vertex.gcp_location
     credentials_b64 = vertex.gcp_sa_credential_b64_value
 
     assert project, "GCP_PROJECT_ID must be configured"
-    assert location, "VERTEX_MAAS_GCP_LOCATION must be configured"
+    assert location, "GCP_LOCATION must be configured"
     assert credentials_b64, "Vertex credentials must be configured"
 
     provider = LlmProviderAdapter(
-        provider_name="vertex-maas",
+        provider_name="vertex",
         delegate=VertexLlmProvider(
             project=project,
             location=location,
@@ -82,7 +82,7 @@ async def test_vertex_maas_openai_completion_live() -> None:
     )
     try:
         request = LlmRequest(
-            provider="vertex-maas",
+            provider="vertex",
             model="openai/gpt-oss-120b-TEE",
             messages=(
                 LlmMessage(
@@ -118,6 +118,54 @@ async def test_vertex_maas_openai_completion_live() -> None:
     assert response is not None
     assert response.raw_text, "Vertex MaaS OpenAI response should include text output"
     assert "56" in response.raw_text
+
+
+@pytest.mark.parametrize(
+    "model",
+    (
+        "deepseek-ai/DeepSeek-V3.1-TEE",
+        "deepseek-ai/DeepSeek-V3.2-TEE",
+    ),
+)
+async def test_vertex_deepseek_maas_alias_completion_live(model: str) -> None:
+    vertex = VertexSettings()
+    project = vertex.gcp_project_id
+    location = vertex.gcp_location
+    credentials_b64 = vertex.gcp_sa_credential_b64_value
+
+    assert project, "GCP_PROJECT_ID must be configured"
+    assert location, "GCP_LOCATION must be configured"
+    assert credentials_b64, "Vertex credentials must be configured"
+
+    provider = LlmProviderAdapter(
+        provider_name="vertex",
+        delegate=VertexLlmProvider(
+            project=project,
+            location=location,
+            timeout=float(vertex.vertex_timeout_seconds or PLATFORM.timeout_seconds),
+            credentials_path=None,
+            service_account_b64=credentials_b64 or "",
+        ),
+    )
+    try:
+        response = await provider.invoke(
+            LlmRequest(
+                provider="vertex",
+                model=model,
+                messages=(
+                    LlmMessage(
+                        role="user",
+                        content=(LlmMessageContentPart.input_text('Reply with only "ok".'),),
+                    ),
+                ),
+                temperature=0.0,
+                max_output_tokens=32,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text
 
 
 async def test_vertex_multimodal_image_live() -> None:

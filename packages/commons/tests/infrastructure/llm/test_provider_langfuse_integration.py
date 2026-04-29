@@ -847,7 +847,7 @@ async def test_invoke_vertex_claude_reasoning_does_not_mark_include_thoughts_req
     assert reasoning["reasoning_tokens"] == 4
 
 
-async def test_invoke_vertex_maas_openai_reasoning_does_not_mark_include_thoughts_requested(
+async def test_invoke_vertex_maas_model_reasoning_does_not_mark_include_thoughts_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _request(

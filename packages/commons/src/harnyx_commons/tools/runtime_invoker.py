@@ -178,7 +178,7 @@ class RuntimeToolInvoker(ToolInvoker):
                     model: {
                         "input_per_million": rates.input_per_million,
                         "output_per_million": rates.output_per_million,
-                        "reasoning_per_million": rates.reasoning_per_million,
+                        "reasoning_per_million": rates.billable_reasoning_per_million,
                     }
                     for model, rates in MODEL_PRICING.items()
                 },
