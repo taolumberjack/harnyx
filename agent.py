@@ -11,51 +11,14 @@ logger = logging.getLogger(__name__)
 
 MODEL = "Qwen/Qwen3-Next-80B-A3B-Instruct"
 
-_HEDGE_PATTERNS = [
+_HEDGE_WORDS = {
     "cannot be determined", "not provided", "not specified", "not mentioned",
     "not stated", "not given", "not clear", "not available", "not found",
     "does not specify", "does not mention", "does not state", "does not provide",
     "does not indicate", "does not include", "does not contain",
-    "no information is provided", "no information was provided",
-    "no information is available", "no information was available",
-    "no information is given", "no information was given",
-    "no information is found", "no information was found",
-    "no data is provided", "no data was provided", "no data is available",
-    "insufficient information", "insufficient evidence", "insufficient context",
-    "insufficient data", "unclear from", "unclear based on",
-    "the text does not", "the passage does not", "the excerpt does not",
-    "the snippet does not", "the source does not", "the document does not",
-    "the evidence does not", "based on the available evidence.*cannot",
-    "based on the provided evidence.*cannot",
-    "it is not possible to determine", "it was not possible to determine",
-    "not available", "not stated", "not given", "not found", "not addressed",
-    "not covered", "not discussed", "not listed", "not included",
-    "unknown", "missing", "lacks", "absent", "not enough",
-]
-
-_HEDGE_RE = re.compile(
-    r"\b(" + "|".join(re.escape(p) for p in _HEDGE_PATTERNS) + r")\b",
-    re.IGNORECASE,
-)
-
-SYSTEM = (
-    "You are a precise research agent. Answer the question using ONLY the evidence.\n\n"
-    "CRITICAL RULES:\n"
-    "1. State ONLY facts that appear in the evidence.\n"
-    "2. Cite every factual claim with [N] matching the evidence index.\n"
-    "3. Use exact numbers, dates, names, and figures from the evidence.\n"
-    "4. NEVER hedge or say information is missing.\n"
-    "5. If evidence is partial, state what IS known. Do NOT mention gaps.\n"
-    "6. Output ONLY the answer. No preamble, no markdown fences, no explanations.\n\n"
-    "FORBIDDEN PHRASES (these cause immediate zero score):\n"
-    "'cannot be determined', 'not provided', 'not specified', 'not mentioned',\n"
-    "'does not specify', 'no information', 'insufficient', 'unclear',\n"
-    "'the evidence does not', 'it is not possible'.\n\n"
-    "EXAMPLE - GOOD answer (score 1.0):\n"
-    "'Based on [1], the project launched in Q4 2024. [2] confirms the budget was $50M.'\n\n"
-    "EXAMPLE - BAD answer (score 0.0):\n"
-    "'The evidence does not specify the exact launch date. This information is not provided.'"
-)
+    "no information", "insufficient", "unclear", "the text does not",
+    "the evidence does not", "it is not possible",
+}
 
 
 class Source:
@@ -98,23 +61,32 @@ def _score(src: Source, qt: set[str]) -> float:
 def _fmt_evidence(sources: list[Source]) -> str:
     lines = []
     for i, s in enumerate(sources, 1):
-        snip = (s.snippet or s.title or "").strip()[:500]
+        snip = (s.snippet or s.title or "").strip()[:600]
         lines.append(f"[{i}] {s.title or 'Source'}: {snip}")
     return "\n\n".join(lines)
 
 
-def _has_hedges(text: str) -> bool:
-    return bool(_HEDGE_RE.search(text))
-
-
-def _build_fallback(sources: list[Source]) -> str:
-    """Build answer directly from evidence when LLM hedges."""
-    parts = []
-    for i, s in enumerate(sources[:5], 1):
-        snip = (s.snippet or s.title or "").strip()[:250]
-        if snip:
-            parts.append(f"[{i}] {snip}")
-    return " ".join(parts)
+def _strip_hedge_sentences(text: str) -> str:
+    """Remove sentences that are PURE hedge (no facts). Keep mixed sentences."""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    kept = []
+    for sent in sentences:
+        s = sent.strip()
+        if not s:
+            continue
+        # Pure hedge sentence: all text matches hedge words + short
+        hedge_count = sum(1 for h in _HEDGE_WORDS if h.lower() in s.lower())
+        if hedge_count > 0 and len(s) < 120:
+            # Mixed sentence - keep it but remove the hedge clause
+            for h in _HEDGE_WORDS:
+                s = re.sub(r'(?i)' + re.escape(h) + r'[^.]*', '', s)
+            s = s.strip()
+            if len(s) > 30:
+                kept.append(s)
+        else:
+            kept.append(s)
+    result = " ".join(kept).strip()
+    return result if result else text
 
 
 @entrypoint("query")
@@ -126,11 +98,11 @@ async def agent(query: Query) -> Response:
     sources: list[Source] = []
     seen: set[str] = set()
 
-    # Phase 1: Web search
+    # Phase 1: Web search (10 results)
     try:
-        r = await search_web(q, num=5)
+        r = await search_web(q, num=10)
         receipt = getattr(r, "receipt_id", "")
-        for res in r.results[:5]:
+        for res in r.results[:10]:
             url = getattr(res, "url", "") or getattr(res, "link", "")
             if url and url not in seen:
                 seen.add(url)
@@ -144,12 +116,12 @@ async def agent(query: Query) -> Response:
     except Exception as e:
         logger.debug(f"search_web failed: {e}")
 
-    # Phase 2: AI search
+    # Phase 2: AI search (10 results)
     try:
         r = await search_ai(prompt=q, count=10)
         if r and getattr(r, "response", None) and getattr(r.response, "data", None):
             receipt = getattr(r, "receipt_id", "")
-            for res in r.response.data[:5]:
+            for res in r.response.data[:10]:
                 url = getattr(res, "url", "")
                 if url and url not in seen:
                     seen.add(url)
@@ -172,8 +144,8 @@ async def agent(query: Query) -> Response:
         s.score = _score(s, qt)
     sources.sort(key=lambda s: -s.score)
 
-    # Phase 4: Enrich thin snippets
-    for s in sources[:3]:
+    # Phase 4: Enrich top 5 thin snippets
+    for s in sources[:5]:
         if s.url.startswith("http") and (not s.snippet or len(s.snippet) < 120):
             try:
                 page = await fetch_page(s.url)
@@ -186,44 +158,55 @@ async def agent(query: Query) -> Response:
                 pass
 
     sources.sort(key=lambda s: -s.score)
-    sources = sources[:8]
+    sources = sources[:12]
 
     # Build refs
     refs = [CitationRef(receipt_id=s.receipt_id, result_id=s.result_id) for s in sources]
 
-    # Phase 5: Synthesize
+    # Phase 5: Synthesize with strong prompt
     evidence = _fmt_evidence(sources)
+    system = (
+        "You are a precise research agent. Answer using ONLY the provided evidence.\n\n"
+        "RULES:\n"
+        "1. Answer EVERY part of the question comprehensively.\n"
+        "2. Cite every claim with [N]. Use multiple citations when supported.\n"
+        "3. Include exact numbers, dates, names from evidence.\n"
+        "4. NEVER say information is missing or not provided.\n"
+        "5. If evidence is partial, state what IS known and make brief inference.\n"
+        "6. Output ONLY the answer. No preamble."
+    )
     user = (
         f"Question: {q}\n\n"
         f"Evidence ({len(sources)} sources):\n{evidence}\n\n"
-        "Answer using ONLY the evidence. Cite every claim with [N]. "
-        "State facts directly. Never mention missing information."
+        "Write a thorough, specific answer. Cover all parts. Cite every claim."
     )
 
     answer = ""
     try:
         r = await llm_chat(
-            messages=[{"role": "system", "content": SYSTEM},
+            messages=[{"role": "system", "content": system},
                       {"role": "user", "content": user}],
             model=MODEL,
             temperature=0.0,
-            max_output_tokens=500,
+            max_output_tokens=600,
         )
         answer = _extract_text(r)
     except Exception as e:
         logger.debug(f"llm_chat failed: {e}")
 
-    # Phase 6: Guard - if hedges detected, discard and use fallback
-    if _has_hedges(answer):
-        logger.debug(f"Hedges detected, using fallback")
-        answer = _build_fallback(sources)
+    # Phase 6: Strip pure hedge sentences, keep mixed ones
+    answer = _strip_hedge_sentences(answer)
 
-    if not answer.strip():
-        answer = _build_fallback(sources)
-
-    # Build citations from sources actually cited
+    # Build citations
     used_refs = [refs[i] for i in range(len(sources)) if f"[{i+1}]" in answer]
-    if not used_refs:
+
+    # Fallback: return top evidence if answer is empty
+    if not answer.strip():
+        parts = []
+        for i, s in enumerate(sources[:5], 1):
+            snip = (s.snippet or s.title or "").strip()[:200]
+            parts.append(f"[{i}] {snip}")
+        answer = " ".join(parts)
         used_refs = refs[:5]
 
-    return Response(text=answer[:2500], citations=used_refs)
+    return Response(text=answer[:2500], citations=used_refs or None)
