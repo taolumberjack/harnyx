@@ -311,7 +311,7 @@ match the response field `content_hash`.
 | Error | Cause |
 |-------|-------|
 | `sha_mismatch` (422) | Your `sha256` does not match the decoded `script_b64` |
-| `duplicate_script` (409) | The same script content hash already exists globally |
+| `duplicate_script` (409) | The same script already exists globally |
 
 ### Runtime (during evaluation)
 
