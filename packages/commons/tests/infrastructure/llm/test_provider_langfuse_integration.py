@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from types import TracebackType
 
 import pytest
+from opentelemetry import trace
 
 import harnyx_commons.llm.provider as provider_module
 from harnyx_commons.llm.provider import BaseLlmProvider
@@ -19,6 +20,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.observability import langfuse
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -40,6 +42,14 @@ class _Scope:
         exc_tb: TracebackType | None,
     ) -> bool:
         self.exited += 1
+        return False
+
+
+class _TraceAttributeScope:
+    def __enter__(self) -> object:
+        return object()
+
+    def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> bool:
         return False
 
 
@@ -101,6 +111,7 @@ def _request(
     provider: str = "openai",
     model: str = "gpt-5-mini",
     reasoning_effort: str | None = None,
+    use_case: str | None = None,
     internal_metadata: Mapping[str, object] | None = None,
     extra: Mapping[str, object] | None = None,
 ) -> LlmRequest:
@@ -117,6 +128,7 @@ def _request(
         max_output_tokens=64,
         reasoning_effort=reasoning_effort,
         output_mode="text",
+        use_case=use_case,
         internal_metadata=internal_metadata,
         extra=extra,
     )
@@ -151,8 +163,8 @@ def _response(
 async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTEL_SERVICE_NAME", "test-server")
     request = _request(
+        use_case="claim_generation",
         internal_metadata={
-            "use_case": "claim_generation",
             "feed_run_id": "feed-run-123",
         }
     )
@@ -166,11 +178,13 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         start_calls.append(
             {
                 "provider_label": provider_label,
                 "request": request,
+                "trace_name": trace_name,
             }
         )
         return scope
@@ -206,6 +220,7 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
     assert len(start_calls) == 1
     assert start_calls[0]["provider_label"] == "openai"
     assert start_calls[0]["request"] is request
+    assert start_calls[0]["trace_name"] == "claim_generation"
 
     assert len(update_calls) == 1
     update_call = update_calls[0]
@@ -241,6 +256,75 @@ async def test_invoke_success_updates_generation_payload(monkeypatch: pytest.Mon
     assert isinstance(wait_ms, float)
 
 
+async def test_invoke_keeps_use_case_trace_name_inside_generic_otel_parent_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(use_case="claim_generation")
+    response = _response(metadata={"source": "stub"})
+    provider = _StubProvider(response=response)
+    scope = _Scope(generation=object())
+    start_calls: list[dict[str, object]] = []
+
+    def fake_start(
+        *,
+        provider_label: str,
+        request: AbstractLlmRequest,
+        trace_name: str | None = None,
+    ) -> _Scope:
+        start_calls.append(
+            {
+                "provider_label": provider_label,
+                "request": request,
+                "trace_name": trace_name,
+            }
+        )
+        return scope
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", lambda *args, **kwargs: None)
+
+    tracer = trace.get_tracer("test.provider-langfuse")
+    with tracer.start_as_current_span("feed_run"):
+        result = await provider.invoke(request)
+
+    assert result == response
+    assert start_calls[0]["trace_name"] == "claim_generation"
+
+
+async def test_invoke_does_not_override_explicit_langfuse_trace_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(use_case="miner_task_pairwise_judge")
+    response = _response(metadata={"source": "stub"})
+    provider = _StubProvider(response=response)
+    scope = _Scope(generation=object())
+    start_calls: list[dict[str, object]] = []
+
+    def fake_start(
+        *,
+        provider_label: str,
+        request: AbstractLlmRequest,
+        trace_name: str | None = None,
+    ) -> _Scope:
+        start_calls.append(
+            {
+                "provider_label": provider_label,
+                "request": request,
+                "trace_name": trace_name,
+            }
+        )
+        return scope
+
+    monkeypatch.setattr(provider_module, "start_llm_generation", fake_start)
+    monkeypatch.setattr(provider_module, "update_generation_best_effort", lambda *args, **kwargs: None)
+    monkeypatch.setattr(langfuse, "get_client", lambda: object())
+    monkeypatch.setattr(langfuse, "propagate_attributes", lambda **kwargs: _TraceAttributeScope())
+
+    with langfuse.propagate_trace_attributes_best_effort(trace_name="content_review_job"):
+        result = await provider.invoke(request)
+
+    assert result == response
+    assert start_calls[0]["trace_name"] is None
 
 
 async def test_invoke_success_handles_json_safe_vertex_thought_signature_in_raw_metadata(
@@ -273,6 +357,7 @@ async def test_invoke_success_handles_json_safe_vertex_thought_signature_in_raw_
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -334,6 +419,7 @@ async def test_invoke_skips_child_observation_recording_when_generation_scope_mi
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -388,6 +474,7 @@ async def test_invoke_error_updates_generation_error_and_reraises(
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -448,6 +535,7 @@ async def test_invoke_verifier_failure_includes_raw_payload_in_error_metadata(
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -500,6 +588,7 @@ async def test_invoke_with_none_generation_still_returns_response(
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -579,6 +668,7 @@ async def test_invoke_records_retriever_and_tool_child_observations(
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -627,7 +717,7 @@ async def test_invoke_records_retriever_and_tool_child_observations(
 
 async def test_invoke_preserves_provider_facing_extra_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(
-        internal_metadata={"use_case": "tool_runtime_invoker"},
+        use_case="tool_runtime_invoker",
         extra={"web_search_options": {"mode": "auto"}},
     )
     response = _response(metadata={"source": "stub"})
@@ -638,6 +728,7 @@ async def test_invoke_preserves_provider_facing_extra_payload(monkeypatch: pytes
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -658,7 +749,8 @@ async def test_invoke_preserves_provider_facing_extra_payload(monkeypatch: pytes
 
     assert provider.requests == [request]
     assert provider.requests[0].extra == {"web_search_options": {"mode": "auto"}}
-    assert provider.requests[0].internal_metadata == {"use_case": "tool_runtime_invoker"}
+    assert provider.requests[0].use_case == "tool_runtime_invoker"
+    assert provider.requests[0].internal_metadata is None
 
 
 async def test_invoke_vertex_gemini_reasoning_marks_include_thoughts_requested(
@@ -678,6 +770,7 @@ async def test_invoke_vertex_gemini_reasoning_marks_include_thoughts_requested(
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -750,6 +843,7 @@ async def test_invoke_vertex_reasoning_metadata_uses_string_reasoning_and_raw_si
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -812,6 +906,7 @@ async def test_invoke_vertex_claude_reasoning_does_not_mark_include_thoughts_req
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
@@ -872,6 +967,7 @@ async def test_invoke_vertex_maas_model_reasoning_does_not_mark_include_thoughts
         *,
         provider_label: str,
         request: AbstractLlmRequest,
+        trace_name: str | None = None,
     ) -> _Scope:
         return scope
 
