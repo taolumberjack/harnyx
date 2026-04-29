@@ -97,6 +97,42 @@ def test_weight_worker_captures_sanitized_transient_network_outage_once_at_thres
     }
 
 
+def test_weight_worker_groups_websocket_handshake_timeout_at_threshold(monkeypatch) -> None:
+    captured: list[tuple[BaseException, dict[str, object]]] = []
+
+    def capture(exc: BaseException, **kwargs: object) -> None:
+        captured.append((exc, kwargs))
+
+    monkeypatch.setattr(worker_mod, "capture_exception", capture)
+    worker = WeightWorker(
+        submission_service=_FailingSubmissionService(
+            TimeoutError("timed out while waiting for handshake response")
+        )
+    )
+
+    for _ in range(4):
+        with pytest.raises(TimeoutError):
+            worker._tick()
+
+    assert len(captured) == 1
+    exc, kwargs = captured[0]
+    assert type(exc) is RuntimeError
+    assert str(exc) == "weight worker transient network outage"
+    assert kwargs["tags"] == {
+        "failure_kind": "retryable_network",
+        "worker": "validator-weight-worker",
+    }
+    assert kwargs["context_name"] == "retryable_network"
+    assert kwargs["fingerprint"] == ["validator-weight-worker", "retryable-network"]
+    assert kwargs["context"] == {
+        "attempts": 3,
+        "threshold": 3,
+        "cause_type": "TimeoutError",
+        "cause_kind": "websocket_handshake_timeout",
+        "errno": None,
+    }
+
+
 def test_weight_worker_counts_consecutive_transient_failures_across_causes(monkeypatch) -> None:
     captured: list[BaseException] = []
     monkeypatch.setattr(worker_mod, "capture_exception", lambda exc, **_: captured.append(exc))

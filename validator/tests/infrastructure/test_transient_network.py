@@ -53,6 +53,23 @@ def test_classifies_httpx_connect_timeout() -> None:
 
 
 @pytest.mark.parametrize(
+    "message",
+    [
+        "timed out while waiting for handshake response",
+        "_ssl.c:999: The handshake operation timed out",
+        "_ssl.c:1108: The handshake operation timed out",
+    ],
+)
+def test_classifies_websocket_handshake_timeouts(message: str) -> None:
+    cause = classify_transient_network_failure(TimeoutError(message))
+
+    assert cause is not None
+    assert cause.kind == "websocket_handshake_timeout"
+    assert cause.exception_type == "TimeoutError"
+    assert cause.errno is None
+
+
+@pytest.mark.parametrize(
     "exc",
     [
         ConnectionResetError(errno.ECONNRESET, "connection reset"),
@@ -89,6 +106,8 @@ def test_classifies_nested_cause_or_context() -> None:
         ConnectionError("connection failed"),
         httpx.ConnectError("connect failed"),
         TimeoutError("local timeout"),
+        TimeoutError("_ssl.c:line: The handshake operation timed out"),
+        TimeoutError("prefix _ssl.c:999: The handshake operation timed out"),
         socket.gaierror(socket.EAI_NONAME, "name does not resolve"),
         httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
     ],
