@@ -22,7 +22,7 @@ _HEDGE_WORDS = {
 
 
 class Source:
-    __slots__ = ("url", "title", "snippet", "receipt_id", "result_id", "score")
+    __slots__ = ("url", "title", "snippet", "receipt_id", "result_id", "score", "full_text")
     def __init__(self, url: str, title: str | None, snippet: str | None,
                  receipt_id: str = "", result_id: str = "") -> None:
         self.url = url
@@ -31,6 +31,7 @@ class Source:
         self.receipt_id = receipt_id
         self.result_id = result_id
         self.score = 0.0
+        self.full_text = ""
 
 
 def _extract_text(ans) -> str:
@@ -53,17 +54,9 @@ def _tokens(text: str) -> set[str]:
 
 
 def _score(src: Source, qt: set[str]) -> float:
-    text = f"{src.title} {src.snippet}".lower()
+    text = f"{src.title} {src.snippet} {src.full_text}".lower()
     hits = sum(1 for t in qt if t in text)
     return hits + min(len(text) / 400.0, 1.5)
-
-
-def _fmt_evidence(sources: list[Source]) -> str:
-    lines = []
-    for i, s in enumerate(sources, 1):
-        snip = (s.snippet or s.title or "").strip()[:600]
-        lines.append(f"[{i}] {s.title or 'Source'}: {snip}")
-    return "\n\n".join(lines)
 
 
 def _strip_hedges(text: str) -> str:
@@ -89,11 +82,11 @@ async def agent(query: Query) -> Response:
     sources: list[Source] = []
     seen: set[str] = set()
 
-    # Phase 1: Web search (10 results)
+    # Phase 1: Web search (15 results)
     try:
-        r = await search_web(q, num=10)
+        r = await search_web(q, num=15)
         receipt = getattr(r, "receipt_id", "")
-        for res in r.results[:10]:
+        for res in r.results[:15]:
             url = getattr(res, "url", "") or getattr(res, "link", "")
             if url and url not in seen:
                 seen.add(url)
@@ -129,88 +122,73 @@ async def agent(query: Query) -> Response:
     if not sources:
         return Response(text=q)
 
-    # Phase 3: Rank
+    # Phase 3: Rank by query term overlap
     qt = _tokens(q)
     for s in sources:
         s.score = _score(s, qt)
     sources.sort(key=lambda s: -s.score)
 
-    # Phase 4: Fetch pages for top 5 sources
-    for s in sources[:5]:
+    # Phase 4: Fetch pages for top 8 sources
+    for s in sources[:8]:
         if s.url.startswith("http"):
             try:
                 page = await fetch_page(s.url)
                 content = getattr(page, "content", None) or getattr(page, "text", None) or ""
-                content = content[:2000].strip()
-                if content:
-                    s.snippet = content
-                    s.score = _score(s, qt)
+                s.full_text = content[:3000].strip()
+                s.score = _score(s, qt)
             except Exception:
                 pass
 
     sources.sort(key=lambda s: -s.score)
-    sources = sources[:10]
+    sources = sources[:12]
 
     # Build refs
     refs = [CitationRef(receipt_id=s.receipt_id, result_id=s.result_id) for s in sources]
 
-    # Phase 5: Extract facts with LLM
-    evidence = _fmt_evidence(sources)
+    # Phase 5: Extract facts with strict prompt
+    evidence_parts = []
+    for i, s in enumerate(sources, 1):
+        text = s.full_text or s.snippet or s.title or ""
+        text = text[:800].strip()
+        evidence_parts.append(f"[{i}] {s.title or 'Source'}\n{text}")
+
+    evidence = "\n\n".join(evidence_parts)
+
     extract_prompt = (
         f"Question: {q}\n\n"
-        f"Evidence ({len(sources)} sources):\n{evidence}\n\n"
-        "Extract EVERY specific fact from the evidence that answers the question. "
-        "Format as bullet points. Each bullet must include [N] citation. "
-        "Include exact numbers, dates, names, and percentages. "
-        "Never write 'not specified' or 'not provided'. "
-        "Only include facts that ARE in the evidence."
+        f"Evidence from {len(sources)} sources:\n{evidence}\n\n"
+        "INSTRUCTIONS:\n"
+        "1. Read ALL the evidence carefully.\n"
+        "2. Extract ONLY specific facts that directly answer the question.\n"
+        "3. For each fact, include the exact number, name, date, or percentage from the evidence.\n"
+        "4. Cite every fact with [N] matching the evidence number.\n"
+        "5. Do NOT write 'not specified' or 'not provided' or 'no evidence'.\n"
+        "6. If the evidence has conflicting info, report what the majority of sources say.\n"
+        "7. Format as a concise paragraph with citations."
     )
 
-    facts = ""
     try:
         r = await llm_chat(
             messages=[{"role": "user", "content": extract_prompt}],
             model=MODEL,
             temperature=0.0,
-            max_output_tokens=600,
+            max_output_tokens=800,
         )
-        facts = _extract_text(r)
-    except Exception as e:
-        logger.debug(f"fact extraction failed: {e}")
+        answer = _extract_text(r)
+    except Exception:
+        answer = ""
 
-    # Phase 6: Synthesize from facts
-    if facts and len(facts) > 50:
-        synth_prompt = (
-            f"Question: {q}\n\n"
-            f"Extracted facts:\n{facts}\n\n"
-            "Write a direct, comprehensive answer using ONLY these facts. "
-            "Cite every claim with [N]. Include all specific numbers and dates. "
-            "Never mention missing information."
-        )
-        try:
-            r = await llm_chat(
-                messages=[{"role": "user", "content": synth_prompt}],
-                model=MODEL,
-                temperature=0.0,
-                max_output_tokens=600,
-            )
-            answer = _extract_text(r)
-        except Exception:
-            answer = facts
-    else:
-        answer = facts
-
-    # Phase 7: Guard
+    # Guard: strip hedge sentences
     answer = _strip_hedges(answer)
 
-    # Build citations
+    # Build used citations
     used_refs = [refs[i] for i in range(len(sources)) if f"[{i+1}]" in answer]
 
     # Fallback
     if not answer.strip():
         parts = []
         for i, s in enumerate(sources[:5], 1):
-            snip = (s.snippet or s.title or "").strip()[:200]
+            snip = (s.full_text or s.snippet or s.title or "").strip()[:200]
             parts.append(f"[{i}] {snip}")
         answer = " ".join(parts)
         used_refs = refs[:5]
