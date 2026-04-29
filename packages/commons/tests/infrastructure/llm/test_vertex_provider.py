@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any, cast
 
 import pytest
@@ -30,6 +30,7 @@ from harnyx_commons.llm.providers.vertex.codec import (
     vertex_maas_openai_chat_model_name,
 )
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider, _vertex_stream_text_fragments
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     GroundedLlmRequest,
     LlmChoice,
@@ -271,6 +272,57 @@ def _patch_vertex_maas_http_client(
             captured["http_closed"] = True
 
     monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.httpx.AsyncClient", _FakeAsyncHttpClient)
+
+
+def _patch_vertex_maas_http_client_stream_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: dict[str, Any],
+    stream_bodies: Sequence[str],
+) -> dict[str, int]:
+    state = {"next_index": 0, "stream_call_count": 0}
+    http_calls: list[dict[str, Any]] = []
+    captured["http_calls"] = http_calls
+
+    class _FakeHttpResponse:
+        def __init__(self, body: str) -> None:
+            self._body = body
+            self.status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self) -> AsyncIterator[str]:
+            for line in self._body.splitlines():
+                yield line
+            yield ""
+
+    class _FakeStreamContext:
+        def __init__(self, response: _FakeHttpResponse) -> None:
+            self._response = response
+
+        async def __aenter__(self) -> _FakeHttpResponse:
+            return self._response
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            return False
+
+    class _FakeAsyncHttpClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured["http_client_kwargs"] = kwargs
+
+        def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStreamContext:
+            http_calls.append({"method": method, "url": url, **kwargs})
+            captured["http_call"] = http_calls[-1]
+            body = stream_bodies[state["next_index"]]
+            state["next_index"] += 1
+            state["stream_call_count"] += 1
+            return _FakeStreamContext(_FakeHttpResponse(body))
+
+        async def aclose(self) -> None:
+            captured["http_closed"] = True
+
+    monkeypatch.setattr("harnyx_commons.llm.providers.vertex.provider.httpx.AsyncClient", _FakeAsyncHttpClient)
+    return state
 
 
 def _async_return(value: Any) -> Callable[[], Any]:
@@ -1321,6 +1373,59 @@ def test_vertex_codec_build_choices_preserves_signature_only_text_as_output() ->
 
 class _StructuredPairwisePreference(BaseModel):
     preferred_position: str
+
+
+async def test_vertex_maas_openai_stream_retries_truncated_json_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+    fake_http_client = _patch_vertex_maas_http_client_stream_sequence(
+        monkeypatch,
+        captured,
+        (
+            'data: {"choices":[{"delta":{"content":"unterminated',
+            "\n".join(
+                (
+                    'data: {"id":"chatcmpl-retry","choices":[{"index":0,'
+                    '"delta":{"content":"{\\"preferred_position\\":\\"first\\"}"},'
+                    '"finish_reason":"stop"}]}',
+                    "",
+                    "data: [DONE]",
+                )
+            ),
+        ),
+    )
+
+    provider = VertexLlmProvider(project="demo-project", location="global", timeout=30.0)
+    provider._retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
+    monkeypatch.setattr(provider, "_vertex_maas_access_token", _async_return("access-token"))
+
+    request = LlmRequest(
+        provider="vertex",
+        model="publishers/openai/models/gpt-oss-120b-maas",
+        messages=(
+            LlmMessage(
+                role="system",
+                content=(LlmMessageContentPart.input_text("Return JSON."),),
+            ),
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("Choose first or second."),),
+            ),
+        ),
+        output_mode="structured",
+        output_schema=_StructuredPairwisePreference,
+        temperature=None,
+        reasoning_effort="high",
+        max_output_tokens=64,
+    )
+
+    response = await provider.invoke(request)
+
+    assert fake_http_client["stream_call_count"] == 2
+    assert response.raw_text == '{"preferred_position":"first"}'
 
 
 def test_vertex_maas_chat_payload_supports_structured_output() -> None:
