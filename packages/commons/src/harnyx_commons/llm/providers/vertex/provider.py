@@ -75,7 +75,7 @@ _VERTEX_MAAS_OPENAI_CHAT_MODELS = frozenset(
     }
 )
 _VERTEX_MAAS_MODEL_LOCATIONS = {
-    "deepseek-ai/deepseek-v3.1-maas": "us-central1",
+    "deepseek-ai/deepseek-v3.1-maas": "us-west2",
 }
 
 
