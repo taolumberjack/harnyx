@@ -66,25 +66,16 @@ def _fmt_evidence(sources: list[Source]) -> str:
     return "\n\n".join(lines)
 
 
-def _strip_hedge_sentences(text: str) -> str:
-    """Remove sentences that are PURE hedge (no facts). Keep mixed sentences."""
+def _strip_hedges(text: str) -> str:
     sentences = re.split(r'(?<=[.!?])\s+', text)
     kept = []
     for sent in sentences:
         s = sent.strip()
         if not s:
             continue
-        # Pure hedge sentence: all text matches hedge words + short
-        hedge_count = sum(1 for h in _HEDGE_WORDS if h.lower() in s.lower())
-        if hedge_count > 0 and len(s) < 120:
-            # Mixed sentence - keep it but remove the hedge clause
-            for h in _HEDGE_WORDS:
-                s = re.sub(r'(?i)' + re.escape(h) + r'[^.]*', '', s)
-            s = s.strip()
-            if len(s) > 30:
-                kept.append(s)
-        else:
-            kept.append(s)
+        if any(h in s.lower() for h in _HEDGE_WORDS) and len(s) < 150:
+            continue
+        kept.append(s)
     result = " ".join(kept).strip()
     return result if result else text
 
@@ -144,13 +135,13 @@ async def agent(query: Query) -> Response:
         s.score = _score(s, qt)
     sources.sort(key=lambda s: -s.score)
 
-    # Phase 4: Enrich top 5 thin snippets
+    # Phase 4: Fetch pages for top 5 sources
     for s in sources[:5]:
-        if s.url.startswith("http") and (not s.snippet or len(s.snippet) < 120):
+        if s.url.startswith("http"):
             try:
                 page = await fetch_page(s.url)
                 content = getattr(page, "content", None) or getattr(page, "text", None) or ""
-                content = content[:1500].strip()
+                content = content[:2000].strip()
                 if content:
                     s.snippet = content
                     s.score = _score(s, qt)
@@ -158,49 +149,64 @@ async def agent(query: Query) -> Response:
                 pass
 
     sources.sort(key=lambda s: -s.score)
-    sources = sources[:12]
+    sources = sources[:10]
 
     # Build refs
     refs = [CitationRef(receipt_id=s.receipt_id, result_id=s.result_id) for s in sources]
 
-    # Phase 5: Synthesize with strong prompt
+    # Phase 5: Extract facts with LLM
     evidence = _fmt_evidence(sources)
-    system = (
-        "You are a precise research agent. Answer using ONLY the provided evidence.\n\n"
-        "RULES:\n"
-        "1. Answer EVERY part of the question comprehensively.\n"
-        "2. Cite every claim with [N]. Use multiple citations when supported.\n"
-        "3. Include exact numbers, dates, names from evidence.\n"
-        "4. NEVER say information is missing or not provided.\n"
-        "5. If evidence is partial, state what IS known and make brief inference.\n"
-        "6. Output ONLY the answer. No preamble."
-    )
-    user = (
+    extract_prompt = (
         f"Question: {q}\n\n"
         f"Evidence ({len(sources)} sources):\n{evidence}\n\n"
-        "Write a thorough, specific answer. Cover all parts. Cite every claim."
+        "Extract EVERY specific fact from the evidence that answers the question. "
+        "Format as bullet points. Each bullet must include [N] citation. "
+        "Include exact numbers, dates, names, and percentages. "
+        "Never write 'not specified' or 'not provided'. "
+        "Only include facts that ARE in the evidence."
     )
 
-    answer = ""
+    facts = ""
     try:
         r = await llm_chat(
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
+            messages=[{"role": "user", "content": extract_prompt}],
             model=MODEL,
             temperature=0.0,
             max_output_tokens=600,
         )
-        answer = _extract_text(r)
+        facts = _extract_text(r)
     except Exception as e:
-        logger.debug(f"llm_chat failed: {e}")
+        logger.debug(f"fact extraction failed: {e}")
 
-    # Phase 6: Strip pure hedge sentences, keep mixed ones
-    answer = _strip_hedge_sentences(answer)
+    # Phase 6: Synthesize from facts
+    if facts and len(facts) > 50:
+        synth_prompt = (
+            f"Question: {q}\n\n"
+            f"Extracted facts:\n{facts}\n\n"
+            "Write a direct, comprehensive answer using ONLY these facts. "
+            "Cite every claim with [N]. Include all specific numbers and dates. "
+            "Never mention missing information."
+        )
+        try:
+            r = await llm_chat(
+                messages=[{"role": "user", "content": synth_prompt}],
+                model=MODEL,
+                temperature=0.0,
+                max_output_tokens=600,
+            )
+            answer = _extract_text(r)
+        except Exception:
+            answer = facts
+    else:
+        answer = facts
+
+    # Phase 7: Guard
+    answer = _strip_hedges(answer)
 
     # Build citations
     used_refs = [refs[i] for i in range(len(sources)) if f"[{i+1}]" in answer]
 
-    # Fallback: return top evidence if answer is empty
+    # Fallback
     if not answer.strip():
         parts = []
         for i, s in enumerate(sources[:5], 1):
