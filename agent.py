@@ -17,14 +17,13 @@ _HEDGE_WORDS = {
     "does not specify", "does not mention", "does not state", "does not provide",
     "does not indicate", "does not include", "does not contain",
     "no information", "insufficient", "unclear", "the text does not",
-    "the evidence does not", "it is not possible",
+    "the evidence does not", "it is not possible", "no evidence",
 }
 
 
 class Source:
     __slots__ = ("url", "title", "snippet", "receipt_id", "result_id", "score", "full_text")
-    def __init__(self, url: str, title: str | None, snippet: str | None,
-                 receipt_id: str = "", result_id: str = "") -> None:
+    def __init__(self, url, title, snippet, receipt_id="", result_id=""):
         self.url = url
         self.title = title or ""
         self.snippet = snippet or ""
@@ -34,7 +33,7 @@ class Source:
         self.full_text = ""
 
 
-def _extract_text(ans) -> str:
+def _extract_text(ans):
     try:
         content = ans.llm.choices[0].message.content
         if isinstance(content, str):
@@ -49,17 +48,17 @@ def _extract_text(ans) -> str:
         return ""
 
 
-def _tokens(text: str) -> set[str]:
+def _tokens(text):
     return set(re.findall(r"\w+", text.lower()))
 
 
-def _score(src: Source, qt: set[str]) -> float:
+def _score(src, qt):
     text = f"{src.title} {src.snippet} {src.full_text}".lower()
     hits = sum(1 for t in qt if t in text)
     return hits + min(len(text) / 400.0, 1.5)
 
 
-def _strip_hedges(text: str) -> str:
+def _strip_hedges(text):
     sentences = re.split(r'(?<=[.!?])\s+', text)
     kept = []
     for sent in sentences:
@@ -79,8 +78,8 @@ async def agent(query: Query) -> Response:
     if not q:
         return Response(text="No question provided.")
 
-    sources: list[Source] = []
-    seen: set[str] = set()
+    sources = []
+    seen = set()
 
     # Phase 1: Web search (15 results)
     try:
@@ -122,13 +121,13 @@ async def agent(query: Query) -> Response:
     if not sources:
         return Response(text=q)
 
-    # Phase 3: Rank by query term overlap
+    # Phase 3: Rank
     qt = _tokens(q)
     for s in sources:
         s.score = _score(s, qt)
     sources.sort(key=lambda s: -s.score)
 
-    # Phase 4: Fetch pages for top 8 sources
+    # Phase 4: Fetch pages for top 8
     for s in sources[:8]:
         if s.url.startswith("http"):
             try:
@@ -145,7 +144,8 @@ async def agent(query: Query) -> Response:
     # Build refs
     refs = [CitationRef(receipt_id=s.receipt_id, result_id=s.result_id) for s in sources]
 
-    # Phase 5: Extract facts with strict prompt
+    # Phase 5: Two-step fact extraction
+    # Step 5a: Extract raw facts from each source
     evidence_parts = []
     for i, s in enumerate(sources, 1):
         text = s.full_text or s.snippet or s.title or ""
@@ -157,14 +157,15 @@ async def agent(query: Query) -> Response:
     extract_prompt = (
         f"Question: {q}\n\n"
         f"Evidence from {len(sources)} sources:\n{evidence}\n\n"
-        "INSTRUCTIONS:\n"
-        "1. Read ALL the evidence carefully.\n"
-        "2. Extract ONLY specific facts that directly answer the question.\n"
-        "3. For each fact, include the exact number, name, date, or percentage from the evidence.\n"
-        "4. Cite every fact with [N] matching the evidence number.\n"
-        "5. Do NOT write 'not specified' or 'not provided' or 'no evidence'.\n"
-        "6. If the evidence has conflicting info, report what the majority of sources say.\n"
-        "7. Format as a concise paragraph with citations."
+        "STEP 1 - EXTRACT FACTS:\n"
+        "List every specific fact from the evidence that answers the question. "
+        "Format each fact as a bullet with the source number [N]. "
+        "Include exact numbers, dates, names, and percentages. "
+        "Do NOT include facts that are NOT in the evidence. "
+        "Do NOT write 'not specified' or 'not provided'.\n\n"
+        "STEP 2 - ANSWER:\n"
+        "Write a concise paragraph answering the question using ONLY the extracted facts. "
+        "Cite every claim with [N]. Never mention missing information."
     )
 
     try:
