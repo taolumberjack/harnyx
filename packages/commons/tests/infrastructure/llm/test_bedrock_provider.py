@@ -6,7 +6,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EventStreamError
 from pydantic import BaseModel, ValidationError
 
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
@@ -710,3 +710,41 @@ def test_bedrock_provider_classifies_client_errors() -> None:
 
     assert retryable is True
     assert reason == "client_error:ThrottlingException:429:slow down"
+
+
+def test_bedrock_provider_classifies_retryable_client_error_code_without_status() -> None:
+    exc = ClientError(
+        error_response={
+            "Error": {
+                "Code": "InternalFailure",
+                "Message": "internal fault",
+            },
+        },
+        operation_name="ConverseStream",
+    )
+
+    retryable, reason = BedrockLlmProvider._classify_exception(exc)
+
+    assert retryable is True
+    assert reason == "client_error:InternalFailure:None:internal fault"
+
+
+def test_bedrock_provider_classifies_lowercase_eventstream_internal_error_as_retryable() -> None:
+    exc = EventStreamError(
+        {
+            "Error": {
+                "Code": "internalServerException",
+                "Message": "The system encountered an unexpected error during processing. Try your request again.",
+            }
+        },
+        "ConverseStream",
+    )
+
+    retryable, reason = BedrockLlmProvider._classify_exception(exc)
+
+    assert retryable is True
+    assert (
+        reason
+        == "client_error:internalServerException:None:"
+        "The system encountered an unexpected error during processing. Try your request again."
+    )

@@ -33,6 +33,7 @@ _RETRYABLE_ERROR_CODES = frozenset(
         "TooManyRequestsException",
     }
 )
+_RETRYABLE_ERROR_CODE_KEYS = frozenset(code.lower() for code in _RETRYABLE_ERROR_CODES)
 
 
 class BedrockLlmProvider(BaseLlmProvider):
@@ -112,7 +113,11 @@ class BedrockLlmProvider(BaseLlmProvider):
             error = exc.response.get("Error", {})
             code = str(error.get("Code") or "unknown")
             message = str(error.get("Message") or exc)
-            retryable = code in _RETRYABLE_ERROR_CODES or status == 429 or (isinstance(status, int) and status >= 500)
+            retryable = (
+                code.lower() in _RETRYABLE_ERROR_CODE_KEYS
+                or status == 429
+                or (isinstance(status, int) and status >= 500)
+            )
             return retryable, f"client_error:{code}:{status}:{message}"
         if isinstance(exc, ParamValidationError):
             return False, str(exc)
