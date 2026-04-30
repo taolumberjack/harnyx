@@ -437,6 +437,7 @@ async def test_execute_tool_rejects_expired_session() -> None:
     "model",
     [
         "openai/gpt-oss-120b-TEE",
+        "zai-org/GLM-5-TEE",
         "Qwen/Qwen3-Next-80B-A3B-Instruct",
     ],
 )

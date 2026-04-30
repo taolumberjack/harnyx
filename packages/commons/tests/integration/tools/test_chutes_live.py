@@ -16,6 +16,7 @@ DEEPSEEK_TOOL_MODELS = (
     "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
 )
+CHUTES_TOOL_MODELS = DEEPSEEK_TOOL_MODELS + ("zai-org/GLM-5-TEE",)
 
 
 class JsonObjectAnswer(BaseModel):
@@ -145,8 +146,8 @@ async def test_chutes_reasoning_live_normalizes_string_reasoning_payload() -> No
     assert reasoning.strip()
 
 
-@pytest.mark.parametrize("model", DEEPSEEK_TOOL_MODELS)
-async def test_chutes_deepseek_tool_model_completion_live(model: str) -> None:
+@pytest.mark.parametrize("model", CHUTES_TOOL_MODELS)
+async def test_chutes_tool_model_completion_live(model: str) -> None:
     api_key, _, timeout = _provider_settings()
     provider = ChutesLlmProvider(
         base_url=CHUTES.base_url,

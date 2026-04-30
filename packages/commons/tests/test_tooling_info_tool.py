@@ -47,6 +47,16 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "openai/gpt-oss-20b-TEE" not in model_prices
     assert "openai/gpt-oss-20b" not in payload["allowed_tool_models"]
     assert "openai/gpt-oss-120b" not in payload["allowed_tool_models"]
+    assert "zai-org/GLM-5-TEE" in payload["allowed_tool_models"]
+    assert model_prices["zai-org/GLM-5-TEE"]["input_per_million"] == pytest.approx(
+        MODEL_PRICING["zai-org/GLM-5-TEE"].input_per_million
+    )
+    assert model_prices["zai-org/GLM-5-TEE"]["output_per_million"] == pytest.approx(
+        MODEL_PRICING["zai-org/GLM-5-TEE"].output_per_million
+    )
+    assert model_prices["zai-org/GLM-5-TEE"]["reasoning_per_million"] == pytest.approx(
+        MODEL_PRICING["zai-org/GLM-5-TEE"].billable_reasoning_per_million
+    )
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" in payload["allowed_tool_models"]
     assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["input_per_million"] == pytest.approx(
         MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].input_per_million
@@ -90,6 +100,7 @@ def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     assert price_llm(parse_tool_model("Qwen/Qwen3-Next-80B-A3B-Instruct"), usage) == pytest.approx(1.70)
     assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.1-TEE"), usage) == pytest.approx(2.27)
     assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.2-TEE"), usage) == pytest.approx(1.12)
+    assert price_llm(parse_tool_model("zai-org/GLM-5-TEE"), usage) == pytest.approx(6.05)
 
 
 def test_openai_gpt_oss_120b_tool_model_pricing_matches_current_chutes_rate() -> None:

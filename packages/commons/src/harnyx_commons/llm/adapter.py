@@ -21,6 +21,7 @@ _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
     "vertex:deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
     "vertex:openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
     "vertex:openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
+    "vertex:zai-org/GLM-5-TEE": "glm-5-maas",
     "vertex:Qwen/Qwen3-235B-A22B-Instruct-2507-TEE": "qwen3-235b-a22b-instruct-2507-maas",
     "vertex:Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
 }

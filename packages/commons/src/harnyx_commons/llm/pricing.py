@@ -20,6 +20,7 @@ ToolModelName = Literal[
     "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "openai/gpt-oss-120b-TEE",
+    "zai-org/GLM-5-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
 ]
 
@@ -27,6 +28,7 @@ ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
     "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "openai/gpt-oss-120b-TEE",
+    "zai-org/GLM-5-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
 )
 
@@ -69,6 +71,7 @@ MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
     "deepseek-ai/DeepSeek-V3.1-TEE": ModelPricing(0.27, 1.00, 0.0),
     "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
     "openai/gpt-oss-120b-TEE": ModelPricing(0.09, 0.36, 0.36),
+    "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
     "Qwen/Qwen3-Next-80B-A3B-Instruct": ModelPricing(0.10, 0.80, 0.0),
 }
 
