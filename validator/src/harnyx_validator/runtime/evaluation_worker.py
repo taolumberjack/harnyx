@@ -289,6 +289,9 @@ def create_evaluation_worker_from_context(context: RuntimeContext) -> Evaluation
         raise RuntimeError("platform client is not configured")
 
     agent_resolver = create_platform_agent_resolver(context.platform_client)
+    batch_config = EvaluationBatchConfig(
+        artifact_task_parallelism=context.settings.artifact_task_parallelism,
+    )
     batch_service = MinerTaskBatchService(
         platform_client=context.platform_client,
         subtensor_client=context.subtensor_client,
@@ -301,6 +304,7 @@ def create_evaluation_worker_from_context(context: RuntimeContext) -> Evaluation
         sandbox_options_factory=context.build_sandbox_options,
         agent_resolver=agent_resolver,
         status_provider=context.status_provider,
+        config=batch_config,
         progress=context.progress_tracker,
     )
     batch_tracker = context.control_deps_provider().accept_batch

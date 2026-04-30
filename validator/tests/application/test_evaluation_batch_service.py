@@ -25,7 +25,7 @@ from harnyx_validator.application.services.evaluation_batch import (
     EvaluationBatchConfig,
     MinerTaskBatchService,
 )
-from harnyx_validator.application.services.evaluation_batch_prep import RunContext
+from harnyx_validator.application.services.evaluation_batch_prep import BatchExecutionPlanner, RunContext
 from harnyx_validator.application.services.evaluation_runner import ValidatorBatchFailedError
 from harnyx_validator.application.status import StatusProvider
 from harnyx_validator.domain.evaluation import MinerTaskRun
@@ -114,6 +114,35 @@ def _failure_submission(batch: MinerTaskBatchSpec) -> MinerTaskRunSubmission:
             budget_usd=task.budget_usd,
         ),
     )
+
+
+def test_batch_execution_planner_passes_task_parallelism_to_scheduler(
+    tmp_path: Path,
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    config = EvaluationBatchConfig(
+        state_dir=str(tmp_path),
+        artifact_task_parallelism=7,
+    )
+    planner = BatchExecutionPlanner(
+        subtensor_client=FakeSubtensorClient(),
+        sandbox_manager=object(),
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=FakeReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda client: client,
+        sandbox_options_factory=lambda: SandboxOptions(image="sandbox:test", container_name="sandbox-base"),
+        agent_resolver=lambda *_args: {},
+        progress=None,
+        config=config,
+    )
+    batch = _batch()
+
+    run_ctx = planner.build_run_context(batch)
+    _artifacts, scheduler = planner.prepare_execution(run_ctx, batch)
+
+    assert scheduler._config.artifact_task_parallelism == 7
 
 
 async def test_process_async_fails_batch_after_scheduler_escape(

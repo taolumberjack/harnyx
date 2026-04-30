@@ -695,7 +695,7 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     assert monitoring.script_calls == 1
     assert report["mode"] == "vs-champion"
     assert report["batch_metadata"]["selection_source"] == "latest-completed"
-    assert report["evaluation_config"]["artifact_task_parallelism"] == 5
+    assert report["evaluation_config"]["artifact_task_parallelism"] == 10
     assert report["evaluation_config"]["artifact_evaluation_parallelism"] == 2
     assert report["local_result_summary"]["local_champion_selection"]["selected_label"] == "target"
     assert report["local_result_summary"]["head_to_head"]["winner_by_total_score"] == "target"

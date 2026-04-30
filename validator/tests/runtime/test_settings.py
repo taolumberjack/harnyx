@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from harnyx_validator.runtime.settings import Settings
 
 
@@ -33,6 +36,29 @@ def test_settings_accepts_validator_env_names(monkeypatch) -> None:
 
     assert settings.rpc_listen_host == "127.0.0.1"
     assert settings.rpc_port == 9001
+
+
+def test_settings_defaults_artifact_task_parallelism_to_external_default(monkeypatch) -> None:
+    monkeypatch.delenv("VALIDATOR_TASK_PARALLELISM", raising=False)
+
+    settings = Settings.load()
+
+    assert settings.artifact_task_parallelism == 10
+
+
+def test_settings_accepts_artifact_task_parallelism_override(monkeypatch) -> None:
+    monkeypatch.setenv("VALIDATOR_TASK_PARALLELISM", "5")
+
+    settings = Settings.load()
+
+    assert settings.artifact_task_parallelism == 5
+
+
+def test_settings_rejects_non_positive_artifact_task_parallelism(monkeypatch) -> None:
+    monkeypatch.setenv("VALIDATOR_TASK_PARALLELISM", "0")
+
+    with pytest.raises(ValidationError):
+        Settings.load()
 
 
 def test_settings_accepts_validator_env_names_when_empty_values_set_first(monkeypatch) -> None:
