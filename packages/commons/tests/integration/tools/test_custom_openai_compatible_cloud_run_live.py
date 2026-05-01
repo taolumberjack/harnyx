@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 
@@ -12,34 +14,21 @@ from harnyx_commons.llm.provider_factory import build_cached_llm_provider_regist
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+_GEMMA_MODEL = "google/gemma-4-31B-it"
+_GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run"
+
+
+def test_gemma_live_test_source_has_no_test_only_env_contract() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    forbidden_env_names = (
+        "GEMMA" + "_CLOUD_RUN_SERVICE_URL",
+        "GEMMA" + "_CLOUD_RUN_MODEL",
+    )
+    assert not any(name in source for name in forbidden_env_names)
 
 
 async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
-    service_url = _require_env("GEMMA_CLOUD_RUN_SERVICE_URL").rstrip("/")
-    _require_env("GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64")
-    model = os.environ.get("GEMMA_CLOUD_RUN_MODEL", "google/gemma-4-31B-it").strip()
-    if not model:
-        raise RuntimeError("GEMMA_CLOUD_RUN_MODEL must be non-empty when configured")
-    settings = LlmSettings(
-        LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=json.dumps(
-            [
-                {
-                    "id": "gemma4-cloud-run",
-                    "base_url": f"{service_url}/v1",
-                    "auth": {
-                        "type": "google_id_token",
-                        "audience": service_url,
-                        "credential_source": "service_account_json_b64_env",
-                        "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
-                    },
-                    "timeout_seconds": 180.0,
-                }
-            ]
-        ),
-        LLM_MODEL_PROVIDER_OVERRIDES_JSON=json.dumps(
-            {"tool": {model: "custom-openai-compatible:gemma4-cloud-run"}}
-        ),
-    )
+    settings = _build_live_gemma_settings(os.environ)
     registry = build_cached_llm_provider_registry(
         llm_settings=settings,
         bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
@@ -63,7 +52,7 @@ async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
         response = await provider.invoke(
             LlmRequest(
                 provider="chutes",
-                model=model,
+                model=_GEMMA_MODEL,
                 messages=(
                     LlmMessage(
                         role="user",
@@ -81,11 +70,76 @@ async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
     assert response.raw_text
     assert response.metadata is not None
     assert response.metadata["effective_provider"] == "custom-openai-compatible:gemma4-cloud-run"
-    assert response.metadata["effective_model"] == model
+    assert response.metadata["effective_model"] == _GEMMA_MODEL
 
 
-def _require_env(name: str) -> str:
-    value = os.environ.get(name, "").strip()
+def test_gemma_live_settings_use_runtime_env_contract() -> None:
+    settings = _build_live_gemma_settings(
+        {
+            "LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON": json.dumps(
+                [
+                    {
+                        "id": "gemma4-cloud-run",
+                        "base_url": "https://gemma.example.run.app/v1",
+                        "auth": {
+                            "type": "google_id_token",
+                            "audience": "https://gemma.example.run.app",
+                            "credential_source": "service_account_json_b64_env",
+                            "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
+                        },
+                    }
+                ]
+            ),
+            "LLM_MODEL_PROVIDER_OVERRIDES_JSON": json.dumps({"tool": {_GEMMA_MODEL: _GEMMA_ROUTE_TARGET}}),
+            "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64": "present",
+        }
+    )
+
+    assert "gemma4-cloud-run" in settings.openai_compatible_endpoints
+    assert settings.llm_model_provider_overrides["tool"][_GEMMA_MODEL] == _GEMMA_ROUTE_TARGET
+
+
+def test_gemma_live_settings_rejects_wrong_runtime_route() -> None:
+    with pytest.raises(RuntimeError, match="must route"):
+        _build_live_gemma_settings(
+            {
+                "LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON": json.dumps(
+                    [
+                        {
+                            "id": "gemma4-cloud-run",
+                            "base_url": "https://gemma.example.run.app/v1",
+                            "auth": {
+                                "type": "google_id_token",
+                                "audience": "https://gemma.example.run.app",
+                                "credential_source": "service_account_json_b64_env",
+                                "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
+                            },
+                        }
+                    ]
+                ),
+                "LLM_MODEL_PROVIDER_OVERRIDES_JSON": json.dumps({"tool": {_GEMMA_MODEL: "chutes"}}),
+                "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64": "present",
+            }
+        )
+
+
+def _build_live_gemma_settings(environ: Mapping[str, str]) -> LlmSettings:
+    _require_mapping_env(environ, "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64")
+    settings = LlmSettings(
+        LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=_require_mapping_env(environ, "LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON"),
+        LLM_MODEL_PROVIDER_OVERRIDES_JSON=_require_mapping_env(environ, "LLM_MODEL_PROVIDER_OVERRIDES_JSON"),
+    )
+    configured_route = settings.llm_model_provider_overrides.get("tool", {}).get(_GEMMA_MODEL)
+    if configured_route != _GEMMA_ROUTE_TARGET:
+        raise RuntimeError(
+            "LLM_MODEL_PROVIDER_OVERRIDES_JSON.tool must route "
+            f"{_GEMMA_MODEL} to {_GEMMA_ROUTE_TARGET}"
+        )
+    return settings
+
+
+def _require_mapping_env(environ: Mapping[str, str], name: str) -> str:
+    value = environ.get(name, "").strip()
     if not value:
         raise RuntimeError(f"{name} must be configured")
     return value
