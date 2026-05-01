@@ -1118,7 +1118,7 @@ async def test_vertex_provider_routes_maas_models_to_chat_completions(monkeypatc
         ("deepseek-ai/deepseek-v3.1-maas", "us-west2", "https://us-west2-aiplatform.googleapis.com"),
         ("deepseek-ai/deepseek-v3.2-maas", "global", "https://aiplatform.googleapis.com"),
         ("publishers/openai/models/gpt-oss-120b-maas", "global", "https://aiplatform.googleapis.com"),
-        ("glm-5-maas", "global", "https://aiplatform.googleapis.com"),
+        ("zai-org/glm-5-maas", "global", "https://aiplatform.googleapis.com"),
         ("publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas", "global", "https://aiplatform.googleapis.com"),
     ),
 )
