@@ -88,7 +88,14 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
         "--pull",
         options.pull_policy,
     ]
-    assert run_args[4:10] == ["-d", "--rm", "--name", "sandbox-demo", "-p", "9000:8000"]
+    assert run_args[4:10] == [
+        "-d",
+        "--rm",
+        "--name",
+        "sandbox-demo",
+        "-p",
+        "9000:8000",
+    ]
     assert "--network" in run_args
     assert "-e" in run_args
     assert run_args[-1] == options.image
@@ -100,6 +107,82 @@ def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:
     assert stop_args == ["docker", "stop", "-t", "5", "container123"]
     assert deployment.client.closed is True
     assert created_clients[0].closed is True
+
+
+def test_docker_sandbox_manager_binds_published_port_when_configured() -> None:
+    runner = RecordingRunner()
+    created_clients: list[DummyClient] = []
+
+    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+        client = DummyClient(base_url, host_container_url)
+        created_clients.append(client)
+        return client
+
+    manager = DockerSandboxManager(
+        docker_binary="docker",
+        host="127.0.0.1",
+        published_port_bind_host="127.0.0.1",
+        command_runner=runner,
+        client_factory=client_factory,
+    )
+
+    options = SandboxOptions(
+        image="harnyx/sandbox:demo",
+        container_name="sandbox-demo",
+        host_port=9000,
+        container_port=8000,
+        env={"EXAMPLE": "value"},
+        network="harnyx-net",
+        host_container_url=_HOST_CONTAINER_URL,
+    )
+
+    deployment = manager.start(options)
+
+    run_args, _ = runner.commands[0]
+    assert run_args[4:10] == [
+        "-d",
+        "--rm",
+        "--name",
+        "sandbox-demo",
+        "-p",
+        "127.0.0.1:9000:8000",
+    ]
+    assert deployment.base_url == "http://127.0.0.1:9000"
+    assert created_clients[0].base_url == "http://127.0.0.1:9000"
+
+
+def test_docker_sandbox_manager_does_not_use_probe_host_as_bind_host() -> None:
+    runner = RecordingRunner()
+    created_clients: list[DummyClient] = []
+
+    def client_factory(base_url: str, host_container_url: str | None) -> DummyClient:
+        client = DummyClient(base_url, host_container_url)
+        created_clients.append(client)
+        return client
+
+    manager = DockerSandboxManager(
+        docker_binary="docker",
+        host="host.docker.internal",
+        command_runner=runner,
+        client_factory=client_factory,
+    )
+
+    options = SandboxOptions(
+        image="harnyx/sandbox:demo",
+        container_name="sandbox-demo",
+        host_port=9000,
+        container_port=8000,
+        network="harnyx-net",
+        host_container_url=_HOST_CONTAINER_URL,
+    )
+
+    deployment = manager.start(options)
+
+    run_args, _ = runner.commands[0]
+    assert run_args[9] == "9000:8000"
+    assert "host.docker.internal:9000:8000" not in run_args
+    assert deployment.base_url == "http://host.docker.internal:9000"
+    assert created_clients[0].base_url == "http://host.docker.internal:9000"
 
 
 def test_docker_manager_skips_port_mapping_when_host_port_missing() -> None:

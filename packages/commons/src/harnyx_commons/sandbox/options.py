@@ -35,6 +35,7 @@ class SandboxOptions:
     user: str | None = None
     seccomp_profile: str | None = None
     ulimits: Sequence[str] = field(default_factory=tuple)
+    failure_diagnostics_dir: str | None = None
 
 
 __all__ = [
