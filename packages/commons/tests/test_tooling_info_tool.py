@@ -40,11 +40,10 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "search_items" not in payload["pricing"]
 
     model_prices = payload["pricing"]["llm_chat"]["models"]
-    assert model_prices["openai/gpt-oss-120b-TEE"]["input_per_million"] == pytest.approx(0.09)
-    assert model_prices["openai/gpt-oss-120b-TEE"]["output_per_million"] == pytest.approx(0.36)
-    assert model_prices["openai/gpt-oss-120b-TEE"]["reasoning_per_million"] == pytest.approx(0.36)
     assert "openai/gpt-oss-20b-TEE" not in payload["allowed_tool_models"]
     assert "openai/gpt-oss-20b-TEE" not in model_prices
+    assert "openai/gpt-oss-120b-TEE" not in payload["allowed_tool_models"]
+    assert "openai/gpt-oss-120b-TEE" not in model_prices
     assert "openai/gpt-oss-20b" not in payload["allowed_tool_models"]
     assert "openai/gpt-oss-120b" not in payload["allowed_tool_models"]
     assert "zai-org/GLM-5-TEE" in payload["allowed_tool_models"]
@@ -108,18 +107,7 @@ def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     assert price_llm(parse_tool_model("google/gemma-4-31B-it"), usage) == pytest.approx(0.89)
 
 
-def test_openai_gpt_oss_120b_tool_model_pricing_matches_current_chutes_rate() -> None:
-    usage = LlmUsage(
-        prompt_tokens=1_000_000,
-        completion_tokens=1_000_000,
-        reasoning_tokens=1_000_000,
-    )
-
-    cost_120b = price_llm(parse_tool_model("openai/gpt-oss-120b-TEE"), usage)
-
-    assert cost_120b == pytest.approx(0.81)
-
-
-def test_retired_openai_gpt_oss_20b_tool_model_is_rejected() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b-TEE", "openai/gpt-oss-120b-TEE"))
+def test_retired_openai_gpt_oss_tool_models_are_rejected(model: str) -> None:
     with pytest.raises(ValueError, match="not allowed for validator tools"):
-        parse_tool_model("openai/gpt-oss-20b-TEE")
+        parse_tool_model(model)
