@@ -251,6 +251,7 @@ class LocalEvaluationRuntime:
     _runner: EvaluationRunner
     _state: Any
     _search_client: Any
+    _llm_provider_registry: Any
     _tool_llm_provider: Any
     _scoring_llm_provider: Any
     _sandbox_manager: SandboxManager
@@ -262,9 +263,13 @@ class LocalEvaluationRuntime:
     def create(cls, *, progress_reporter: _CliProgressReporter | None = None) -> LocalEvaluationRuntime:
         settings = Settings.load()
         state = _build_state()
-        search_client, tool_llm_provider, scoring_llm_provider, scoring_route = _build_local_eval_tooling_clients(
-            settings
-        )
+        (
+            search_client,
+            llm_provider_registry,
+            tool_llm_provider,
+            scoring_llm_provider,
+            scoring_route,
+        ) = _build_local_eval_tooling_clients(settings)
         _, tool_executor = _build_tooling(
             state=state,
             resolved=settings,
@@ -298,6 +303,7 @@ class LocalEvaluationRuntime:
             _runner=runner,
             _state=state,
             _search_client=search_client,
+            _llm_provider_registry=llm_provider_registry,
             _tool_llm_provider=tool_llm_provider,
             _scoring_llm_provider=scoring_llm_provider,
             _sandbox_manager=create_sandbox_manager(
@@ -415,8 +421,7 @@ class LocalEvaluationRuntime:
             self._tool_host = None
         for resource in _unique_async_resources(
             self._search_client,
-            self._tool_llm_provider,
-            self._scoring_llm_provider,
+            self._llm_provider_registry,
         ):
             await resource.aclose()
 

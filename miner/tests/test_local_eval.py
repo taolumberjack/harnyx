@@ -515,6 +515,40 @@ class _FakeAsyncResource:
         self.closed = True
 
 
+async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() -> None:
+    search_client = _FakeAsyncResource()
+    llm_provider_registry = _FakeAsyncResource()
+    tool_llm_provider = _FakeAsyncResource()
+    scoring_llm_provider = _FakeAsyncResource()
+    runtime = local_eval.LocalEvaluationRuntime(
+        settings=cast(Any, SimpleNamespace()),
+        tool_executor=cast(Any, _UnusedToolExecutor()),
+        scoring_service=cast(Any, object()),
+        scoring_config=EvaluationScoringConfig(
+            provider="chutes",
+            model="openai/gpt-oss-120b-TEE",
+            timeout_seconds=30.0,
+        ),
+        _runner=cast(Any, object()),
+        _state=SimpleNamespace(),
+        _search_client=search_client,
+        _llm_provider_registry=llm_provider_registry,
+        _tool_llm_provider=tool_llm_provider,
+        _scoring_llm_provider=scoring_llm_provider,
+        _sandbox_manager=cast(Any, object()),
+        _tool_host=None,
+        _tool_host_lock=asyncio.Lock(),
+        _progress_reporter=None,
+    )
+
+    await runtime.aclose()
+
+    assert search_client.closed is True
+    assert llm_provider_registry.closed is True
+    assert tool_llm_provider.closed is False
+    assert scoring_llm_provider.closed is False
+
+
 class _FakeSandboxClient(SandboxClient):
     async def invoke(
         self,
@@ -1333,6 +1367,7 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
             token_semaphore=object(),
         ),
         _search_client=_FakeAsyncResource(),
+        _llm_provider_registry=_FakeAsyncResource(),
         _tool_llm_provider=_FakeAsyncResource(),
         _scoring_llm_provider=_FakeAsyncResource(),
         _sandbox_manager=cast(Any, sandbox_manager),
@@ -1506,6 +1541,7 @@ async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup
             token_semaphore=object(),
         ),
         _search_client=None,
+        _llm_provider_registry=None,
         _tool_llm_provider=None,
         _scoring_llm_provider=None,
         _sandbox_manager=cast(Any, sandbox_manager),

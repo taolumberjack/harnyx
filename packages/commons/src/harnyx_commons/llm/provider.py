@@ -21,11 +21,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from harnyx_commons.config.external_client import ExternalClientRetrySettings
 from harnyx_commons.llm.provider_types import (
-    BEDROCK_PROVIDER,
+    ALLOWED_LLM_PROVIDERS,
     CHUTES_PROVIDER,
     VERTEX_PROVIDER,
     LlmProviderName,
     normalize_reasoning_effort,
+    parse_builtin_provider_name,
 )
 from harnyx_commons.llm.retry_utils import RetryPolicy, backoff_ms
 from harnyx_commons.llm.schema import (
@@ -54,24 +55,12 @@ from harnyx_commons.observability.langfuse import (
     update_generation_best_effort,
 )
 
-ALLOWED_LLM_PROVIDERS: tuple[LlmProviderName, ...] = (
-    BEDROCK_PROVIDER,
-    CHUTES_PROVIDER,
-    VERTEX_PROVIDER,
-)
-
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
-
 
 
 def parse_provider_name(raw: str | None, *, component: str) -> LlmProviderName:
     """Parse and validate an LLM provider label."""
-    if raw is None:
-        raise ValueError(f"{component} llm provider must be specified")
-    value = raw.strip()
-    if not value or value not in ALLOWED_LLM_PROVIDERS:
-        raise ValueError(f"{component} llm provider {value!r} is not allowed")
-    return cast(LlmProviderName, value)
+    return parse_builtin_provider_name(raw, component=component)
 
 
 @dataclass

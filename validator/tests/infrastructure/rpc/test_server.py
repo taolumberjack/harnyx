@@ -13,6 +13,7 @@ from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.routing import ResolvedLlmRoute
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -154,7 +155,7 @@ class _RetryExhaustedLlmProvider:
 
 
 class TrackingDependencyProvider:
-    def __init__(self, *, llm_provider=None) -> None:
+    def __init__(self, *, llm_provider=None, llm_provider_name: str = "openai") -> None:
         self.session_registry = FakeSessionRegistry()
         self.receipt_log = FakeReceiptLog()
         self.tokens = InMemoryTokenRegistry()
@@ -196,7 +197,11 @@ class TrackingDependencyProvider:
             clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
             progress=self.progress_tracker,
             search_provider_name="desearch",
-            llm_provider_name="openai",
+            llm_route_resolver=lambda model: ResolvedLlmRoute(
+                surface="tool",
+                provider=llm_provider_name,
+                model=model,
+            ),
         )
         self.token_semaphore = RecordingTokenSemaphore(max_parallel_calls=1)
         self.dependencies = ToolRouteDeps(
@@ -415,6 +420,41 @@ def test_execute_tool_endpoint_records_provider_call_on_live_llm_success() -> No
         {
             "provider": "openai",
             "model": ALLOWED_TOOL_MODELS[0],
+            "total_calls": 1,
+            "failed_calls": 0,
+        },
+    )
+
+
+def test_execute_tool_endpoint_records_custom_openai_compatible_provider_call() -> None:
+    provider = TrackingDependencyProvider(
+        llm_provider=_SuccessfulLlmProvider(),
+        llm_provider_name="custom-openai-compatible:gemma4-cloud-run",
+    )
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "llm_chat",
+            "args": [],
+            "kwargs": {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": "google/gemma-4-31B-it",
+            },
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == (
+        {
+            "provider": "custom-openai-compatible:gemma4-cloud-run",
+            "model": "google/gemma-4-31B-it",
             "total_calls": 1,
             "failed_calls": 0,
         },

@@ -92,8 +92,8 @@ def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytes
 
     monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
-    _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
-    _, _, local_scoring_provider, local_scoring_route = _build_local_eval_tooling_clients(settings)
+    _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
+    _, _, _, local_scoring_provider, local_scoring_route = _build_local_eval_tooling_clients(settings)
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route.provider == "bedrock"

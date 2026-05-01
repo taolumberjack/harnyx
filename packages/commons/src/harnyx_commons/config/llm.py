@@ -2,15 +2,118 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import json
+import re
+from collections.abc import Mapping
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from harnyx_commons.llm.provider_types import LlmProviderName
 from harnyx_commons.llm.routing import LlmModelProviderOverrides, parse_llm_model_provider_overrides
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
+_ENDPOINT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+class OpenAiCompatibleNoAuthConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["none"]
+
+
+class OpenAiCompatibleBearerTokenEnvAuthConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["bearer_token_env"]
+    token_env: str = Field(min_length=1)
+
+    @field_validator("token_env")
+    @classmethod
+    def _normalize_token_env(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("bearer token env name must be non-empty")
+        return normalized
+
+
+class OpenAiCompatibleGoogleIdTokenAuthConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["google_id_token"]
+    audience: str = Field(min_length=1)
+    credential_source: Literal["adc", "service_account_json_b64_env"]
+    credential_env: str | None = None
+
+    @field_validator("audience", "credential_env")
+    @classmethod
+    def _normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("google ID token auth text fields must be non-empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_credential_env(self) -> OpenAiCompatibleGoogleIdTokenAuthConfig:
+        if self.credential_source == "service_account_json_b64_env" and self.credential_env is None:
+            raise ValueError("google_id_token auth requires credential_env for service_account_json_b64_env")
+        if self.credential_source == "adc" and self.credential_env is not None:
+            raise ValueError("google_id_token auth credential_env is only allowed for service_account_json_b64_env")
+        return self
+
+
+OpenAiCompatibleAuthConfig = Annotated[
+    OpenAiCompatibleNoAuthConfig
+    | OpenAiCompatibleBearerTokenEnvAuthConfig
+    | OpenAiCompatibleGoogleIdTokenAuthConfig,
+    Field(discriminator="type"),
+]
+
+
+class OpenAiCompatibleEndpointConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: str = Field(min_length=1)
+    base_url: AnyHttpUrl
+    auth: OpenAiCompatibleAuthConfig
+    timeout_seconds: float | None = None
+    max_concurrent: int | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _normalize_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("OpenAI-compatible endpoint id must be non-empty")
+        if not _ENDPOINT_ID_PATTERN.fullmatch(normalized):
+            raise ValueError(
+                "OpenAI-compatible endpoint id may contain only letters, numbers, underscore, dot, and dash"
+            )
+        return normalized
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _validate_timeout(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("OpenAI-compatible endpoint timeout_seconds must be positive")
+        return value
+
+    @field_validator("max_concurrent")
+    @classmethod
+    def _validate_max_concurrent(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("OpenAI-compatible endpoint max_concurrent must be positive")
+        return value
+
+
+_OPENAI_COMPATIBLE_ENDPOINTS_ADAPTER = TypeAdapter(list[OpenAiCompatibleEndpointConfig])
 
 
 class LlmSettings(BaseSettings):
@@ -62,6 +165,7 @@ class LlmSettings(BaseSettings):
     digest_llm_temperature: float | None = Field(default=None, alias="DIGEST_LLM_TEMPERATURE")
     digest_llm_max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, alias="DIGEST_LLM_MAX_OUTPUT_TOKENS")
     llm_model_provider_overrides_json: str | None = Field(default=None, alias="LLM_MODEL_PROVIDER_OVERRIDES_JSON")
+    openai_compatible_endpoints_json: str | None = Field(default=None, alias="LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON")
 
     # --- Timeouts ---
     llm_timeout_seconds: float = Field(default=60.0, alias="PLATFORM_LLM_TIMEOUT_SECONDS")
@@ -130,7 +234,42 @@ class LlmSettings(BaseSettings):
 
     @property
     def llm_model_provider_overrides(self) -> LlmModelProviderOverrides:
-        return parse_llm_model_provider_overrides(self.llm_model_provider_overrides_json)
+        return parse_llm_model_provider_overrides(
+            self.llm_model_provider_overrides_json,
+            custom_openai_compatible_endpoint_ids=set(self.openai_compatible_endpoints),
+        )
+
+    @property
+    def openai_compatible_endpoints(self) -> Mapping[str, OpenAiCompatibleEndpointConfig]:
+        return parse_openai_compatible_endpoints_json(self.openai_compatible_endpoints_json)
 
 
-__all__ = ["LlmSettings", "DEFAULT_MAX_OUTPUT_TOKENS"]
+def parse_openai_compatible_endpoints_json(raw: str | None) -> Mapping[str, OpenAiCompatibleEndpointConfig]:
+    if raw is None:
+        return {}
+    normalized_raw = raw.strip()
+    if not normalized_raw:
+        return {}
+    try:
+        payload = json.loads(normalized_raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON must be valid JSON") from exc
+    endpoints = _OPENAI_COMPATIBLE_ENDPOINTS_ADAPTER.validate_python(payload)
+    result: dict[str, OpenAiCompatibleEndpointConfig] = {}
+    for endpoint in endpoints:
+        if endpoint.id in result:
+            raise ValueError(f"LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON endpoint id {endpoint.id!r} is duplicated")
+        result[endpoint.id] = endpoint
+    return result
+
+
+__all__ = [
+    "LlmSettings",
+    "DEFAULT_MAX_OUTPUT_TOKENS",
+    "OpenAiCompatibleAuthConfig",
+    "OpenAiCompatibleBearerTokenEnvAuthConfig",
+    "OpenAiCompatibleEndpointConfig",
+    "OpenAiCompatibleGoogleIdTokenAuthConfig",
+    "OpenAiCompatibleNoAuthConfig",
+    "parse_openai_compatible_endpoints_json",
+]

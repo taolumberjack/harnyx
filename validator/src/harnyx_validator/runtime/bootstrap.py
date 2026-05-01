@@ -19,8 +19,12 @@ from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmProviderPort
-from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry
-from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
+from harnyx_commons.llm.provider_factory import (
+    CachedLlmProviderRegistry,
+    build_cached_llm_provider_registry,
+    build_routed_llm_provider,
+)
+from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER, parse_builtin_provider_name
 from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_commons.miner_task_scoring import (
@@ -98,7 +102,7 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         clock: Callable[[], datetime],
         progress: InMemoryRunProgress,
         search_provider_name: str | None,
-        llm_provider_name: str,
+        llm_route_resolver: Callable[[str], ResolvedLlmRoute],
     ) -> None:
         super().__init__(
             session_registry=session_registry,
@@ -110,13 +114,13 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         )
         self._progress = progress
         self._search_provider_name = search_provider_name
-        self._llm_provider_name = llm_provider_name
+        self._llm_route_resolver = llm_route_resolver
 
     async def _invoke_tool_output_async(self, request: ToolInvocationRequest) -> ToolInvocationOutput:
         provider_key = _provider_key_from_request(
             request=request,
             search_provider_name=self._search_provider_name,
-            llm_provider_name=self._llm_provider_name,
+            llm_route_resolver=self._llm_route_resolver,
         )
         try:
             response = await super()._invoke_tool_output_async(request)
@@ -165,6 +169,7 @@ class RuntimeContext:
     progress_tracker: InMemoryRunProgress
     usage_tracker: UsageTracker
     search_client: WebSearchProviderPort | None
+    llm_provider_registry: CachedLlmProviderRegistry
     tool_llm_provider: LlmProviderPort | None
     scoring_llm_provider: LlmProviderPort | None
     tool_invoker: RuntimeToolInvoker
@@ -212,7 +217,9 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
     state = _build_state()
     platform_client, platform_hotkey, subtensor_client = _build_external_clients(resolved)
 
-    search_client, tool_llm_provider, scoring_llm_provider, scoring_route = _build_llm_clients(resolved)
+    search_client, llm_provider_registry, tool_llm_provider, scoring_llm_provider, scoring_route = _build_llm_clients(
+        resolved
+    )
     tool_invoker, tool_executor = _build_tooling(
         state=state,
         resolved=resolved,
@@ -259,6 +266,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         progress_tracker=state.progress_tracker,
         usage_tracker=state.usage_tracker,
         search_client=search_client,
+        llm_provider_registry=llm_provider_registry,
         tool_llm_provider=tool_llm_provider,
         scoring_llm_provider=scoring_llm_provider,
         tool_invoker=tool_invoker,
@@ -310,7 +318,13 @@ def _build_external_clients(settings: Settings) -> tuple[PlatformPort, bt.Keypai
 
 def _build_llm_clients(
     settings: Settings,
-) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort | None, ResolvedLlmRoute]:
+) -> tuple[
+    WebSearchProviderPort | None,
+    CachedLlmProviderRegistry,
+    LlmProviderPort | None,
+    LlmProviderPort | None,
+    ResolvedLlmRoute,
+]:
     search_client = _create_search_client(settings)
     if settings.llm.tool_llm_provider == BEDROCK_PROVIDER:
         raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
@@ -321,14 +335,20 @@ def _build_llm_clients(
     )
     _validate_validator_override_policy(settings)
     scoring_route = _resolve_scoring_judge_route(settings)
-    tool_llm_provider = provider_registry.resolve(settings.llm.tool_llm_provider)
+    tool_llm_provider = _build_routed_tool_llm_provider(settings, provider_registry)
     scoring_llm_provider = provider_registry.resolve(scoring_route.provider)
-    return search_client, tool_llm_provider, scoring_llm_provider, scoring_route
+    return search_client, provider_registry, tool_llm_provider, scoring_llm_provider, scoring_route
 
 
 def _build_local_eval_tooling_clients(
     settings: Settings,
-) -> tuple[WebSearchProviderPort | None, LlmProviderPort | None, LlmProviderPort, ResolvedLlmRoute]:
+) -> tuple[
+    WebSearchProviderPort | None,
+    CachedLlmProviderRegistry,
+    LlmProviderPort | None,
+    LlmProviderPort,
+    ResolvedLlmRoute,
+]:
     if settings.llm.tool_llm_provider == BEDROCK_PROVIDER:
         raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
     provider_registry = build_cached_llm_provider_registry(
@@ -347,9 +367,23 @@ def _build_local_eval_tooling_clients(
     if settings.llm.tool_llm_provider is None:
         tool_llm_provider = None
     else:
-        tool_llm_provider = _LazyLlmProvider(lambda: provider_registry.resolve(settings.llm.tool_llm_provider))
+        tool_llm_provider = _LazyLlmProvider(lambda: _build_routed_tool_llm_provider(settings, provider_registry))
     scoring_llm_provider = provider_registry.resolve(scoring_route.provider)
-    return search_client, tool_llm_provider, scoring_llm_provider, scoring_route
+    return search_client, provider_registry, tool_llm_provider, scoring_llm_provider, scoring_route
+
+
+def _build_routed_tool_llm_provider(
+    settings: Settings,
+    provider_registry: CachedLlmProviderRegistry,
+) -> LlmProviderPort:
+    return build_routed_llm_provider(
+        surface="tool",
+        default_provider=settings.llm.tool_llm_provider,
+        llm_settings=settings.llm,
+        allowed_providers={"chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+        provider_registry=provider_registry,
+    )
 
 
 def _validate_validator_override_policy(settings: Settings) -> None:
@@ -400,7 +434,7 @@ def _build_tooling(
         clock=_clock,
         progress=state.progress_tracker,
         search_provider_name=resolved.llm.search_provider,
-        llm_provider_name=resolved.llm.tool_llm_provider,
+        llm_route_resolver=_build_tool_route_resolver(resolved),
     )
     return tool_invoker, tool_executor
 
@@ -596,7 +630,7 @@ def _provider_key_from_request(
     *,
     request: ToolInvocationRequest,
     search_provider_name: str | None,
-    llm_provider_name: str,
+    llm_route_resolver: Callable[[str], ResolvedLlmRoute],
 ) -> tuple[str, str] | None:
     if request.tool in _SEARCH_PROVIDER_TOOLS:
         if search_provider_name is None:
@@ -607,7 +641,22 @@ def _provider_key_from_request(
     model = _model_name_from_request(request)
     if model is None:
         return None
-    return llm_provider_name, model
+    route = llm_route_resolver(model)
+    return route.provider, route.model
+
+
+def _build_tool_route_resolver(settings: Settings) -> Callable[[str], ResolvedLlmRoute]:
+    def resolve(model: str) -> ResolvedLlmRoute:
+        return resolve_llm_route(
+            surface="tool",
+            default_provider=settings.llm.tool_llm_provider,
+            model=model,
+            overrides=settings.llm.llm_model_provider_overrides,
+            allowed_providers={"chutes", "vertex"},
+            allow_custom_openai_compatible=True,
+        )
+
+    return resolve
 
 
 def _model_name_from_request(request: ToolInvocationRequest) -> str | None:
@@ -794,8 +843,9 @@ def _create_scoring_service(
 ) -> EvaluationScoringService:
     if provider is None:
         raise ValueError("scoring_llm_provider must be configured")
+    scoring_provider = parse_builtin_provider_name(scoring_route.provider, component="scoring")
     config = EvaluationScoringConfig(
-        provider=scoring_route.provider,
+        provider=scoring_provider,
         model=scoring_route.model,
         temperature=settings.llm.scoring_llm_temperature,
         max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
@@ -833,8 +883,7 @@ async def close_runtime_resources(runtime: RuntimeContext) -> None:
 
     for owned in _unique_aclose_targets(
         runtime.search_client,
-        runtime.tool_llm_provider,
-        runtime.scoring_llm_provider,
+        runtime.llm_provider_registry,
     ):
         await _aclose(owned)
 

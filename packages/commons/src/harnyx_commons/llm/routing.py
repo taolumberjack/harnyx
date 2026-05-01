@@ -7,12 +7,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Literal, cast
 
-from harnyx_commons.llm.provider import LlmProviderPort, parse_provider_name
-from harnyx_commons.llm.provider_types import LlmProviderName
+from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.provider_types import (
+    LlmProviderName,
+    LlmRouteTarget,
+    parse_custom_openai_compatible_target,
+    parse_provider_route_target,
+)
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 
 LlmRouteSurface = Literal["generator", "digest", "reference", "content_review", "tool", "scoring"]
-LlmModelProviderOverrides = dict[LlmRouteSurface, dict[str, LlmProviderName]]
+LlmModelProviderOverrides = dict[LlmRouteSurface, dict[str, LlmRouteTarget]]
 
 _ALLOWED_ROUTE_SURFACES: tuple[LlmRouteSurface, ...] = (
     "generator",
@@ -27,11 +32,15 @@ _ALLOWED_ROUTE_SURFACES: tuple[LlmRouteSurface, ...] = (
 @dataclass(frozen=True, slots=True)
 class ResolvedLlmRoute:
     surface: LlmRouteSurface
-    provider: LlmProviderName
+    provider: LlmRouteTarget
     model: str
 
 
-def parse_llm_model_provider_overrides(raw: str | None) -> LlmModelProviderOverrides:
+def parse_llm_model_provider_overrides(
+    raw: str | None,
+    *,
+    custom_openai_compatible_endpoint_ids: set[str] | frozenset[str] = frozenset(),
+) -> LlmModelProviderOverrides:
     if raw is None:
         return {}
     normalized_raw = raw.strip()
@@ -52,7 +61,7 @@ def parse_llm_model_provider_overrides(raw: str | None) -> LlmModelProviderOverr
                 f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface} must decode to a JSON object "
                 "of model-to-provider mappings"
             )
-        model_overrides: dict[str, LlmProviderName] = {}
+        model_overrides: dict[str, LlmRouteTarget] = {}
         for model_raw, provider_raw in models_raw.items():
             if not isinstance(model_raw, str):
                 raise ValueError(f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface} model keys must be strings")
@@ -65,10 +74,16 @@ def parse_llm_model_provider_overrides(raw: str | None) -> LlmModelProviderOverr
                 raise ValueError(
                     f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model} provider labels must be strings"
                 )
-            model_overrides[model] = parse_provider_name(
+            route_target = parse_provider_route_target(
                 provider_raw,
                 component=f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model}",
             )
+            _validate_custom_target_exists(
+                route_target,
+                custom_openai_compatible_endpoint_ids=custom_openai_compatible_endpoint_ids,
+                component=f"LLM_MODEL_PROVIDER_OVERRIDES_JSON.{surface}.{model}",
+            )
+            model_overrides[model] = route_target
         if model_overrides:
             overrides[surface] = model_overrides
     return overrides
@@ -81,11 +96,17 @@ def resolve_llm_route(
     model: str,
     overrides: LlmModelProviderOverrides,
     allowed_providers: set[LlmProviderName],
+    allow_custom_openai_compatible: bool = False,
 ) -> ResolvedLlmRoute:
     normalized_model = model.strip()
     override_provider = overrides.get(surface, {}).get(normalized_model)
     if override_provider is None:
         return ResolvedLlmRoute(surface=surface, provider=default_provider, model=normalized_model)
+    custom_endpoint_id = parse_custom_openai_compatible_target(override_provider)
+    if custom_endpoint_id is not None:
+        if not allow_custom_openai_compatible:
+            raise ValueError(f"{surface} override provider {override_provider!r} is not supported")
+        return ResolvedLlmRoute(surface=surface, provider=override_provider, model=normalized_model)
     if override_provider not in allowed_providers:
         raise ValueError(f"{surface} override provider {override_provider!r} is not supported")
     return ResolvedLlmRoute(surface=surface, provider=override_provider, model=normalized_model)
@@ -106,12 +127,14 @@ class RoutedLlmProvider(LlmProviderPort):
         default_provider: LlmProviderName,
         overrides: LlmModelProviderOverrides,
         allowed_providers: set[LlmProviderName],
+        allow_custom_openai_compatible: bool = False,
         resolve_provider: Callable[[str], LlmProviderPort],
     ) -> None:
         self._surface = surface
         self._default_provider = default_provider
         self._overrides = overrides
         self._allowed_providers = allowed_providers
+        self._allow_custom_openai_compatible = allow_custom_openai_compatible
         self._resolve_provider = resolve_provider
 
     async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
@@ -121,6 +144,7 @@ class RoutedLlmProvider(LlmProviderPort):
             model=request.model,
             overrides=self._overrides,
             allowed_providers=self._allowed_providers,
+            allow_custom_openai_compatible=self._allow_custom_openai_compatible,
         )
         routed_request = replace(request, provider=route.provider, model=route.model)
         response = await self._resolve_provider(route.provider).invoke(routed_request)
@@ -137,6 +161,19 @@ def _parse_route_surface(raw: object) -> LlmRouteSurface:
     if value not in _ALLOWED_ROUTE_SURFACES:
         raise ValueError(f"LLM_MODEL_PROVIDER_OVERRIDES_JSON surface {value!r} is not supported")
     return cast(LlmRouteSurface, value)
+
+
+def _validate_custom_target_exists(
+    route_target: str,
+    *,
+    custom_openai_compatible_endpoint_ids: set[str] | frozenset[str],
+    component: str,
+) -> None:
+    endpoint_id = parse_custom_openai_compatible_target(route_target)
+    if endpoint_id is None:
+        return
+    if endpoint_id not in custom_openai_compatible_endpoint_ids:
+        raise ValueError(f"{component} references unknown custom OpenAI-compatible endpoint {endpoint_id!r}")
 
 
 __all__ = [
