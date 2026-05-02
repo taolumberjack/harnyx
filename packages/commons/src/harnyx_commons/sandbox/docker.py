@@ -7,10 +7,11 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,11 @@ from harnyx_commons.protocol_headers import (
     SESSION_ID_HEADER,
 )
 from harnyx_commons.sandbox.client import SandboxClient, SandboxInvokeError
+from harnyx_commons.sandbox.diagnostic_files import (
+    ensure_private_diagnostic_dir,
+    write_private_json,
+    write_private_text,
+)
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import DEFAULT_TOKEN_HEADER, SandboxOptions
 
@@ -32,6 +38,7 @@ logger = logging.getLogger(__name__)
 _MOUNTINFO_CONTAINER_ID_PATTERN = re.compile(
     r"/containers/([0-9a-f]{12,64})/(?:hostname|hosts|resolv\.conf)(?:\s|$)"
 )
+_NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS = frozenset({"SANDBOX_HOST", "SANDBOX_PORT"})
 
 
 class HttpSandboxClient(SandboxClient):
@@ -255,6 +262,18 @@ def _sandbox_invoke_error(
     )
 
 
+def _published_port_spec(bind_host: str | None, options: SandboxOptions) -> str:
+    if options.host_port is None:
+        raise ValueError("sandbox host_port must be configured to publish a port")
+    if options.host_port == 0:
+        if bind_host is None:
+            return str(options.container_port)
+        return f"{bind_host}::{options.container_port}"
+    if bind_host is None:
+        return f"{options.host_port}:{options.container_port}"
+    return f"{bind_host}:{options.host_port}:{options.container_port}"
+
+
 def _require_object_mapping(value: object, *, label: str) -> dict[str, object]:
     mapping = _object_mapping_or_none(value)
     if mapping is None:
@@ -290,6 +309,7 @@ class DockerSandboxManager(SandboxManager):
         *,
         docker_binary: str = "docker",
         host: str = "127.0.0.1",
+        published_port_bind_host: str | None = None,
         command_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         client_factory: Callable[[str, str | None], SandboxClient] | None = None,
         log_consumer: Callable[[str], None] | None = None,
@@ -297,6 +317,7 @@ class DockerSandboxManager(SandboxManager):
     ) -> None:
         self._docker = docker_binary
         self._host = host
+        self._published_port_bind_host = published_port_bind_host
         self._run = command_runner or self._default_run
         self._client_factory = client_factory or (
             lambda base_url, host_container_url: HttpSandboxClient(
@@ -319,7 +340,12 @@ class DockerSandboxManager(SandboxManager):
         try:
             base_url, client = self._ready_client(options)
             self._post_launch_steps(options, base_url, container_id)
-        except Exception:
+        except Exception as exc:
+            self._write_failure_diagnostics(
+                options=options,
+                container_id=container_id,
+                error=exc,
+            )
             if client is not None:
                 client.close()
             self._stop_log_stream(container_id)
@@ -370,10 +396,7 @@ class DockerSandboxManager(SandboxManager):
 
     def _add_ports_and_network(self, args: list[str], options: SandboxOptions) -> None:
         if options.host_port is not None:
-            if options.host_port == 0:
-                args.extend(["-p", str(options.container_port)])
-            else:
-                args.extend(["-p", f"{options.host_port}:{options.container_port}"])
+            args.extend(["-p", _published_port_spec(self._published_port_bind_host, options)])
         if options.network:
             args.extend(["--network", options.network])
 
@@ -444,6 +467,13 @@ class DockerSandboxManager(SandboxManager):
         try:
             result = self._run(args, capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as exc:  # pragma: no cover - exercised in integration
+            self._write_failure_diagnostics(
+                options=options,
+                container_id=None,
+                error=exc,
+                docker_run_args=args,
+                docker_run_result=exc,
+            )
             self._raise_run_error(exc, args, options)
         container_id = result.stdout.strip()
         if not container_id:
@@ -456,9 +486,9 @@ class DockerSandboxManager(SandboxManager):
         args: list[str],
         options: SandboxOptions,
     ) -> None:
-        cmd_str = " ".join(str(part) for part in (exc.cmd or args))
-        stdout = (exc.stdout or "").strip()
-        stderr = (exc.stderr or "").strip()
+        cmd_str = _shell_join(_redact_docker_run_args(args))
+        stdout = _redact_sensitive_text((exc.stdout or "").strip(), options)
+        stderr = _redact_sensitive_text((exc.stderr or "").strip(), options)
         context_bits = []
         if stdout:
             context_bits.append(f"stdout={stdout}")
@@ -478,6 +508,80 @@ class DockerSandboxManager(SandboxManager):
         raise RuntimeError(
             f"docker run failed (returncode={exc.returncode}) cmd={cmd_str} stderr={stderr}"
         ) from exc
+
+    def _write_failure_diagnostics(
+        self,
+        *,
+        options: SandboxOptions,
+        container_id: str | None,
+        error: BaseException,
+        docker_run_args: list[str] | None = None,
+        docker_run_result: subprocess.CalledProcessError | None = None,
+    ) -> None:
+        if options.failure_diagnostics_dir is None:
+            return
+        diagnostics_dir = Path(options.failure_diagnostics_dir)
+        try:
+            ensure_private_diagnostic_dir(diagnostics_dir)
+            run_args = docker_run_args or self._build_run_args(options)
+            write_private_json(
+                diagnostics_dir / "sandbox-options.json",
+                _diagnostic_options_snapshot(options),
+            )
+            write_private_text(
+                diagnostics_dir / "docker-run.txt",
+                _shell_join(_redact_docker_run_args(run_args)),
+            )
+            write_private_text(diagnostics_dir / "error.txt", _diagnostic_error_text(error, options))
+            if docker_run_result is not None:
+                write_private_json(
+                    diagnostics_dir / "docker-run-result.json",
+                    {
+                        "returncode": docker_run_result.returncode,
+                        "stdout": _redact_sensitive_text(docker_run_result.stdout or "", options),
+                        "stderr": _redact_sensitive_text(docker_run_result.stderr or "", options),
+                    },
+                )
+            if container_id is not None:
+                self._write_docker_command_output(
+                    diagnostics_dir / "docker-inspect.json",
+                    [self._docker, "inspect", container_id],
+                    options=options,
+                )
+                self._write_docker_command_output(
+                    diagnostics_dir / "docker-logs.txt",
+                    [self._docker, "logs", container_id],
+                    options=options,
+                )
+        except Exception as exc:  # pragma: no cover - diagnostic path must not mask failures
+            logger.warning(
+                "sandbox failure diagnostics could not be written: diagnostics_dir=%s error=%s",
+                diagnostics_dir,
+                exc,
+                exc_info=exc,
+            )
+
+    def _write_docker_command_output(
+        self,
+        path: Path,
+        args: list[str],
+        *,
+        options: SandboxOptions,
+    ) -> None:
+        try:
+            result = self._run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as exc:
+            write_private_text(
+                path.with_suffix(f"{path.suffix}.error.txt"),
+                (
+                    f"command={_shell_join(args)}\n"
+                    f"returncode={exc.returncode}\n"
+                    f"stdout={_redact_sensitive_text(exc.stdout or '', options)}\n"
+                    f"stderr={_redact_sensitive_text(exc.stderr or '', options)}\n"
+                ),
+            )
+            return
+        write_private_text(path, _redact_sensitive_text(result.stdout or "", options))
 
     def _build_client(self, options: SandboxOptions) -> tuple[str, SandboxClient]:
         if options.host_port is not None:
@@ -666,6 +770,86 @@ class DockerSandboxManager(SandboxManager):
         **kwargs: Any,
     ) -> subprocess.Popen[str]:  # pragma: no cover - thin wrapper
         return subprocess.Popen(*args, **kwargs)  # noqa: S603
+
+
+def _shell_join(args: Sequence[str]) -> str:
+    return shlex.join(list(args))
+
+
+def _redact_docker_run_args(args: Sequence[str]) -> list[str]:
+    redacted: list[str] = []
+    redact_next = False
+    for arg in args:
+        if redact_next:
+            key, separator, _ = arg.partition("=")
+            redacted.append(f"{key}{separator}<redacted>" if separator else "<redacted>")
+            redact_next = False
+            continue
+        if arg in {"-e", "--env"}:
+            redacted.append(arg)
+            redact_next = True
+            continue
+        if arg.startswith("--env="):
+            prefix, _, env_value = arg.partition("=")
+            key, separator, _ = env_value.partition("=")
+            redacted.append(f"{prefix}={key}{separator}<redacted>" if separator else f"{prefix}=<redacted>")
+            continue
+        redacted.append(arg)
+    return redacted
+
+
+def _diagnostic_error_text(error: BaseException, options: SandboxOptions) -> str:
+    return f"{error.__class__.__name__}: {_redact_sensitive_text(str(error), options)}\n"
+
+
+def _redact_sensitive_text(text: str, options: SandboxOptions) -> str:
+    redacted = text
+    for value in _sensitive_env_values(options):
+        if value:
+            redacted = redacted.replace(value, "<redacted>")
+    return redacted
+
+
+def _sensitive_env_values(options: SandboxOptions) -> tuple[str, ...]:
+    return tuple(
+        value
+        for key, value in options.env.items()
+        if key not in _NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS
+    )
+
+
+def _diagnostic_env_snapshot(options: SandboxOptions) -> dict[str, str]:
+    return {
+        key: value if key in _NON_SENSITIVE_DIAGNOSTIC_ENV_KEYS else "<redacted>"
+        for key, value in sorted(options.env.items())
+    }
+
+
+def _diagnostic_options_snapshot(options: SandboxOptions) -> dict[str, object]:
+    return {
+        "image": options.image,
+        "container_name": options.container_name,
+        "pull_policy": options.pull_policy,
+        "host_port": options.host_port,
+        "container_port": options.container_port,
+        "env": _diagnostic_env_snapshot(options),
+        "entrypoint": options.entrypoint,
+        "command": list(options.command) if options.command is not None else None,
+        "network": options.network,
+        "host_container_url": options.host_container_url,
+        "volumes": [list(volume) for volume in options.volumes],
+        "working_dir": options.working_dir,
+        "extra_hosts": [list(extra_host) for extra_host in options.extra_hosts],
+        "startup_delay_seconds": options.startup_delay_seconds,
+        "wait_for_healthz": options.wait_for_healthz,
+        "healthz_path": options.healthz_path,
+        "healthz_timeout": options.healthz_timeout,
+        "stop_timeout_seconds": options.stop_timeout_seconds,
+        "extra_args": list(options.extra_args),
+        "user": options.user,
+        "seccomp_profile": options.seccomp_profile,
+        "ulimits": list(options.ulimits),
+    }
 
 
 def resolve_network_gateway(*, docker_binary: str, network: str) -> str:

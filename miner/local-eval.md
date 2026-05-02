@@ -85,6 +85,8 @@ By default, the command writes both reports to the current working directory:
 
 During the run, the CLI prints human progress logs to `stderr` so you can see batch selection, runtime startup, and task completion progress. The final report-path summary remains machine-readable JSON on `stdout`.
 
+If sandbox startup or the evaluated agent fails, the CLI writes a failure bundle under `/tmp/harnyx-local-eval-failures/<run-id>/...` before cleanup and prints the failure category plus bundle path to `stderr`. The bundle includes the evaluated `agent.py`, local-eval context, redacted sandbox options, redacted Docker run arguments, and Docker inspect/log output when Docker created a container.
+
 ## What The Reports Contain
 
 Both reports include:

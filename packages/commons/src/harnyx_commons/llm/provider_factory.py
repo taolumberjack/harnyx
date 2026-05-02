@@ -9,9 +9,15 @@ from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.adapter import LlmProviderAdapter
-from harnyx_commons.llm.provider import LlmProviderName, LlmProviderPort, parse_provider_name
+from harnyx_commons.llm.provider import LlmProviderName, LlmProviderPort
+from harnyx_commons.llm.provider_types import (
+    parse_builtin_provider_name,
+    parse_custom_openai_compatible_target,
+    parse_provider_route_target,
+)
 from harnyx_commons.llm.providers.bedrock import BedrockLlmProvider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
+from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.routing import LlmRouteSurface, RoutedLlmProvider
 
@@ -27,19 +33,19 @@ class CachedLlmProviderRegistry:
         self._llm_settings = llm_settings
         self._bedrock_settings = bedrock_settings
         self._vertex_settings = vertex_settings
-        self._cache: dict[LlmProviderName, LlmProviderPort] = {}
+        self._cache: dict[str, LlmProviderPort] = {}
 
     def resolve(self, name: str) -> LlmProviderPort:
-        provider_name = parse_provider_name(name, component="shared")
-        provider = self._cache.get(provider_name)
+        route_target = parse_provider_route_target(name, component="shared")
+        provider = self._cache.get(route_target)
         if provider is None:
             provider = _build_provider(
-                provider_name=provider_name,
+                route_target=route_target,
                 llm_settings=self._llm_settings,
                 bedrock_settings=self._bedrock_settings,
                 vertex_settings=self._vertex_settings,
             )
-            self._cache[provider_name] = provider
+            self._cache[route_target] = provider
         return provider
 
     async def aclose(self) -> None:
@@ -90,23 +96,34 @@ def build_routed_llm_provider(
     llm_settings: LlmSettings,
     allowed_providers: set[LlmProviderName],
     provider_registry: CachedLlmProviderRegistry,
+    allow_custom_openai_compatible: bool = False,
 ) -> RoutedLlmProvider:
     return RoutedLlmProvider(
         surface=surface,
         default_provider=default_provider,
         overrides=llm_settings.llm_model_provider_overrides,
         allowed_providers=allowed_providers,
+        allow_custom_openai_compatible=allow_custom_openai_compatible,
         resolve_provider=provider_registry.resolve,
     )
 
 
 def _build_provider(
     *,
-    provider_name: LlmProviderName,
+    route_target: str,
     llm_settings: LlmSettings,
     bedrock_settings: BedrockSettings,
     vertex_settings: VertexSettings,
 ) -> LlmProviderPort:
+    custom_endpoint_id = parse_custom_openai_compatible_target(route_target)
+    if custom_endpoint_id is not None:
+        endpoints = llm_settings.openai_compatible_endpoints
+        endpoint = endpoints.get(custom_endpoint_id)
+        if endpoint is None:
+            raise ValueError(f"custom OpenAI-compatible endpoint '{custom_endpoint_id}' is not configured")
+        return OpenAiCompatibleLlmProvider(endpoint=endpoint)
+
+    provider_name = parse_builtin_provider_name(route_target, component="shared")
     max_concurrent = _max_concurrent_for_provider(provider_name, llm_settings)
 
     if provider_name == "bedrock":

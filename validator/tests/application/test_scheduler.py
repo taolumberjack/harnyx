@@ -333,7 +333,7 @@ async def test_scheduler_runs_all_tasks_for_each_artifact(
             "artifact_count": 2,
             "task_count": 2,
             "artifact_parallelism": 2,
-            "artifact_task_parallelism": 5,
+            "artifact_task_parallelism": 10,
             "recorded_pair_count": 0,
         }
     ]

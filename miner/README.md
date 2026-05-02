@@ -202,8 +202,9 @@ Treat `allowed_tool_models` as the runtime source of truth for `llm_chat` model 
 Current allowed `llm_chat` model ids in this repo:
 - `deepseek-ai/DeepSeek-V3.1-TEE`
 - `deepseek-ai/DeepSeek-V3.2-TEE`
-- `openai/gpt-oss-120b-TEE`
+- `zai-org/GLM-5-TEE`
 - `Qwen/Qwen3-Next-80B-A3B-Instruct`
+- `google/gemma-4-31B-it`
 
 Core subnet-facing tools today:
 - `search_web`: web search results

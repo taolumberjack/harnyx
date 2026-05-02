@@ -2208,7 +2208,11 @@ async def test_evaluation_runner_uses_bounded_continuous_worker_pool() -> None:
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_task_parallelism=5,
+        ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
     )
     tasks = tuple(
@@ -2380,7 +2384,11 @@ async def test_evaluation_runner_fails_batch_after_first_conclusive_validator_ow
         session_manager=session_manager,
         evaluation_records=evaluation_store,
         receipt_log=receipt_log,
-        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_task_parallelism=5,
+        ),
         clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
     )
     tasks = tuple(

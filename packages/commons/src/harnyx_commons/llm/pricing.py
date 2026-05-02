@@ -19,16 +19,19 @@ from harnyx_commons.tools.types import SearchToolName
 ToolModelName = Literal[
     "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
-    "openai/gpt-oss-120b-TEE",
+    "zai-org/GLM-5-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
+    "google/gemma-4-31B-it",
 ]
 
 ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
     "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
-    "openai/gpt-oss-120b-TEE",
+    "zai-org/GLM-5-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
+    "google/gemma-4-31B-it",
 )
+
 
 def parse_tool_model(raw: str | None) -> ToolModelName:
     """Parse and validate a tool LLM model identifier.
@@ -68,8 +71,9 @@ class ModelPricing:
 MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
     "deepseek-ai/DeepSeek-V3.1-TEE": ModelPricing(0.27, 1.00, 0.0),
     "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
-    "openai/gpt-oss-120b-TEE": ModelPricing(0.09, 0.36, 0.36),
+    "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
     "Qwen/Qwen3-Next-80B-A3B-Instruct": ModelPricing(0.10, 0.80, 0.0),
+    "google/gemma-4-31B-it": ModelPricing(0.13, 0.38, 0.0),
 }
 
 

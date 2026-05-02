@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import runpy
+import stat
 import threading
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -97,6 +98,21 @@ def _task(task_id, text: str) -> MinerTask:
         query=Query(text=text),
         reference_answer=ReferenceAnswer(text=f"reference for {text}"),
         budget_usd=0.5,
+    )
+
+
+def _artifact_failure(artifact: ScriptArtifactSpec) -> ArtifactFailure:
+    return ArtifactFailure(
+        error_code="sandbox_invocation_failed",
+        message="artifact failed",
+        failure_detail=ValidatorBatchFailureDetail(
+            error_code="sandbox_invocation_failed",
+            error_message="artifact failed",
+            occurred_at=datetime.now(UTC),
+            artifact_id=artifact.artifact_id,
+            uid=artifact.uid,
+        ),
+        artifact_breaker_tripped=True,
     )
 
 
@@ -515,6 +531,90 @@ class _FakeAsyncResource:
         self.closed = True
 
 
+def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    settings = SimpleNamespace(
+        sandbox=SimpleNamespace(
+            sandbox_image="local/harnyx-sandbox:0.1.0-dev",
+            sandbox_pull_policy="missing",
+        )
+    )
+
+    def create_sandbox_manager(**kwargs: object) -> _FakeSandboxManager:
+        captured.update(kwargs)
+        return _FakeSandboxManager()
+
+    monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
+    monkeypatch.setattr(local_eval, "_build_state", lambda: _minimal_local_eval_state())
+    monkeypatch.setattr(
+        local_eval,
+        "_build_local_eval_tooling_clients",
+        lambda settings: (
+            _FakeAsyncResource(),
+            _FakeAsyncResource(),
+            _FakeAsyncResource(),
+            _FakeAsyncResource(),
+            object(),
+        ),
+    )
+    monkeypatch.setattr(local_eval, "_build_tooling", lambda **_: (object(), _UnusedToolExecutor()))
+    monkeypatch.setattr(
+        local_eval,
+        "_create_scoring_service",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            _config=EvaluationScoringConfig(
+                provider="chutes",
+                model="openai/gpt-oss-120b-TEE",
+                timeout_seconds=30.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(local_eval, "create_sandbox_manager", create_sandbox_manager)
+
+    runtime = local_eval.LocalEvaluationRuntime.create(progress_reporter=None)
+
+    assert captured["host"] == "127.0.0.1"
+    assert captured["published_port_bind_host"] == "127.0.0.1"
+    assert runtime._sandbox_manager is not None
+
+
+async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() -> None:
+    search_client = _FakeAsyncResource()
+    llm_provider_registry = _FakeAsyncResource()
+    tool_llm_provider = _FakeAsyncResource()
+    scoring_llm_provider = _FakeAsyncResource()
+    runtime = local_eval.LocalEvaluationRuntime(
+        settings=cast(Any, SimpleNamespace()),
+        tool_executor=cast(Any, _UnusedToolExecutor()),
+        scoring_service=cast(Any, object()),
+        scoring_config=EvaluationScoringConfig(
+            provider="chutes",
+            model="openai/gpt-oss-120b-TEE",
+            timeout_seconds=30.0,
+        ),
+        _runner=cast(Any, object()),
+        _state=SimpleNamespace(),
+        _search_client=search_client,
+        _llm_provider_registry=llm_provider_registry,
+        _tool_llm_provider=tool_llm_provider,
+        _scoring_llm_provider=scoring_llm_provider,
+        _sandbox_manager=cast(Any, object()),
+        _tool_host=None,
+        _tool_host_lock=asyncio.Lock(),
+        _run_id=uuid4().hex,
+        _progress_reporter=None,
+    )
+
+    await runtime.aclose()
+
+    assert search_client.closed is True
+    assert llm_provider_registry.closed is True
+    assert tool_llm_provider.closed is False
+    assert scoring_llm_provider.closed is False
+
+
 class _FakeSandboxClient(SandboxClient):
     async def invoke(
         self,
@@ -556,6 +656,17 @@ class _FakeSandboxManager:
         self.stopped_deployments.append(deployment)
 
 
+class _FailingSandboxManager(_FakeSandboxManager):
+    def __init__(self, error: RuntimeError) -> None:
+        super().__init__()
+        self._error = error
+
+    def start(self, options: SandboxOptions) -> SandboxDeployment:
+        self.started_options.append(options)
+        self.mount_paths_exist.append(Path(options.volumes[0][0]).exists())
+        raise self._error
+
+
 class _BlockingSandboxManager(_FakeSandboxManager):
     def __init__(self) -> None:
         super().__init__()
@@ -589,6 +700,32 @@ class _FakeToolHost:
         self.close_calls += 1
 
 
+class _CapturingProgress:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def log(self, message: str) -> None:
+        self.messages.append(message)
+
+    def begin_artifact(
+        self,
+        *,
+        label: str,
+        artifact: ScriptArtifactSpec,
+        task_count: int,
+    ) -> None:
+        del label, artifact, task_count
+
+    def finish_artifact(
+        self,
+        *,
+        label: str,
+        artifact: ScriptArtifactSpec,
+        submissions: Sequence[MinerTaskRunSubmission],
+    ) -> None:
+        del label, artifact, submissions
+
+
 class _CapturingRunner:
     def __init__(self, results: Sequence[ArtifactEvaluationOutcome]) -> None:
         self._results = list(results)
@@ -612,6 +749,83 @@ class _CapturingRunner:
             }
         )
         return self._results.pop(0)
+
+
+def _local_runtime(
+    *,
+    runner: object,
+    sandbox_manager: object,
+    tool_host: object | None = None,
+    progress: object | None = None,
+) -> local_eval.LocalEvaluationRuntime:
+    return local_eval.LocalEvaluationRuntime(
+        settings=cast(
+            Any,
+            SimpleNamespace(
+                sandbox=SimpleNamespace(
+                    sandbox_image="local/harnyx-sandbox:0.1.0-dev",
+                    sandbox_pull_policy="missing",
+                )
+            ),
+        ),
+        tool_executor=cast(Any, _UnusedToolExecutor()),
+        scoring_service=cast(Any, object()),
+        scoring_config=EvaluationScoringConfig(
+            provider="chutes",
+            model="openai/gpt-oss-120b-TEE",
+            timeout_seconds=30.0,
+        ),
+        _runner=cast(Any, runner),
+        _state=SimpleNamespace(
+            session_registry=object(),
+            token_registry=object(),
+            receipt_log=object(),
+            session_manager=object(),
+            token_semaphore=object(),
+        ),
+        _search_client=_FakeAsyncResource(),
+        _llm_provider_registry=_FakeAsyncResource(),
+        _tool_llm_provider=_FakeAsyncResource(),
+        _scoring_llm_provider=_FakeAsyncResource(),
+        _sandbox_manager=cast(Any, sandbox_manager),
+        _tool_host=cast(Any, tool_host),
+        _tool_host_lock=asyncio.Lock(),
+        _run_id=uuid4().hex,
+        _progress_reporter=cast(Any, progress),
+    )
+
+
+def _single_failure_context(root: Path) -> dict[str, object]:
+    contexts = list(root.rglob("local-eval-context.json"))
+    assert len(contexts) == 1
+    return json.loads(contexts[0].read_text(encoding="utf-8"))
+
+
+def _single_failure_agent(root: Path) -> bytes:
+    agents = list(root.rglob("agent.py"))
+    assert len(agents) == 1
+    return agents[0].read_bytes()
+
+
+def _minimal_local_eval_state() -> SimpleNamespace:
+    return SimpleNamespace(
+        session_registry=object(),
+        token_registry=object(),
+        receipt_log=object(),
+        session_manager=object(),
+        evaluation_records=object(),
+        token_semaphore=object(),
+    )
+
+
+def _precreate_public_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("old public content", encoding="utf-8")
+    path.chmod(0o644)
+
+
+def _assert_private_mode(path: Path, expected_mode: int) -> None:
+    assert stat.S_IMODE(path.stat().st_mode) == expected_mode
 
 
 def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
@@ -695,7 +909,7 @@ def test_local_eval_writes_default_reports_for_latest_completed_vs_champion(
     assert monitoring.script_calls == 1
     assert report["mode"] == "vs-champion"
     assert report["batch_metadata"]["selection_source"] == "latest-completed"
-    assert report["evaluation_config"]["artifact_task_parallelism"] == 5
+    assert report["evaluation_config"]["artifact_task_parallelism"] == 10
     assert report["evaluation_config"]["artifact_evaluation_parallelism"] == 2
     assert report["local_result_summary"]["local_champion_selection"]["selected_label"] == "target"
     assert report["local_result_summary"]["head_to_head"]["winner_by_total_score"] == "target"
@@ -1241,6 +1455,7 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
     batch_id = uuid4()
     target_artifact = ScriptArtifactSpec(
         uid=3,
@@ -1333,11 +1548,13 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
             token_semaphore=object(),
         ),
         _search_client=_FakeAsyncResource(),
+        _llm_provider_registry=_FakeAsyncResource(),
         _tool_llm_provider=_FakeAsyncResource(),
         _scoring_llm_provider=_FakeAsyncResource(),
         _sandbox_manager=cast(Any, sandbox_manager),
         _tool_host=None,
         _tool_host_lock=asyncio.Lock(),
+        _run_id=uuid4().hex,
         _progress_reporter=None,
     )
 
@@ -1370,10 +1587,163 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
     for options in sandbox_manager.started_options:
         assert options.host_port == 0
         assert options.network is None
+        assert options.failure_diagnostics_dir is not None
+        _assert_private_mode(Path(options.failure_diagnostics_dir), 0o700)
         assert options.host_container_url == tool_host.host_container_url
         assert options.env["AGENT_PATH"].endswith("/agent.py")
         assert options.volumes[0][1] == DEFAULT_STATE_DIR
         assert options.volumes[0][2] == "ro"
+
+
+async def test_local_eval_writes_failure_bundle_when_sandbox_start_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
+    batch_id = uuid4()
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="target-hash", size_bytes=64)
+    original_error = RuntimeError("sandbox start exploded")
+    progress = _CapturingProgress()
+    sandbox_manager = _FailingSandboxManager(original_error)
+    runtime = _local_runtime(
+        runner=object(),
+        sandbox_manager=sandbox_manager,
+        tool_host=_FakeToolHost(),
+        progress=progress,
+    )
+    failure_dir = tmp_path / runtime._run_id / f"target-{artifact.artifact_id.hex[:12]}"
+    _precreate_public_file(failure_dir / "agent.py")
+    _precreate_public_file(failure_dir / "local-eval-context.json")
+
+    with pytest.raises(RuntimeError, match="sandbox start exploded"):
+        await runtime.evaluate_artifact(
+            artifact_label="target",
+            agent_source=b"print('target')\n",
+            artifact=artifact,
+            batch_id=batch_id,
+            tasks=(_task(uuid4(), "solo task"),),
+        )
+
+    context = _single_failure_context(tmp_path)
+    assert context["failure_category"] == "sandbox_startup"
+    assert context["error_type"] == "RuntimeError"
+    assert context["error_message"] == "sandbox start exploded"
+    assert _single_failure_agent(tmp_path) == b"print('target')\n"
+    _assert_private_mode(tmp_path, 0o700)
+    _assert_private_mode(tmp_path / runtime._run_id, 0o700)
+    _assert_private_mode(failure_dir, 0o700)
+    _assert_private_mode(failure_dir / "agent.py", 0o600)
+    _assert_private_mode(failure_dir / "local-eval-context.json", 0o600)
+    assert "failure category: sandbox_startup" in progress.messages
+    assert any(message.startswith("failure bundle:") for message in progress.messages)
+
+
+async def test_local_eval_writes_failure_bundle_when_artifact_outcome_has_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
+    batch_id = uuid4()
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="target-hash", size_bytes=64)
+    failure = _artifact_failure(artifact)
+    progress = _CapturingProgress()
+    sandbox_manager = _FakeSandboxManager()
+    runtime = _local_runtime(
+        runner=_CapturingRunner(
+            results=[
+                ArtifactEvaluationOutcome(
+                    submissions=(),
+                    unresolved_tasks=(),
+                    timeout_observations_by_pair={},
+                    artifact_failure=failure,
+                )
+            ]
+        ),
+        sandbox_manager=sandbox_manager,
+        tool_host=_FakeToolHost(),
+        progress=progress,
+    )
+
+    outcome = await runtime.evaluate_artifact(
+        artifact_label="target",
+        agent_source=b"print('target')\n",
+        artifact=artifact,
+        batch_id=batch_id,
+        tasks=(_task(uuid4(), "solo task"),),
+    )
+
+    assert outcome.artifact_failure is failure
+    context = _single_failure_context(tmp_path)
+    assert context["failure_category"] == "evaluated_application"
+    assert context["error_type"] == "ArtifactFailure"
+    assert context["error_code"] == "sandbox_invocation_failed"
+    assert _single_failure_agent(tmp_path) == b"print('target')\n"
+    assert len(sandbox_manager.stopped_deployments) == 1
+    assert "failure category: evaluated_application" in progress.messages
+    assert any(message.startswith("failure bundle:") for message in progress.messages)
+
+
+async def test_local_eval_failure_bundle_write_failure_preserves_original_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
+
+    def fail_bundle_write(**kwargs: object) -> None:
+        del kwargs
+        raise OSError("disk full")
+
+    monkeypatch.setattr(local_eval, "_write_local_failure_bundle", fail_bundle_write)
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="target-hash", size_bytes=64)
+    progress = _CapturingProgress()
+    runtime = _local_runtime(
+        runner=object(),
+        sandbox_manager=_FailingSandboxManager(RuntimeError("original sandbox failure")),
+        tool_host=_FakeToolHost(),
+        progress=progress,
+    )
+
+    with pytest.raises(RuntimeError, match="original sandbox failure"):
+        await runtime.evaluate_artifact(
+            artifact_label="target",
+            agent_source=b"print('target')\n",
+            artifact=artifact,
+            batch_id=uuid4(),
+            tasks=(_task(uuid4(), "solo task"),),
+        )
+
+    failure_dir = tmp_path / runtime._run_id / f"target-{artifact.artifact_id.hex[:12]}"
+    assert progress.messages == [f"failure bundle write failed: path={failure_dir} error=disk full"]
+
+
+async def test_local_eval_sandbox_startup_failure_is_not_recategorized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(local_eval, "_LOCAL_EVAL_FAILURE_ROOT", tmp_path)
+    artifact = ScriptArtifactSpec(uid=3, artifact_id=uuid4(), content_hash="target-hash", size_bytes=64)
+    progress = _CapturingProgress()
+    runtime = _local_runtime(
+        runner=object(),
+        sandbox_manager=_FailingSandboxManager(RuntimeError("sandbox failed")),
+        tool_host=_FakeToolHost(),
+        progress=progress,
+    )
+
+    with pytest.raises(RuntimeError, match="sandbox failed"):
+        await runtime.evaluate_artifact(
+            artifact_label="target",
+            agent_source=b"print('target')\n",
+            artifact=artifact,
+            batch_id=uuid4(),
+            tasks=(_task(uuid4(), "solo task"),),
+        )
+
+    contexts = list(tmp_path.rglob("local-eval-context.json"))
+    assert len(contexts) == 1
+    context = json.loads(contexts[0].read_text(encoding="utf-8"))
+    assert context["failure_category"] == "sandbox_startup"
+    assert "failure category: local_eval_runtime" not in progress.messages
 
 
 def test_local_eval_does_not_write_reports_when_champion_outcome_has_artifact_failure(
@@ -1506,11 +1876,13 @@ async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup
             token_semaphore=object(),
         ),
         _search_client=None,
+        _llm_provider_registry=None,
         _tool_llm_provider=None,
         _scoring_llm_provider=None,
         _sandbox_manager=cast(Any, sandbox_manager),
         _tool_host=cast(Any, _FakeToolHost()),
         _tool_host_lock=asyncio.Lock(),
+        _run_id=uuid4().hex,
         _progress_reporter=None,
     )
 

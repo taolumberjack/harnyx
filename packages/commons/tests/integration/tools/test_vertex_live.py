@@ -125,9 +125,10 @@ async def test_vertex_openai_maas_completion_live() -> None:
     (
         "deepseek-ai/DeepSeek-V3.1-TEE",
         "deepseek-ai/DeepSeek-V3.2-TEE",
+        "zai-org/GLM-5-TEE",
     ),
 )
-async def test_vertex_deepseek_maas_alias_completion_live(model: str) -> None:
+async def test_vertex_tool_model_maas_alias_completion_live(model: str) -> None:
     vertex = VertexSettings()
     project = vertex.gcp_project_id
     location = vertex.gcp_location

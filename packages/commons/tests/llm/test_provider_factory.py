@@ -4,7 +4,7 @@ import pytest
 from pydantic import SecretStr
 
 from harnyx_commons.config.bedrock import BedrockSettings
-from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.config.llm import LlmSettings, OpenAiCompatibleEndpointConfig
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm import provider_factory
 
@@ -117,9 +117,9 @@ async def test_build_cached_llm_provider_registry_closes_cached_providers_once(
         async def aclose(self) -> None:
             closed.append(self.provider_name)
 
-    def fake_build_provider(*, provider_name, llm_settings, bedrock_settings, vertex_settings):
+    def fake_build_provider(*, route_target, llm_settings, bedrock_settings, vertex_settings):
         _ = (llm_settings, bedrock_settings, vertex_settings)
-        return _FakeProvider(provider_name=provider_name)
+        return _FakeProvider(provider_name=route_target)
 
     monkeypatch.setattr(provider_factory, "_build_provider", fake_build_provider)
 
@@ -159,9 +159,9 @@ async def test_build_cached_llm_provider_registry_closes_later_providers_after_f
             if self.provider_name == "chutes":
                 raise RuntimeError("boom")
 
-    def fake_build_provider(*, provider_name, llm_settings, bedrock_settings, vertex_settings):
+    def fake_build_provider(*, route_target, llm_settings, bedrock_settings, vertex_settings):
         _ = (llm_settings, bedrock_settings, vertex_settings)
-        return _FakeProvider(provider_name=provider_name)
+        return _FakeProvider(provider_name=route_target)
 
     monkeypatch.setattr(provider_factory, "_build_provider", fake_build_provider)
 
@@ -185,3 +185,37 @@ async def test_build_cached_llm_provider_registry_closes_later_providers_after_f
     assert closed == ["chutes", "bedrock"]
     assert len(exc_info.value.exceptions) == 1
     assert exc_info.value.exceptions[0].__notes__ == ["cached llm provider close failed: chutes"]
+
+
+def test_build_cached_llm_provider_registry_caches_custom_openai_compatible_endpoint(
+    monkeypatch,
+) -> None:
+    captured: list[OpenAiCompatibleEndpointConfig] = []
+
+    class _FakeOpenAiCompatibleProvider:
+        def __init__(self, *, endpoint: OpenAiCompatibleEndpointConfig) -> None:
+            captured.append(endpoint)
+
+    monkeypatch.setattr(provider_factory, "OpenAiCompatibleLlmProvider", _FakeOpenAiCompatibleProvider)
+
+    registry = provider_factory.build_cached_llm_provider_registry(
+        llm_settings=LlmSettings(
+            LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=(
+                '[{"id":"gemma4-cloud-run","base_url":"https://example.com/v1","auth":{"type":"none"}}]'
+            )
+        ),
+        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
+        vertex_settings=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_timeout_seconds=45.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+    )
+
+    first = registry.resolve("custom-openai-compatible:gemma4-cloud-run")
+    second = registry.resolve("custom-openai-compatible:gemma4-cloud-run")
+
+    assert first is second
+    assert len(captured) == 1
+    assert captured[0].id == "gemma4-cloud-run"

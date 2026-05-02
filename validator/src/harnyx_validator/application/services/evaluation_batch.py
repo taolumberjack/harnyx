@@ -116,6 +116,7 @@ class MinerTaskBatchService:
             config=SchedulerConfig(
                 token_secret_bytes=self._config.token_secret_bytes,
                 session_ttl=timedelta(minutes=5),
+                artifact_task_parallelism=self._config.artifact_task_parallelism,
             ),
             clock=lambda: datetime.now(UTC),
             progress=progress,

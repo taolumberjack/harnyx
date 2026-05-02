@@ -73,6 +73,13 @@ class Settings(BaseSettings):
         alias="VALIDATOR_PORT",
     )
 
+    # --- Evaluation ---
+    artifact_task_parallelism: int = Field(
+        default=10,
+        alias="VALIDATOR_TASK_PARALLELISM",
+        ge=1,
+    )
+
     # --- Component settings ---
     llm: LlmSettings = Field(default_factory=LlmSettings)
     bedrock: BedrockSettings = Field(default_factory=BedrockSettings)

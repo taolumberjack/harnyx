@@ -31,6 +31,23 @@ def test_parse_llm_model_provider_overrides_accepts_surface_scoped_json() -> Non
     }
 
 
+def test_parse_llm_model_provider_overrides_accepts_custom_openai_compatible_target() -> None:
+    parsed = parse_llm_model_provider_overrides(
+        '{"tool":{"google/gemma-4-31B-it":"custom-openai-compatible:gemma4-cloud-run"}}',
+        custom_openai_compatible_endpoint_ids={"gemma4-cloud-run"},
+    )
+
+    assert parsed == {"tool": {"google/gemma-4-31B-it": "custom-openai-compatible:gemma4-cloud-run"}}
+
+
+def test_parse_llm_model_provider_overrides_rejects_unknown_custom_endpoint() -> None:
+    with pytest.raises(ValueError, match="unknown custom OpenAI-compatible endpoint 'missing'"):
+        parse_llm_model_provider_overrides(
+            '{"tool":{"google/gemma-4-31B-it":"custom-openai-compatible:missing"}}',
+            custom_openai_compatible_endpoint_ids={"gemma4-cloud-run"},
+        )
+
+
 def test_parse_llm_model_provider_overrides_rejects_unknown_surface() -> None:
     with pytest.raises(ValueError, match="surface 'unknown' is not supported"):
         parse_llm_model_provider_overrides('{"unknown":{"sample-routed-model":"bedrock"}}')
@@ -57,6 +74,42 @@ def test_resolve_llm_route_rejects_provider_not_allowed_for_surface() -> None:
             overrides={"reference": {"sample-routed-model": "bedrock"}},
             allowed_providers={"vertex"},
         )
+
+
+def test_resolve_llm_route_allows_custom_target_only_when_enabled() -> None:
+    overrides = {"tool": {"google/gemma-4-31B-it": "custom-openai-compatible:gemma4-cloud-run"}}
+
+    route = resolve_llm_route(
+        surface="tool",
+        default_provider="chutes",
+        model="google/gemma-4-31B-it",
+        overrides=overrides,
+        allowed_providers={"chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+    )
+
+    assert route == ResolvedLlmRoute(
+        surface="tool",
+        provider="custom-openai-compatible:gemma4-cloud-run",
+        model="google/gemma-4-31B-it",
+    )
+    with pytest.raises(ValueError, match="not supported"):
+        resolve_llm_route(
+            surface="tool",
+            default_provider="chutes",
+            model="google/gemma-4-31B-it",
+            overrides=overrides,
+            allowed_providers={"chutes", "vertex"},
+        )
+
+
+def test_custom_route_target_is_canonicalized() -> None:
+    parsed = parse_llm_model_provider_overrides(
+        '{"tool":{"google/gemma-4-31B-it":"custom-openai-compatible: gemma4-cloud-run"}}',
+        custom_openai_compatible_endpoint_ids={"gemma4-cloud-run"},
+    )
+
+    assert parsed["tool"]["google/gemma-4-31B-it"] == "custom-openai-compatible:gemma4-cloud-run"
 
 
 @dataclass(slots=True)

@@ -68,6 +68,7 @@ _VERTEX_MAAS_OPENAI_CHAT_MODELS = frozenset(
         "deepseek-ai/deepseek-v3.2-maas",
         "publishers/openai/models/gpt-oss-20b-maas",
         "publishers/openai/models/gpt-oss-120b-maas",
+        "zai-org/glm-5-maas",
         "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
         "qwen3-235b-a22b-instruct-2507-maas",
         "openai/gpt-oss-20b-tee",

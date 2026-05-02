@@ -4,6 +4,8 @@ import asyncio
 import threading
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,6 +28,7 @@ from harnyx_validator.application.dto.evaluation import (
     ScriptArtifactSpec,
     TokenUsageSummary,
 )
+from harnyx_validator.application.services.evaluation_batch import EvaluationBatchConfig
 from harnyx_validator.application.services.evaluation_runner import (
     ValidatorBatchFailedError,
     ValidatorBatchFailureDetail,
@@ -563,3 +566,38 @@ def test_batch_failure_capture_payload_groups_conclusive_artifact_failures_as_ar
         "validator-batch",
         "artifact_fetch_failed",
     ]
+
+
+def test_create_evaluation_worker_from_context_passes_settings_parallelism(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class CapturingBatchService:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(worker_mod, "create_platform_agent_resolver", lambda _platform: object())
+    monkeypatch.setattr(worker_mod, "MinerTaskBatchService", CapturingBatchService)
+
+    context = SimpleNamespace(
+        settings=SimpleNamespace(artifact_task_parallelism=5),
+        platform_client=object(),
+        subtensor_client=object(),
+        sandbox_manager=object(),
+        session_manager=object(),
+        evaluation_records=object(),
+        receipt_log=object(),
+        batch_blocking_executor=object(),
+        create_evaluation_orchestrator=lambda _client: object(),
+        build_sandbox_options=lambda: object(),
+        status_provider=StatusProvider(),
+        progress_tracker=object(),
+        batch_inbox=InMemoryBatchInbox(),
+        control_deps_provider=lambda: SimpleNamespace(accept_batch=object()),
+    )
+
+    worker = worker_mod.create_evaluation_worker_from_context(cast(Any, context))
+
+    assert isinstance(worker, EvaluationWorker)
+    config = captured["config"]
+    assert isinstance(config, EvaluationBatchConfig)
+    assert config.artifact_task_parallelism == 5

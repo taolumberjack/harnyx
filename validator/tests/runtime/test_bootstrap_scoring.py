@@ -15,6 +15,15 @@ from harnyx_commons.config.subtensor import SubtensorSettings
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.errors import ConcurrencyLimitError
 from harnyx_commons.llm.routing import ResolvedLlmRoute
+from harnyx_commons.llm.schema import (
+    LlmChoice,
+    LlmChoiceMessage,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmResponse,
+    LlmUsage,
+)
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import (
     _build_llm_clients,
@@ -24,6 +33,93 @@ from harnyx_validator.runtime.bootstrap import (
     close_runtime_resources,
 )
 from harnyx_validator.runtime.settings import Settings
+
+
+class _FakeLlmProvider:
+    def __init__(self) -> None:
+        self.requests: list[LlmRequest] = []
+
+    async def invoke(self, request: LlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        return LlmResponse(
+            id="resp-1",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(LlmMessageContentPart(type="text", text="ok"),),
+                    ),
+                    finish_reason="stop",
+                ),
+            ),
+            usage=LlmUsage(),
+            finish_reason="stop",
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _FakeLlmRegistry:
+    def __init__(self) -> None:
+        self._providers: dict[str, _FakeLlmProvider] = {}
+
+    @property
+    def requests_by_provider(self) -> dict[str, list[LlmRequest]]:
+        return {provider_name: provider.requests for provider_name, provider in self._providers.items()}
+
+    def resolve(self, name: str) -> _FakeLlmProvider:
+        provider = self._providers.get(name)
+        if provider is None:
+            provider = _FakeLlmProvider()
+            self._providers[name] = provider
+        return provider
+
+
+def _settings_with_gemma_tool_route() -> Settings:
+    return Settings.model_construct(
+        llm=LlmSettings.model_construct(
+            search_provider=None,
+            tool_llm_provider="chutes",
+            scoring_llm_provider="chutes",
+            chutes_api_key=SecretStr("test-key"),
+            llm_model_provider_overrides_json=json.dumps(
+                {"tool": {"google/gemma-4-31B-it": "custom-openai-compatible:gemma4-cloud-run"}}
+            ),
+            openai_compatible_endpoints_json=json.dumps(
+                [
+                    {
+                        "id": "gemma4-cloud-run",
+                        "base_url": "https://gemma.example.run.app/v1",
+                        "auth": {"type": "none"},
+                    }
+                ]
+            ),
+        ),
+        bedrock=BedrockSettings.model_construct(region="us-east-1"),
+        vertex=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_timeout_seconds=60.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+    )
+
+
+def _gemma_tool_request() -> LlmRequest:
+    return LlmRequest(
+        provider="chutes",
+        model="google/gemma-4-31B-it",
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text('Reply with only "ok".'),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=8,
+    )
 
 
 def test_create_search_client_requires_search_provider() -> None:
@@ -94,16 +190,17 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", fake_build_cached_llm_provider_registry)
 
-    _, tool_provider, scoring_provider, scoring_route = _build_llm_clients(settings)
+    _, provider_registry, tool_provider, scoring_provider, scoring_route = _build_llm_clients(settings)
 
-    assert tool_provider == "provider:chutes"
+    assert type(tool_provider).__name__ == "RoutedLlmProvider"
     assert scoring_provider == "provider:vertex"
+    assert type(provider_registry).__name__ == "_FakeRegistry"
     assert scoring_route == ResolvedLlmRoute(
         surface="scoring",
         provider="vertex",
         model=bootstrap._SCORING_LLM_MODEL,
     )
-    assert calls == ["chutes", "vertex"]
+    assert calls == ["vertex"]
 
 
 def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> None:
@@ -123,9 +220,16 @@ def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> No
         ),
     )
 
-    search_client, tool_provider, scoring_provider, scoring_route = _build_local_eval_tooling_clients(settings)
+    (
+        search_client,
+        provider_registry,
+        tool_provider,
+        scoring_provider,
+        scoring_route,
+    ) = _build_local_eval_tooling_clients(settings)
 
     assert search_client is None
+    assert provider_registry is not None
     assert tool_provider is not None
     assert scoring_provider is not None
     assert type(tool_provider).__name__ == "_LazyLlmProvider"
@@ -133,6 +237,43 @@ def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> No
         surface="scoring",
         provider="chutes",
         model=bootstrap._SCORING_LLM_MODEL,
+    )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_build_llm_clients_routes_gemma_tool_model_to_custom_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_gemma_tool_route()
+    registry = _FakeLlmRegistry()
+    monkeypatch.setattr(bootstrap, "_create_search_client", lambda _: None)
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: registry)
+
+    _, _, tool_provider, _, _ = _build_llm_clients(settings)
+
+    assert tool_provider is not None
+    await tool_provider.invoke(_gemma_tool_request())
+
+    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run"][0].provider == (
+        "custom-openai-compatible:gemma4-cloud-run"
+    )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_build_local_eval_tooling_clients_routes_gemma_tool_model_to_custom_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings_with_gemma_tool_route()
+    registry = _FakeLlmRegistry()
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: registry)
+
+    _, _, tool_provider, _, _ = _build_local_eval_tooling_clients(settings)
+
+    assert tool_provider is not None
+    await tool_provider.invoke(_gemma_tool_request())
+
+    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run"][0].provider == (
+        "custom-openai-compatible:gemma4-cloud-run"
     )
 
 
@@ -165,7 +306,7 @@ def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
 
     monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
-    _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
+    _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route == ResolvedLlmRoute(
@@ -335,7 +476,7 @@ def test_build_llm_clients_allows_bedrock_scoring_route(
 
     monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
-    _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
+    _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route == ResolvedLlmRoute(
@@ -370,34 +511,36 @@ class _ShutdownSpyExecutor:
 
 
 @pytest.mark.anyio
-async def test_close_runtime_resources_closes_scoring_llm_provider() -> None:
-    scoring_llm_provider = _Closable()
+async def test_close_runtime_resources_closes_llm_provider_registry() -> None:
+    llm_provider_registry = _Closable()
     blocking_executor = _ShutdownSpyExecutor()
     runtime = SimpleNamespace(
         batch_blocking_executor=blocking_executor,
         search_client=None,
+        llm_provider_registry=llm_provider_registry,
         tool_llm_provider=None,
-        scoring_llm_provider=scoring_llm_provider,
+        scoring_llm_provider=None,
     )
 
     await close_runtime_resources(runtime)
 
     assert blocking_executor.calls == [(False, True)]
-    assert scoring_llm_provider.closed is True
+    assert llm_provider_registry.closed is True
 
 
 @pytest.mark.anyio
-async def test_close_runtime_resources_dedupes_shared_llm_provider() -> None:
-    shared_provider = _CountingClosable()
+async def test_close_runtime_resources_closes_registry_once() -> None:
+    llm_provider_registry = _CountingClosable()
     blocking_executor = _ShutdownSpyExecutor()
     runtime = SimpleNamespace(
         batch_blocking_executor=blocking_executor,
         search_client=None,
-        tool_llm_provider=shared_provider,
-        scoring_llm_provider=shared_provider,
+        llm_provider_registry=llm_provider_registry,
+        tool_llm_provider=None,
+        scoring_llm_provider=None,
     )
 
     await close_runtime_resources(runtime)
 
     assert blocking_executor.calls == [(False, True)]
-    assert shared_provider.close_calls == 1
+    assert llm_provider_registry.close_calls == 1

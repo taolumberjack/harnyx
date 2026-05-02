@@ -18,6 +18,7 @@ VERTEX_ALIASED_TOOL_MODELS = {
     "deepseek-ai/DeepSeek-V3.1-TEE": "deepseek-ai/deepseek-v3.1-maas",
     "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
     "openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
+    "zai-org/GLM-5-TEE": "zai-org/glm-5-maas",
     "Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
 }
 

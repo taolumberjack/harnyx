@@ -9,6 +9,7 @@ def test_create_sandbox_manager_uses_default_host_probe_address() -> None:
     manager = runtime_module.create_sandbox_manager(logger_name="test.runtime")
 
     assert manager._host == runtime_module.HOST_PROBE_ADDRESS
+    assert manager._published_port_bind_host is None
 
 
 def test_create_sandbox_manager_accepts_host_override() -> None:
@@ -18,6 +19,18 @@ def test_create_sandbox_manager_accepts_host_override() -> None:
     )
 
     assert manager._host == "127.0.0.1"
+    assert manager._published_port_bind_host is None
+
+
+def test_create_sandbox_manager_accepts_published_port_bind_host_override() -> None:
+    manager = runtime_module.create_sandbox_manager(
+        logger_name="test.runtime",
+        host="127.0.0.1",
+        published_port_bind_host="127.0.0.1",
+    )
+
+    assert manager._host == "127.0.0.1"
+    assert manager._published_port_bind_host == "127.0.0.1"
 
 
 def test_build_sandbox_options_accepts_explicit_host_container_url_without_network(

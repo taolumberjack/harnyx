@@ -47,7 +47,12 @@ class ContainerSecurity:
 CONTAINER_SECURITY: Final[ContainerSecurity] = ContainerSecurity()
 
 
-def create_sandbox_manager(*, logger_name: str, host: str = HOST_PROBE_ADDRESS) -> DockerSandboxManager:
+def create_sandbox_manager(
+    *,
+    logger_name: str,
+    host: str = HOST_PROBE_ADDRESS,
+    published_port_bind_host: str | None = None,
+) -> DockerSandboxManager:
     """Create a Docker sandbox manager with standard configuration."""
 
     sandbox_log = logging.getLogger(logger_name)
@@ -55,6 +60,7 @@ def create_sandbox_manager(*, logger_name: str, host: str = HOST_PROBE_ADDRESS) 
         docker_binary=DOCKER_BINARY,
         # Published-port health probes must use a service-reachable host address for this runtime.
         host=host,
+        published_port_bind_host=published_port_bind_host,
         log_consumer=lambda line: sandbox_log.info("%s", line),
     )
 
