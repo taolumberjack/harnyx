@@ -10,9 +10,8 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -28,11 +27,6 @@ from harnyx_commons.miner_task_ranking import (
 )
 from harnyx_commons.miner_task_scoring import EvaluationScoringConfig, EvaluationScoringService
 from harnyx_commons.sandbox.agent_staging import stage_agent_source
-from harnyx_commons.sandbox.diagnostic_files import (
-    ensure_private_diagnostic_dir,
-    write_private_bytes,
-    write_private_json,
-)
 from harnyx_commons.sandbox.manager import SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
@@ -65,7 +59,6 @@ from harnyx_validator.application.ports.subtensor import (
 from harnyx_validator.application.scheduler import SchedulerConfig
 from harnyx_validator.application.services.evaluation_runner import (
     ArtifactEvaluationOutcome,
-    ArtifactFailure,
     EvaluationRunner,
 )
 from harnyx_validator.infrastructure.http.local_tool_host import LocalToolHostHandle, start_local_tool_host
@@ -82,9 +75,9 @@ _LOCAL_SESSION_TTL = timedelta(minutes=30)
 _LOCAL_VALIDATOR_UID = 0
 _LOCAL_SELECTION_VALIDATOR_ID = UUID(int=0)
 _DEFAULT_OUTPUT_PREFIX = "local-eval-report"
-_DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM = SchedulerConfig.artifact_task_parallelism
+_DEFAULT_PUBLISHED_SANDBOX_NETWORK = "bridge"
+_DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM = 2
 _LOCAL_SANDBOX_HOST_PROBE_ADDRESS = "127.0.0.1"
-_LOCAL_EVAL_FAILURE_ROOT = Path(tempfile.gettempdir()) / "harnyx-local-eval-failures"
 _REPO_FRESHNESS_GIT_TIMEOUT_SECONDS = 5.0
 
 
@@ -249,12 +242,6 @@ class _CliProgressReporter(ProgressRecorder):
         )
 
 
-class _LocalEvalFailureCategory(StrEnum):
-    SANDBOX_STARTUP = "sandbox_startup"
-    EVALUATED_APPLICATION = "evaluated_application"
-    LOCAL_EVAL_RUNTIME = "local_eval_runtime"
-
-
 @dataclass(slots=True)
 class LocalEvaluationRuntime:
     settings: Settings
@@ -264,26 +251,20 @@ class LocalEvaluationRuntime:
     _runner: EvaluationRunner
     _state: Any
     _search_client: Any
-    _llm_provider_registry: Any
     _tool_llm_provider: Any
     _scoring_llm_provider: Any
     _sandbox_manager: SandboxManager
     _tool_host: LocalToolHostHandle | None
     _tool_host_lock: asyncio.Lock
-    _run_id: str
     _progress_reporter: _CliProgressReporter | None
 
     @classmethod
     def create(cls, *, progress_reporter: _CliProgressReporter | None = None) -> LocalEvaluationRuntime:
         settings = Settings.load()
         state = _build_state()
-        (
-            search_client,
-            llm_provider_registry,
-            tool_llm_provider,
-            scoring_llm_provider,
-            scoring_route,
-        ) = _build_local_eval_tooling_clients(settings)
+        search_client, tool_llm_provider, scoring_llm_provider, scoring_route = _build_local_eval_tooling_clients(
+            settings
+        )
         _, tool_executor = _build_tooling(
             state=state,
             resolved=settings,
@@ -304,7 +285,7 @@ class LocalEvaluationRuntime:
             config=SchedulerConfig(
                 token_secret_bytes=32,
                 session_ttl=_LOCAL_SESSION_TTL,
-                artifact_task_parallelism=_DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM,
+                artifact_task_parallelism=2,
             ),
             clock=_utcnow,
             progress=progress_reporter,
@@ -317,17 +298,14 @@ class LocalEvaluationRuntime:
             _runner=runner,
             _state=state,
             _search_client=search_client,
-            _llm_provider_registry=llm_provider_registry,
             _tool_llm_provider=tool_llm_provider,
             _scoring_llm_provider=scoring_llm_provider,
             _sandbox_manager=create_sandbox_manager(
                 logger_name="harnyx_miner.local_eval.sandbox",
                 host=_LOCAL_SANDBOX_HOST_PROBE_ADDRESS,
-                published_port_bind_host=_LOCAL_SANDBOX_HOST_PROBE_ADDRESS,
             ),
             _tool_host=None,
             _tool_host_lock=asyncio.Lock(),
-            _run_id=uuid4().hex,
             _progress_reporter=progress_reporter,
         )
 
@@ -349,8 +327,6 @@ class LocalEvaluationRuntime:
         tool_host = await self._ensure_tool_host()
         state_dir_handle = tempfile.TemporaryDirectory(prefix=f"harnyx-local-eval-{artifact.artifact_id}-")
         deployment = None
-        failure_bundle_recorded = False
-        failure_dir = self._failure_bundle_dir(artifact_label=artifact_label, artifact=artifact)
         try:
             state_dir = Path(state_dir_handle.name)
             staged_agent = stage_agent_source(
@@ -360,7 +336,6 @@ class LocalEvaluationRuntime:
                 key=str(artifact.artifact_id),
                 data=agent_source,
             )
-            _ensure_private_failure_bundle_dir(failure_dir)
             options = build_sandbox_options(
                 image=self.settings.sandbox.sandbox_image,
                 network=None,
@@ -371,20 +346,7 @@ class LocalEvaluationRuntime:
                 extra_env={"AGENT_PATH": staged_agent.container_path},
                 host_container_url=tool_host.host_container_url,
             )
-            options = replace(options, failure_diagnostics_dir=str(failure_dir))
-            try:
-                deployment = await self._start_sandbox_deployment(options)
-            except Exception as exc:
-                self._record_failure_bundle(
-                    failure_dir=failure_dir,
-                    failure_category=_LocalEvalFailureCategory.SANDBOX_STARTUP,
-                    artifact_label=artifact_label,
-                    artifact=artifact,
-                    agent_source=agent_source,
-                    error=exc,
-                )
-                failure_bundle_recorded = True
-                raise
+            deployment = await self._start_sandbox_deployment(options)
             orchestrator = TaskRunOrchestrator(
                 entrypoint_invoker=EntrypointInvoker(
                     session_registry=self._state.session_registry,
@@ -403,16 +365,6 @@ class LocalEvaluationRuntime:
                 tasks=tasks,
                 orchestrator=orchestrator,
             )
-            if evaluation_outcome.artifact_failure is not None:
-                self._record_failure_bundle(
-                    failure_dir=failure_dir,
-                    failure_category=_LocalEvalFailureCategory.EVALUATED_APPLICATION,
-                    artifact_label=artifact_label,
-                    artifact=artifact,
-                    agent_source=agent_source,
-                    error=evaluation_outcome.artifact_failure,
-                )
-                failure_bundle_recorded = True
             if self._progress_reporter is not None and evaluation_outcome.artifact_failure is None:
                 self._progress_reporter.finish_artifact(
                     label=artifact_label,
@@ -420,81 +372,10 @@ class LocalEvaluationRuntime:
                     submissions=evaluation_outcome.submissions,
                 )
             return evaluation_outcome
-        except Exception as exc:
-            if failure_bundle_recorded:
-                raise
-            self._record_failure_bundle(
-                failure_dir=failure_dir,
-                failure_category=_LocalEvalFailureCategory.LOCAL_EVAL_RUNTIME,
-                artifact_label=artifact_label,
-                artifact=artifact,
-                agent_source=agent_source,
-                error=exc,
-            )
-            raise
         finally:
             if deployment is not None:
                 await asyncio.to_thread(self._sandbox_manager.stop, deployment)
             state_dir_handle.cleanup()
-
-    def _failure_bundle_dir(
-        self,
-        *,
-        artifact_label: str,
-        artifact: ScriptArtifactSpec,
-    ) -> Path:
-        return _LOCAL_EVAL_FAILURE_ROOT / self._run_id / f"{artifact_label}-{artifact.artifact_id.hex[:12]}"
-
-    def _record_failure_bundle(
-        self,
-        *,
-        failure_dir: Path,
-        failure_category: _LocalEvalFailureCategory,
-        artifact_label: str,
-        artifact: ScriptArtifactSpec,
-        agent_source: bytes,
-        error: BaseException | ArtifactFailure,
-    ) -> None:
-        if not self._try_write_local_failure_bundle(
-            failure_dir=failure_dir,
-            failure_category=failure_category,
-            artifact_label=artifact_label,
-            artifact=artifact,
-            agent_source=agent_source,
-            error=error,
-        ):
-            return
-        if self._progress_reporter is not None:
-            self._progress_reporter.log(f"failure category: {failure_category.value}")
-            self._progress_reporter.log(f"failure bundle: {failure_dir}")
-
-    def _try_write_local_failure_bundle(
-        self,
-        *,
-        failure_dir: Path,
-        failure_category: _LocalEvalFailureCategory,
-        artifact_label: str,
-        artifact: ScriptArtifactSpec,
-        agent_source: bytes,
-        error: BaseException | ArtifactFailure,
-    ) -> bool:
-        try:
-            _write_local_failure_bundle(
-                failure_dir=failure_dir,
-                failure_category=failure_category,
-                artifact_label=artifact_label,
-                artifact=artifact,
-                run_id=self._run_id,
-                agent_source=agent_source,
-                error=error,
-            )
-        except Exception as exc:
-            if self._progress_reporter is not None:
-                self._progress_reporter.log(
-                    f"failure bundle write failed: path={failure_dir} error={exc}"
-                )
-            return False
-        return True
 
     async def _start_sandbox_deployment(self, options: SandboxOptions) -> Any:
         start_task = asyncio.create_task(
@@ -534,74 +415,10 @@ class LocalEvaluationRuntime:
             self._tool_host = None
         for resource in _unique_async_resources(
             self._search_client,
-            self._llm_provider_registry,
+            self._tool_llm_provider,
+            self._scoring_llm_provider,
         ):
             await resource.aclose()
-
-
-def _write_local_failure_bundle(
-    *,
-    failure_dir: Path,
-    failure_category: _LocalEvalFailureCategory,
-    artifact_label: str,
-    artifact: ScriptArtifactSpec,
-    run_id: str,
-    agent_source: bytes,
-    error: BaseException | ArtifactFailure,
-) -> None:
-    _ensure_private_failure_bundle_dir(failure_dir)
-    write_private_bytes(failure_dir / "agent.py", agent_source)
-    write_private_json(
-        failure_dir / "local-eval-context.json",
-        _local_failure_context(
-            failure_category=failure_category,
-            artifact_label=artifact_label,
-            artifact=artifact,
-            run_id=run_id,
-            error=error,
-        ),
-    )
-
-
-def _ensure_private_failure_bundle_dir(failure_dir: Path) -> None:
-    ensure_private_diagnostic_dir(_LOCAL_EVAL_FAILURE_ROOT)
-    ensure_private_diagnostic_dir(failure_dir.parent)
-    ensure_private_diagnostic_dir(failure_dir)
-
-
-def _local_failure_context(
-    *,
-    failure_category: _LocalEvalFailureCategory,
-    artifact_label: str,
-    artifact: ScriptArtifactSpec,
-    run_id: str,
-    error: BaseException | ArtifactFailure,
-) -> dict[str, object]:
-    context = {
-        "run_id": run_id,
-        "artifact_label": artifact_label,
-        "artifact_id": str(artifact.artifact_id),
-        "artifact_uid": artifact.uid,
-        "artifact_content_hash": artifact.content_hash,
-        "artifact_size_bytes": artifact.size_bytes,
-        "failure_category": failure_category.value,
-    }
-    context.update(_local_failure_error_context(error))
-    return context
-
-
-def _local_failure_error_context(error: BaseException | ArtifactFailure) -> dict[str, object]:
-    if isinstance(error, ArtifactFailure):
-        return {
-            "error_type": "ArtifactFailure",
-            "error_code": str(error.error_code),
-            "error_message": error.message,
-            "artifact_breaker_tripped": error.artifact_breaker_tripped,
-        }
-    return {
-        "error_type": error.__class__.__name__,
-        "error_message": str(error),
-    }
 
 
 class _LocalSubtensorClient(SubtensorClientPort):
