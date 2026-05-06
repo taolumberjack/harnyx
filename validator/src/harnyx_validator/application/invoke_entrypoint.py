@@ -6,7 +6,10 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
-from harnyx_commons.application.miner_response_hydration import hydrate_miner_response_payload
+from harnyx_commons.application.miner_response_hydration import (
+    MinerResponsePayloadError,
+    hydrate_miner_response_payload,
+)
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.application.ports.token_registry import TokenRegistryPort
@@ -70,7 +73,7 @@ class EntrypointInvoker:
                 session_id=session.session_id,
                 receipt_log=self._receipts,
             )
-        except ValidationError as exc:
+        except (MinerResponsePayloadError, ValidationError) as exc:
             raise MinerResponseValidationError("miner returned invalid response payload") from exc
         return EntrypointInvocationResult(
             response=hydrated_response,

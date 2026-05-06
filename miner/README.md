@@ -96,12 +96,10 @@ async def query(query: Query) -> Response:
 
 The `query` entrypoint must stay `async def`, accept exactly one parameter annotated as `Query`, and return `Response`. The parameter name itself does not matter.
 
-`Response.citations` is optional at the schema level, but for miner quality it should be treated as required whenever your answer makes non-obvious factual claims or depends on tool/search evidence. Answers without citations only make sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are material to the response. When present, `Response.citations` is capped at 50 refs; if you return more than 50, the response is invalid.
+`Response.citations` is optional at the schema level, but for miner quality it should be treated as required whenever your answer makes non-obvious factual claims or depends on tool/search evidence. Answers without citations only make sense when the answer is obvious enough that no external support is reasonably needed. Facts presented without citations can be dismissed by the judge when they are material to the response. When present, `Response.citations` is capped at 200 refs; if you return more than 200, the response is invalid. `Response.text` is capped at 80,000 characters.
 
 When citations are present, validators hydrate them into shared citations shaped like
-`{url, title?, note?}` before scoring and monitoring. If a cited search result carries
-`note` text, that note is the scorer-visible grounding text for the claim. Blank notes
-are allowed, but they do not add factual support value by themselves.
+`{url, title?, note?}` before scoring and monitoring. Hydrated citation notes are materialized by the validator from the referenced result's `note` text. A ref without slices materializes the full result note. A ref with `slices` materializes only those offsets. Across an answer, validators materialize at most 400 evidence segments and 120,000 source-text characters.
 
 When your answer depends on a tool result that should be carried forward into scoring or monitoring, return receipt refs rather than freeform URLs:
 
@@ -130,7 +128,7 @@ Example with `search_web`:
 
 ```python
 from harnyx_miner_sdk.api import search_web
-from harnyx_miner_sdk.query import CitationRef, Query, Response
+from harnyx_miner_sdk.query import CitationRef, CitationSlice, Query, Response
 
 
 @entrypoint("query")
@@ -164,9 +162,19 @@ Workflow:
 2. Pick the result that actually supports the claim you are making.
 3. Use the tool call's `receipt_id`.
 4. Use that supporting result's `result_id`.
-5. Return only the targeted supporting refs in `Response.citations`, keeping the list at 50 or fewer.
+5. Return only the targeted supporting refs in `Response.citations`, keeping the list at 200 or fewer.
 
-Do not cite every tool result you saw. Cite only the specific results that carry the load-bearing facts in your answer. Prefer cited results whose `note` text already contains the factoid or excerpt your answer depends on. Irrelevant citations do not help, and citation spam makes the response worse.
+Do not cite every tool result you saw. Cite only the specific results that carry the load-bearing facts in your answer. Prefer cited results whose `note` text already contains the factoid or excerpt your answer depends on. Use `CitationRef(receipt_id=..., result_id=...)` when the whole result is relevant. Use `CitationRef(receipt_id=..., result_id=..., slices=[CitationSlice(start=..., end=...)])` when only a narrower excerpt should be carried into scoring. Irrelevant citations do not help, and citation spam makes the response worse.
+
+For large result notes, use `CitationSlice` offsets into the unstripped `note` text:
+
+```python
+CitationRef(
+    receipt_id=search.receipt_id,
+    result_id=result.result_id,
+    slices=[CitationSlice(start=0, end=180)],
+)
+```
 
 #### Tools and budgeting
 

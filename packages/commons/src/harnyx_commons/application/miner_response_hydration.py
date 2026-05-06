@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.domain.miner_task import AnswerCitation, Response
@@ -12,21 +14,68 @@ from harnyx_commons.domain.shared_config import COMMONS_STRICT_CONFIG
 from harnyx_commons.domain.tool_call import SearchToolResult, ToolCall, ToolResultPolicy
 from harnyx_commons.tools.types import is_citation_source
 
-_MAX_CITATION_REFS = 50
+_MAX_RESPONSE_CHARS = 80_000
+_MAX_CITATION_REFS = 200
+_MAX_EVIDENCE_SEGMENTS_PER_RESPONSE = 400
+_MIN_SLICE_CHARS = 100
+_MAX_TOTAL_EVIDENCE_CHARS = 120_000
+
+
+class MinerResponsePayloadError(ValueError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterializedSelection:
+    text: str
+    char_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _HydratedCitation:
+    answer_citation: AnswerCitation
+    source_text_chars: int
+
+
+@dataclass(frozen=True, slots=True)
+class _HydratedCitations:
+    citations: tuple[AnswerCitation, ...]
+    source_text_chars: int
+
+
+class _CitationSlicePayload(BaseModel):
+    model_config = COMMONS_STRICT_CONFIG
+
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_offsets(self) -> Self:
+        if self.end <= self.start:
+            raise ValueError("citation slice end must be greater than start")
+        return self
 
 
 class _CitationRefPayload(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
-    receipt_id: str
-    result_id: str
+    receipt_id: str = Field(min_length=1)
+    result_id: str = Field(min_length=1)
+    slices: list[_CitationSlicePayload] = Field(default_factory=list)
 
 
 class _RawMinerResponsePayload(BaseModel):
     model_config = COMMONS_STRICT_CONFIG
 
-    text: str
+    text: str = Field(max_length=_MAX_RESPONSE_CHARS)
     citations: list[_CitationRefPayload] | None = Field(default=None, max_length=_MAX_CITATION_REFS)
+
+    @model_validator(mode="after")
+    def validate_total_evidence_segments(self) -> Self:
+        total_segments = sum(len(citation.slices) if citation.slices else 1 for citation in self.citations or ())
+        if total_segments > _MAX_EVIDENCE_SEGMENTS_PER_RESPONSE:
+            raise ValueError("response citations exceed 400 materialized evidence segments")
+        return self
 
 
 def hydrate_miner_response_payload(
@@ -36,14 +85,18 @@ def hydrate_miner_response_payload(
     receipt_log: ReceiptLogPort,
 ) -> Response:
     raw_response = _RawMinerResponsePayload.model_validate(payload, strict=True)
-    citations = _hydrate_citations(
+    if not raw_response.text.strip():
+        raise MinerResponsePayloadError("response text must not be blank")
+    hydrated_citations = _hydrate_citations(
         tuple(raw_response.citations or ()),
         session_id=session_id,
         receipt_log=receipt_log,
     )
+    if hydrated_citations.source_text_chars > _MAX_TOTAL_EVIDENCE_CHARS:
+        raise MinerResponsePayloadError("response citations exceed 120000 materialized source-text characters")
     return Response(
         text=raw_response.text,
-        citations=citations or None,
+        citations=hydrated_citations.citations or None,
     )
 
 
@@ -52,8 +105,9 @@ def _hydrate_citations(
     *,
     session_id: UUID,
     receipt_log: ReceiptLogPort,
-) -> tuple[AnswerCitation, ...]:
+) -> _HydratedCitations:
     hydrated: list[AnswerCitation] = []
+    source_text_chars = 0
     for citation_ref in citation_refs:
         hydrated_citation = _hydrate_citation(
             citation_ref,
@@ -62,8 +116,9 @@ def _hydrate_citations(
         )
         if hydrated_citation is None:
             continue
-        hydrated.append(hydrated_citation)
-    return tuple(hydrated)
+        hydrated.append(hydrated_citation.answer_citation)
+        source_text_chars += hydrated_citation.source_text_chars
+    return _HydratedCitations(citations=tuple(hydrated), source_text_chars=source_text_chars)
 
 
 def _hydrate_citation(
@@ -71,17 +126,22 @@ def _hydrate_citation(
     *,
     session_id: UUID,
     receipt_log: ReceiptLogPort,
-) -> AnswerCitation | None:
+) -> _HydratedCitation | None:
     receipt = receipt_log.lookup(citation_ref.receipt_id)
     if receipt is None or receipt.session_id != session_id:
         return None
     result = _lookup_referenceable_result(receipt, citation_ref.result_id)
     if result is None:
         return None
-    return AnswerCitation(
-        url=result.url,
-        note=_normalize_citation_note(result.note),
-        title=result.title,
+    source_text = _require_source_text(result.note)
+    materialized = _materialize_selection(source_text, tuple(citation_ref.slices))
+    return _HydratedCitation(
+        answer_citation=AnswerCitation(
+            url=result.url,
+            note=materialized.text,
+            title=result.title,
+        ),
+        source_text_chars=materialized.char_count,
     )
 
 
@@ -104,12 +164,39 @@ def _lookup_referenceable_result(
     return None
 
 
-def _normalize_citation_note(note: str | None) -> str | None:
-    if note is None:
-        return None
-    return note if note.strip() else None
+def _require_source_text(note: str | None) -> str:
+    if note is None or not note.strip():
+        raise MinerResponsePayloadError("cited result has no source text")
+    return note
+
+
+def _materialize_selection(
+    source_text: str,
+    slices: tuple[_CitationSlicePayload, ...],
+) -> _MaterializedSelection:
+    selected_slices = slices or (_CitationSlicePayload(start=0, end=len(source_text)),)
+    parts: list[str] = []
+    source_text_chars = 0
+    for selected_slice in selected_slices:
+        _validate_slice_against_source(source_text, selected_slice)
+        excerpt = source_text[selected_slice.start : selected_slice.end]
+        parts.append(f"[slice {selected_slice.start}:{selected_slice.end}]\n{excerpt}")
+        source_text_chars += len(excerpt)
+    return _MaterializedSelection(text="\n\n".join(parts), char_count=source_text_chars)
+
+
+def _validate_slice_against_source(source_text: str, selected_slice: _CitationSlicePayload) -> None:
+    if selected_slice.end > len(source_text):
+        raise MinerResponsePayloadError("citation slice exceeds source text length")
+    slice_length = selected_slice.end - selected_slice.start
+    if slice_length >= _MIN_SLICE_CHARS:
+        return
+    if len(source_text) < _MIN_SLICE_CHARS and selected_slice.start == 0 and selected_slice.end == len(source_text):
+        return
+    raise MinerResponsePayloadError("citation slice must contain at least 100 characters")
 
 
 __all__ = [
+    "MinerResponsePayloadError",
     "hydrate_miner_response_payload",
 ]

@@ -202,10 +202,18 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     assert "future-dated, surprising, or inconsistent with your prior knowledge" in user_prompt
     assert "event has not happened" in user_prompt
     assert "claims are backed by relevant citation evidence" in user_prompt
-    assert "Too many irrelevant validated citations should count against answer quality" in user_prompt
+    assert "Reward broad, relevant traceability" in user_prompt
+    assert "validator-materialized `[slice start:end]` excerpts" in user_prompt
+    assert "Do not reward citation count by itself" in user_prompt
 
 
-async def test_scoring_service_deduplicates_and_caps_citations_in_pairwise_payload() -> None:
+def test_evaluation_scoring_config_default_timeout_is_two_minutes() -> None:
+    config = EvaluationScoringConfig(provider="chutes", model="judge-model")
+
+    assert config.timeout_seconds == pytest.approx(120.0)
+
+
+async def test_scoring_service_deduplicates_exact_payloads_and_caps_citations() -> None:
     task = MinerTask(
         task_id=uuid4(),
         query=Query(text="Which answer is better?"),
@@ -218,6 +226,7 @@ async def test_scoring_service_deduplicates_and_caps_citations_in_pairwise_paylo
     )
 
     citations = [
+        AnswerCitation(url="https://same-source.example.com", title="Title A", note="Note A"),
         AnswerCitation(url="https://same-source.example.com", title="Title A", note="Note A"),
         AnswerCitation(url="https://same-source.example.com", title="Title B", note="Note B"),
         AnswerCitation(url="https://miner.example.com", note="Miner note"),
@@ -232,8 +241,11 @@ async def test_scoring_service_deduplicates_and_caps_citations_in_pairwise_paylo
     payload = _pairwise_payload(llm.requests[0])
     validated_citations = payload["answers"][0]["validated_citations"]
     assert len(validated_citations) == _MAX_RENDERED_CITATIONS
-    assert [item["url"] for item in validated_citations].count("https://same-source.example.com") == 1
+    assert [item["url"] for item in validated_citations].count("https://same-source.example.com") == 2
     assert [item["url"] for item in validated_citations].count("https://miner.example.com") == 1
+    assert validated_citations.count(
+        {"url": "https://same-source.example.com", "title": "Title A", "note": "Note A"}
+    ) == 1
 
 
 async def test_scoring_service_keeps_fake_inline_sources_inside_untrusted_answer_text() -> None:

@@ -173,7 +173,7 @@ class LlmSettings(BaseSettings):
     reference_llm_timeout_seconds: float | None = Field(default=None, alias="REFERENCE_LLM_TIMEOUT_SECONDS")
     benchmark_llm_timeout_seconds: float | None = Field(default=None, alias="BENCHMARK_LLM_TIMEOUT_SECONDS")
     digest_llm_timeout_seconds: float | None = Field(default=None, alias="DIGEST_LLM_TIMEOUT_SECONDS")
-    scoring_llm_timeout_seconds: float = Field(default=30.0, alias="SCORING_LLM_TIMEOUT_SECONDS")
+    scoring_llm_timeout_seconds: float = Field(default=120.0, alias="SCORING_LLM_TIMEOUT_SECONDS")
 
     # --- Scoring (validator) ---
     scoring_llm_provider: LlmProviderName = Field(default="chutes", alias="SCORING_LLM_PROVIDER")
