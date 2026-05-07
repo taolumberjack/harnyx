@@ -535,7 +535,17 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    scoring_llm_provider = _FakeAsyncResource()
+
+    class _FakeRegistry(_FakeAsyncResource):
+        def resolve(self, name: str) -> _FakeAsyncResource:
+            assert name == "chutes"
+            return scoring_llm_provider
+
     settings = SimpleNamespace(
+        llm=object(),
+        bedrock=object(),
+        vertex=object(),
         sandbox=SimpleNamespace(
             sandbox_image="local/harnyx-sandbox:0.1.0-dev",
             sandbox_pull_policy="missing",
@@ -550,14 +560,17 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch.setattr(local_eval, "_build_state", lambda: _minimal_local_eval_state())
     monkeypatch.setattr(
         local_eval,
-        "_build_local_eval_tooling_clients",
-        lambda settings: (
-            _FakeAsyncResource(),
-            _FakeAsyncResource(),
-            _FakeAsyncResource(),
-            _FakeAsyncResource(),
-            object(),
+        "build_tool_invocation_clients",
+        lambda **_kwargs: SimpleNamespace(
+            search_client=_FakeAsyncResource(),
+            llm_provider_registry=_FakeRegistry(),
+            tool_llm_provider=_FakeAsyncResource(),
         ),
+    )
+    monkeypatch.setattr(
+        local_eval,
+        "_resolve_scoring_judge_route",
+        lambda _settings: SimpleNamespace(provider="chutes"),
     )
     monkeypatch.setattr(local_eval, "_build_tooling", lambda **_: (object(), _UnusedToolExecutor()))
     monkeypatch.setattr(
@@ -965,6 +978,53 @@ def test_render_answer_markdown_uses_shared_models_and_ignores_empty_optional_ci
         "  - https://example.com/source",
     ]
 
+
+def test_invocation_only_runtime_factory_skips_default_scoring_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = cast(
+        Any,
+        SimpleNamespace(
+            llm=object(),
+            bedrock=object(),
+            vertex=object(),
+        ),
+    )
+    state = SimpleNamespace(
+        session_manager=object(),
+        evaluation_records=object(),
+        receipt_log=object(),
+    )
+    scoring_service = cast(Any, object())
+    scoring_config = EvaluationScoringConfig(
+        provider="chutes",
+        model="benchmark-invocation-only",
+        scoring_version="benchmark-invocation-only",
+    )
+
+    monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
+    monkeypatch.setattr(local_eval, "_build_state", lambda: state)
+    monkeypatch.setattr(
+        local_eval,
+        "build_tool_invocation_clients",
+        lambda **_kwargs: SimpleNamespace(
+            search_client=None,
+            llm_provider_registry=object(),
+            tool_llm_provider=None,
+        ),
+    )
+    monkeypatch.setattr(local_eval, "_build_tooling", lambda **_kwargs: (object(), object()))
+    monkeypatch.setattr(local_eval, "create_sandbox_manager", lambda **_kwargs: object())
+
+    runtime = local_eval.LocalEvaluationRuntime.create_invocation_only(
+        scoring_service=scoring_service,
+        scoring_config=scoring_config,
+    )
+
+    assert runtime.settings is settings
+    assert runtime.scoring_service is scoring_service
+    assert runtime.scoring_config is scoring_config
+    assert runtime._scoring_llm_provider is None
 
 def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     tmp_path: Path,

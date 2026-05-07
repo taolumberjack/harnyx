@@ -35,6 +35,11 @@ venv/
 coverage.xml
 htmlcov/
 
+# Miner autoresearch generated artifacts
+miner/results.tsv
+miner/run.log
+miner/.autoresearch/
+
 # Build and vendored output
 dist/
 **/dist/

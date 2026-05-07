@@ -8,8 +8,10 @@ from pydantic import SecretStr
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.tools import invocation_clients
+from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 from harnyx_validator.runtime import bootstrap
-from harnyx_validator.runtime.bootstrap import _build_llm_clients, _build_local_eval_tooling_clients
+from harnyx_validator.runtime.bootstrap import _build_llm_clients
 from harnyx_validator.runtime.settings import Settings
 
 
@@ -50,8 +52,21 @@ def test_validator_runtime_rejects_unsupported_bedrock_surfaces(field: str, mess
 
     with pytest.raises(ValueError, match=message):
         _build_llm_clients(settings)
-    with pytest.raises(ValueError, match=message):
-        _build_local_eval_tooling_clients(settings)
+    if field == "tool_llm_provider":
+        with pytest.raises(ValueError, match=message):
+            build_tool_invocation_clients(
+                llm_settings=settings.llm,
+                bedrock_settings=settings.bedrock,
+                vertex_settings=settings.vertex,
+            )
+    else:
+        clients = build_tool_invocation_clients(
+            llm_settings=settings.llm,
+            bedrock_settings=settings.bedrock,
+            vertex_settings=settings.vertex,
+        )
+        assert clients.search_client is not None
+        assert clients.tool_llm_provider is not None
 
 
 def test_validator_runtime_rejects_tool_override_to_bedrock() -> None:
@@ -69,7 +84,11 @@ def test_validator_runtime_rejects_tool_override_to_bedrock() -> None:
     with pytest.raises(ValueError, match="TOOL_LLM_PROVIDER='bedrock' is not supported"):
         _build_llm_clients(settings)
     with pytest.raises(ValueError, match="TOOL_LLM_PROVIDER='bedrock' is not supported"):
-        _build_local_eval_tooling_clients(settings)
+        build_tool_invocation_clients(
+            llm_settings=settings.llm,
+            bedrock_settings=settings.bedrock,
+            vertex_settings=settings.vertex,
+        )
 
 
 def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -90,13 +109,10 @@ def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytes
         def resolve(self, name: str) -> str:
             return f"provider:{name}"
 
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
+    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
     _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
-    _, _, _, local_scoring_provider, local_scoring_route = _build_local_eval_tooling_clients(settings)
 
     assert scoring_provider == "provider:bedrock"
     assert scoring_route.provider == "bedrock"
     assert scoring_route.model == bootstrap._SCORING_LLM_MODEL
-    assert local_scoring_provider == "provider:bedrock"
-    assert local_scoring_route == scoring_route

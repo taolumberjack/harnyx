@@ -13,7 +13,8 @@ This directory contains the miner-facing CLI tools for the Harnyx Subnet.
   ┌──────────────────────────────────────────┐
   │  miner/                                  │  ◀── what you interact with
   │  • harnyx-miner-dev         (test)       │
-  │  • harnyx-miner-local-eval  (benchmark)  │
+  │  • harnyx-miner-local-eval  (batch eval) │
+  │  • harnyx-miner-local-benchmark          │
   │  • harnyx-miner-submit      (upload)     │
   └──────────────────────────────────────────┘
                 │
@@ -57,8 +58,11 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | `DESEARCH_API_KEY` | Optional: required if your agent uses search tools |
 | `SEARCH_PROVIDER` | Optional: required if your agent uses search tools |
 | `PLATFORM_BASE_URL` | Public monitoring and script uploads |
+| `BENCHMARK_LLM_PROVIDER` | Optional benchmark judge provider; defaults to `chutes` |
+| `BENCHMARK_LLM_MODEL` | Required when running the DeepSearchQA local benchmark |
 
 The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, miner tooling also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`.
+If you set `BENCHMARK_LLM_PROVIDER=vertex`, also configure Vertex credentials such as `GCP_PROJECT_ID` and `GCP_LOCATION`.
 
 ---
 
@@ -259,6 +263,25 @@ uv run --package harnyx-miner harnyx-miner-local-eval --agent-path ./agent.py
 By default it selects the latest completed public batch and runs `vs-champion`. It also supports `target-only`, specific `--batch-id` selection, and writes JSON + Markdown reports you can use for your improvement loop.
 
 See [`local-eval.md`](local-eval.md) for prerequisites, modes, reports, and the full local-eval workflow. If you are using a code agent, the public step-based skills in [`skills/README.md`](skills/README.md) can help structure that loop.
+
+To run the open DeepSearchQA benchmark against a pinned source batch, use:
+
+```bash
+uv run --package harnyx-miner harnyx-miner-local-benchmark \
+  --agent-path ./agent.py \
+  --source-batch-id <completed-batch-id>
+```
+
+This writes a structured JSON report with the open benchmark question, reference answer, generated answer, binary correctness result, cost, runtime, and errors for each item.
+The local benchmark uses the public `harnyx_commons.miner_task_benchmark` boundary for packaged DeepSearchQA data, deterministic benchmark IDs, scoring, sampling, metric aggregation, and scoring-version checks. It does not depend on private platform internals.
+
+For upstream-style autonomous experimentation, see [`AUTO-RESEARCH.md`](AUTO-RESEARCH.md). That guide gives the operator prompt, environment checklist, setup commands, and safety boundaries. The agent-facing research policy lives in [`program.md`](program.md).
+
+That flow keeps the surface intentionally small:
+
+- `prepare.py` pins the local-eval batch plus DeepSearchQA benchmark snapshot and owns fixed support.
+- `train.py` is the only file the agent edits and the command run for each experiment.
+- `results.tsv` records Score A, Score B, cost, and status for each experiment and stays untracked.
 
 ---
 

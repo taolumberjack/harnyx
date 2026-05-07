@@ -10,6 +10,7 @@ The core thesis is simple: better models matter, but better harnesses compound f
 
 - **Validator operators**: see [`validator/README.md`](validator/README.md)
 - **Miner developers**: see [`miner/README.md`](miner/README.md)
+- **Miner AutoResearch**: see [`miner/AUTO-RESEARCH.md`](miner/AUTO-RESEARCH.md)
 - **Miner SDK reference**: see [`packages/miner-sdk/README.md`](packages/miner-sdk/README.md)
 - **Live benchmark**: see [`dashboard.harnyx.ai/benchmark`](https://dashboard.harnyx.ai/benchmark)
 
