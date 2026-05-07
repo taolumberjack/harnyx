@@ -32,6 +32,7 @@ from harnyx_commons.llm.pricing import (
 )
 from harnyx_commons.llm.schema import LlmResponse
 from harnyx_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
+from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.types import LLM_TOOLS, SearchToolName, ToolName, is_citation_source, is_search_tool
 from harnyx_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
 
@@ -47,6 +48,11 @@ class ToolInvoker(Protocol):
         kwargs: Mapping[str, JsonValue],
     ) -> object:
         """Call the tool and return its response payload."""
+
+
+class _ToolExecutionPort(Protocol):
+    async def execute(self, request: ToolInvocationRequest) -> ToolInvocationResult:
+        """Execute a validated tool invocation."""
 
 
 tool_logger = logging.getLogger("harnyx_commons.tools")
@@ -661,4 +667,17 @@ def _summarize_value(value: object, *, limit: int = 200) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-__all__ = ["ToolExecutor", "ToolInvoker", "ToolCallUsage"]
+async def execute_tool_with_token_permit(
+    executor: _ToolExecutionPort,
+    semaphore: TokenSemaphore,
+    invocation: ToolInvocationRequest,
+) -> ToolInvocationResult:
+    token = invocation.token
+    await semaphore.acquire_async(token)
+    try:
+        return await executor.execute(invocation)
+    finally:
+        semaphore.release(token)
+
+
+__all__ = ["ToolExecutor", "ToolInvoker", "ToolCallUsage", "execute_tool_with_token_permit"]
