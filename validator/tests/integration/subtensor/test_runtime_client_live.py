@@ -52,7 +52,7 @@ def test_runtime_client_live_commitment_and_weights() -> None:
 
     baseline_update = client.last_update_block(validator_info.uid)
     if baseline_update is None:
-        pytest.skip("validator metagraph last_update missing; cannot verify weight updates")
+        pytest.fail("validator metagraph last_update missing; cannot verify weight updates", pytrace=False)
     baseline_value = baseline_update
 
     # Choose a target miner uid ≠ validator uid
@@ -82,9 +82,10 @@ def test_runtime_client_live_commitment_and_weights() -> None:
                 raise
             time.sleep(10)
     else:
-        pytest.skip(
+        pytest.fail(
             "unable to submit weights within deadline "
-            f"(weights_rate_limit={weights_rate_limit}, last_update={baseline_value})"
+            f"(weights_rate_limit={weights_rate_limit}, last_update={baseline_value})",
+            pytrace=False,
         )
 
     deadline = time.time() + 300

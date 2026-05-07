@@ -23,7 +23,6 @@ from harnyx_commons.llm.schema import (
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 _GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 _GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
-_GEMMA_NATIVE_MODEL = "nvidia/Gemma-4-31B-IT-NVFP4"
 
 
 class JsonObjectAnswer(BaseModel):

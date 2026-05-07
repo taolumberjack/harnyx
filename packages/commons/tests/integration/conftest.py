@@ -43,7 +43,7 @@ def _ensure_docker_available(docker_bin: str) -> None:
             text=True,
         )
     except Exception as exc:  # pragma: no cover - depends on host tooling
-        pytest.skip(f"Docker CLI is required for this test suite: {exc}")
+        raise RuntimeError(f"Docker CLI is required for this test suite: {exc}") from exc
 
 
 def _ensure_image_present(docker_bin: str, image: str) -> None:
@@ -53,7 +53,7 @@ def _ensure_image_present(docker_bin: str, image: str) -> None:
         text=True,
     )
     if result.returncode != 0:
-        pytest.skip(
+        raise RuntimeError(
             (
                 f"Sandbox image {image!r} not found. "
                 "Build it with scripts/build/build_sandbox_image.sh before running integration tests."
