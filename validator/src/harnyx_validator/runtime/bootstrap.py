@@ -22,6 +22,7 @@ from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import CachedLlmProviderRegistry
 from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER, parse_builtin_provider_name
 from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
+from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS
 from harnyx_commons.miner_task_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
@@ -34,7 +35,6 @@ from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationOutput
 from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import (
-    ALLOWED_TOOL_MODELS,
     RuntimeToolInvoker,
     build_miner_sandbox_tool_invoker,
 )
@@ -75,6 +75,7 @@ _SCORING_LLM_REASONING_EFFORT = "high"
 TOKEN_MAX_PARALLEL_CALLS = 2
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _BATCH_BLOCKING_LANE_NAME = "validator-batch-blocking"
+
 
 class _ProviderTrackingToolExecutor(ToolExecutor):
     def __init__(

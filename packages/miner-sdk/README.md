@@ -138,7 +138,35 @@ These helpers call validator-hosted tools when running inside the sandbox:
 - `search_web(query, **kwargs)`
 - `search_x(query, **kwargs)`
 - `search_ai(query, **kwargs)`
-- `llm_chat(messages=[...], model="...", **kwargs)`
+- `llm_chat(messages=[...], model="...", temperature=0.0, thinking={"enabled": True})`
 - `tooling_info()`
+
+`llm_chat` accepts a typed `thinking` option:
+
+| Model | `enabled=True` / `enabled=False` | `effort` | `budget` |
+|-------|----------------------------------|----------|----------|
+| `deepseek-ai/DeepSeek-V3.1-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
+| `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
+| `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |
+| `Qwen/Qwen3-Next-80B-A3B-Instruct` | No verified request-side control; accepted but serializes no thinking field | Ignored | Ignored |
+| `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Gemma endpoint | No verified knob; ignored | No verified knob; ignored |
+
+```python
+await llm_chat(
+    model="deepseek-ai/DeepSeek-V3.2-TEE",
+    messages=[{"role": "user", "content": "Solve 17 * 23."}],
+    temperature=0.0,
+    thinking={"enabled": True},
+)
+
+await llm_chat(
+    model="zai-org/GLM-5-TEE",
+    messages=[{"role": "user", "content": "Reply with only ok."}],
+    temperature=0.0,
+    thinking={"enabled": False},
+)
+```
+
+Omit `thinking` to use provider defaults. `effort` accepts `"low"`, `"medium"`, or `"high"` and `budget` must be a positive integer, but no current miner `llm_chat` model has a verified effort or budget provider knob. Do not send `effort` and `budget` together; that is a validation error. Provider support is best effort, so unsupported level/budget hints are ignored instead of becoming raw provider-body fields.
 
 See [`../../miner/README.md`](../../miner/README.md) for the end-to-end miner workflow (Write -> Test -> Submit).

@@ -24,13 +24,9 @@ from harnyx_commons.domain.tool_call import (
 )
 from harnyx_commons.errors import BudgetExceededError
 from harnyx_commons.json_types import JsonObject, JsonValue
-from harnyx_commons.llm.pricing import (
-    ToolModelName,
-    parse_tool_model,
-    price_llm,
-    price_search,
-)
+from harnyx_commons.llm.pricing import price_llm, price_search
 from harnyx_commons.llm.schema import LlmResponse
+from harnyx_commons.llm.tool_models import ToolModelName, parse_tool_model
 from harnyx_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.types import LLM_TOOLS, SearchToolName, ToolName, is_citation_source, is_search_tool
@@ -585,21 +581,39 @@ def _extract_llm_usage(
     prompt = usage_obj.prompt_tokens
     completion = usage_obj.completion_tokens
     total = usage_obj.total_tokens
+    reasoning = usage_obj.reasoning_tokens
 
-    if prompt is None and completion is None and total is None:
+    if prompt is None and completion is None and total is None and reasoning is None:
         return 0, None, None
 
+    resolved_total = _resolve_llm_total_tokens(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        reasoning_tokens=reasoning,
+    )
     usage_details = ToolCallUsage(
         provider=provider,
         model=model,
         prompt_tokens=prompt,
         completion_tokens=completion,
-        total_tokens=total,
-        reasoning_tokens=usage_obj.reasoning_tokens,
+        total_tokens=resolved_total,
+        reasoning_tokens=reasoning,
     )
-    resolved_total = total if total is not None else (prompt or 0) + (completion or 0)
     call_cost = price_llm(model, usage_obj)
     return resolved_total, usage_details, call_cost
+
+
+def _resolve_llm_total_tokens(
+    *,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    total_tokens: int | None,
+    reasoning_tokens: int | None,
+) -> int:
+    if total_tokens is not None:
+        return total_tokens
+    return (prompt_tokens or 0) + (completion_tokens or 0) + (reasoning_tokens or 0)
 
 
 @dataclass(frozen=True, slots=True)

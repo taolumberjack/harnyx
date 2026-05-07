@@ -295,8 +295,8 @@ class VertexLlmProvider(BaseLlmProvider):
                 ):
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
-        response_body = _VertexMaasChatResponse.from_stream_state(state)
-        llm_response = response_body.to_llm_response()
+        response_body = _VertexMaasChatResponse.from_stream_state(state, model=request.model)
+        llm_response = response_body.to_llm_response(model=request.model)
         metadata = dict(llm_response.metadata or {})
         metadata.setdefault("raw_response", response_body.raw_payload())
         self._log_stream_ttft(

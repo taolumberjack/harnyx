@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import mimetypes
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, model_validator
 
+from harnyx_commons.llm.adapter import canonical_model_for_provider_model
 from harnyx_commons.llm.provider_types import normalize_reasoning_effort
 from harnyx_commons.llm.providers.openai_chat_codec import (
     OpenAiChatRequestParts,
@@ -32,9 +34,18 @@ from harnyx_commons.llm.schema import (
     LlmTool,
     LlmUsage,
 )
+from harnyx_commons.llm.tool_models import tool_model_thinking_capability
 
 _IMAGE_FETCH_TIMEOUT_SECONDS = 20.0
 _STRING_KEY_MAPPING_ADAPTER = TypeAdapter(dict[str, object])
+
+
+@dataclass(frozen=True)
+class _VertexReasoningSplit:
+    visible_text: str | None
+    reasoning_text: str | None
+
+
 class _VertexMaasChatRequest(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
@@ -48,6 +59,7 @@ class _VertexMaasChatRequest(BaseModel):
     reasoning_effort: str | None = None
     include: list[str] | None = None
     response_format: dict[str, Any] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
 
     @classmethod
     def from_request(cls, request: AbstractLlmRequest) -> _VertexMaasChatRequest:
@@ -81,9 +93,39 @@ class _VertexMaasChatRequest(BaseModel):
                 else None
             ),
         )
+        payload = _apply_vertex_maas_thinking(payload, request)
         if request.extra:
             payload = payload.model_copy(update=dict(request.extra))
         return payload.model_copy(update={"stream": True})
+
+
+def _apply_vertex_maas_thinking(
+    payload: _VertexMaasChatRequest,
+    request: AbstractLlmRequest,
+) -> _VertexMaasChatRequest:
+    thinking = request.thinking
+    if thinking is None:
+        return payload
+    canonical_model = canonical_model_for_provider_model(
+        provider_name="vertex",
+        model=vertex_maas_openai_chat_model_name(request.model),
+    )
+    capability = tool_model_thinking_capability(canonical_model, provider_name="vertex")
+    if capability is None:
+        return payload
+    return _with_vertex_chat_template_kwargs(
+        payload,
+        capability.chat_template_kwargs(enabled=thinking.enabled),
+    )
+
+
+def _with_vertex_chat_template_kwargs(
+    payload: _VertexMaasChatRequest,
+    updates: dict[str, Any],
+) -> _VertexMaasChatRequest:
+    merged = dict(payload.chat_template_kwargs or {})
+    merged.update(updates)
+    return payload.model_copy(update={"chat_template_kwargs": merged})
 
 
 class _VertexMaasToolFunctionPayload(BaseModel):
@@ -142,22 +184,50 @@ class _VertexMaasChoicePayload(BaseModel):
             finish_reason=state.finish_reason,
         )
 
-    def text_content(self) -> str | None:
+    def text_content(self, *, model: str | None = None) -> str | None:
+        split = self._deepseek_v31_reasoning_split(model=model)
+        if split is not None:
+            return split.visible_text
         return _extract_vertex_maas_text(self.content, require_text_type=True)
 
-    def reasoning_text(self) -> str | None:
-        return _extract_vertex_maas_text(self.reasoning_content) or _extract_vertex_maas_text(self.reasoning)
+    def reasoning_text(self, *, model: str | None = None) -> str | None:
+        explicit_reasoning = _extract_vertex_maas_text(self.reasoning_content) or _extract_vertex_maas_text(
+            self.reasoning
+        )
+        if explicit_reasoning is not None:
+            return explicit_reasoning
+        split = self._deepseek_v31_reasoning_split(model=model)
+        return split.reasoning_text if split is not None else None
 
-    def to_choice(self, *, index: int) -> LlmChoice:
+    def to_choice(self, *, index: int, model: str | None = None) -> LlmChoice:
         return LlmChoice(
             index=self.index if self.index is not None else index,
             message=LlmChoiceMessage(
                 role="assistant",
-                content=((_text_part(text_content),) if (text_content := self.text_content()) else ()),
+                content=((_text_part(text_content),) if (text_content := self.text_content(model=model)) else ()),
                 tool_calls=_vertex_maas_tool_calls(self.tool_calls),
-                reasoning=self.reasoning_text(),
+                reasoning=self.reasoning_text(model=model),
             ),
             finish_reason=self.finish_reason or "stop",
+        )
+
+    def _deepseek_v31_reasoning_split(self, *, model: str | None) -> _VertexReasoningSplit | None:
+        if not _is_vertex_deepseek_v31_model(model):
+            return None
+        content = _extract_vertex_maas_text(self.content, require_text_type=True)
+        if content is None:
+            return None
+        if _DEEPSEEK_V31_THINKING_STOP not in content:
+            if not content.startswith(_DEEPSEEK_V31_THINKING_START):
+                return None
+            return _VertexReasoningSplit(
+                visible_text=None,
+                reasoning_text=content.removeprefix(_DEEPSEEK_V31_THINKING_START).strip() or None,
+            )
+        reasoning_text, visible_text = content.split(_DEEPSEEK_V31_THINKING_STOP, 1)
+        return _VertexReasoningSplit(
+            visible_text=visible_text.strip() or None,
+            reasoning_text=reasoning_text.removeprefix(_DEEPSEEK_V31_THINKING_START).strip() or None,
         )
 
     def raw_payload(self) -> dict[str, Any]:
@@ -190,23 +260,36 @@ class _VertexMaasUsagePayload(BaseModel):
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
 
+    def completion_tokens_excluding_reasoning(self) -> int | None:
+        # MaaS chat completions follows OpenAI-style usage when reasoning tokens
+        # are present, so completion includes reasoning. Keep internal pricing
+        # consistent with Chutes/OpenAI-compatible by charging each bucket once.
+        if self.completion_tokens is None or self.reasoning_tokens is None:
+            return self.completion_tokens
+        return max(0, self.completion_tokens - self.reasoning_tokens)
+
 
 class _VertexMaasChatResponse(BaseModel):
     id: str | None = None
+    model: str | None = None
     choices: list[_VertexMaasChoicePayload]
     usage: _VertexMaasUsagePayload | None = None
 
     @classmethod
-    def from_stream_state(cls, state: OpenAiStreamState) -> _VertexMaasChatResponse:
+    def from_stream_state(cls, state: OpenAiStreamState, *, model: str | None = None) -> _VertexMaasChatResponse:
         choices = [
             _VertexMaasChoicePayload.from_stream_choice(index=index, state=choice_state)
             for index, choice_state in sorted(state.choices.items())
         ]
         usage = _VertexMaasUsagePayload.model_validate(state.usage) if state.usage is not None else None
-        return cls(id=state.response_id or None, choices=choices, usage=usage)
+        return cls(id=state.response_id or None, model=model, choices=choices, usage=usage)
 
-    def to_llm_response(self) -> LlmResponse:
-        choices = tuple(choice.to_choice(index=index) for index, choice in enumerate(self.choices))
+    def to_llm_response(self, *, model: str | None = None) -> LlmResponse:
+        response_model = model or self.model
+        choices = tuple(
+            choice.to_choice(index=index, model=response_model)
+            for index, choice in enumerate(self.choices)
+        )
         usage_payload = self.usage
         usage = LlmUsage(
             prompt_tokens=usage_payload.prompt_tokens if usage_payload else None,
@@ -215,7 +298,7 @@ class _VertexMaasChatResponse(BaseModel):
                 if usage_payload and usage_payload.prompt_tokens_details
                 else None
             ),
-            completion_tokens=usage_payload.completion_tokens if usage_payload else None,
+            completion_tokens=usage_payload.completion_tokens_excluding_reasoning() if usage_payload else None,
             total_tokens=usage_payload.total_tokens if usage_payload else None,
             reasoning_tokens=usage_payload.reasoning_tokens if usage_payload else None,
         )
@@ -229,11 +312,15 @@ class _VertexMaasChatResponse(BaseModel):
         )
 
     def raw_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.id,
+            "model": self.model,
             "choices": [choice.raw_payload() for choice in self.choices],
             "usage": self.usage.model_dump(mode="python", exclude_none=True) if self.usage is not None else None,
         }
+        if self.model is None:
+            payload.pop("model")
+        return payload
 
 
 def _to_vertex_request_role(role: str) -> str:
@@ -293,6 +380,20 @@ def vertex_maas_openai_chat_model_name(model: str) -> str:
         publisher, model_name = publisher_and_model.split(models_marker, 1)
         return f"{publisher}/{model_name}"
     return normalized
+
+
+_DEEPSEEK_V31_THINKING_STOP = "</think>"
+_DEEPSEEK_V31_THINKING_START = "<think>"
+
+
+def _is_vertex_deepseek_v31_model(model: str | None) -> bool:
+    if model is None:
+        return False
+    normalized = vertex_maas_openai_chat_model_name(model).strip().lower()
+    return normalized in {
+        "deepseek-ai/deepseek-v3.1-maas",
+        "deepseek-ai/deepseek-v3.1-tee",
+    }
 
 
 def _extract_vertex_maas_text(

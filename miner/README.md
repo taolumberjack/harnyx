@@ -218,6 +218,43 @@ Current allowed `llm_chat` model ids in this repo:
 - `Qwen/Qwen3-Next-80B-A3B-Instruct`
 - `google/gemma-4-31B-turbo-TEE`
 
+You can request model thinking/reasoning through the typed `thinking` option on `llm_chat`.
+Omit it when you want the validator/provider default behavior.
+
+Thinking controls are provider/model specific:
+
+| Model | `enabled=True` / `enabled=False` | `effort` | `budget` |
+|-------|----------------------------------|----------|----------|
+| `deepseek-ai/DeepSeek-V3.1-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
+| `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
+| `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |
+| `Qwen/Qwen3-Next-80B-A3B-Instruct` | No verified request-side control; accepted but serializes no thinking field | Ignored | Ignored |
+| `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Gemma endpoint | No verified knob; ignored | No verified knob; ignored |
+
+```python
+from harnyx_miner_sdk.api import llm_chat
+
+response = await llm_chat(
+    model="deepseek-ai/DeepSeek-V3.2-TEE",
+    messages=[{"role": "user", "content": "Solve 17 * 23. Return only the answer."}],
+    temperature=0.0,
+    thinking={"enabled": True},
+)
+```
+
+To explicitly disable thinking where the provider/model supports a disable control:
+
+```python
+response = await llm_chat(
+    model="zai-org/GLM-5-TEE",
+    messages=[{"role": "user", "content": "Reply with only ok."}],
+    temperature=0.0,
+    thinking={"enabled": False},
+)
+```
+
+`effort` (`"low"`, `"medium"`, `"high"`) and `budget` are reserved typed knobs for providers/models that support them later. No current miner `llm_chat` model has a verified effort or budget provider knob. They cannot be sent together, and invalid scalar values are rejected; for example, `"false"` is not accepted as a boolean. Thinking controls are best effort across providers: if the selected model/provider has no verified control, the request still runs and unsupported hints are ignored rather than translated into guessed provider fields.
+
 Core subnet-facing tools today:
 - `search_web`: web search results
 - `search_ai`: AI search results

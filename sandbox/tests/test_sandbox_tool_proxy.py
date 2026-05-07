@@ -7,6 +7,7 @@ import harnyx_sandbox.sandbox.harness as harness_module
 import httpx
 import pytest
 from harnyx_sandbox.tools.proxy import ToolInvocationError, ToolProxy
+from pydantic import ValidationError
 
 from harnyx_miner_sdk._internal.tool_invoker import bind_tool_invoker
 from harnyx_miner_sdk.api import LlmChatResult, llm_chat, search_ai, search_web
@@ -307,6 +308,7 @@ async def test_llm_chat_helper_invokes_tool_proxy() -> None:
                 messages=[{"role": "user", "content": "hi"}],
                 model="demo-model",
                 temperature=0.2,
+                thinking={"enabled": True, "effort": "high"},
             )
     finally:
         await proxy.aclose()
@@ -322,3 +324,48 @@ async def test_llm_chat_helper_invokes_tool_proxy() -> None:
     assert payload["kwargs"]["model"] == "demo-model"
     assert payload["kwargs"]["messages"] == [{"role": "user", "content": "hi"}]
     assert payload["kwargs"]["temperature"] == 0.2
+    assert payload["kwargs"]["thinking"] == {"enabled": True, "effort": "high"}
+
+
+async def test_llm_chat_helper_rejects_thinking_effort_and_budget() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("llm_chat should reject invalid thinking before invoking the tool proxy")
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            with pytest.raises(ValidationError):
+                await llm_chat(
+                    messages=[{"role": "user", "content": "hi"}],
+                    model="demo-model",
+                    thinking={"enabled": True, "effort": "high", "budget": 1024},
+                )
+    finally:
+        await proxy.aclose()
+
+
+async def test_llm_chat_helper_rejects_coerced_thinking_scalars() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("llm_chat should reject invalid thinking before invoking the tool proxy")
+
+    proxy = ToolProxy(
+        base_url="http://validator",
+        token=TEST_TOKEN,
+        session_id=SESSION_ID,
+        client=httpx.AsyncClient(base_url="http://validator", transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with bind_tool_invoker(proxy):
+            with pytest.raises(ValidationError):
+                await llm_chat(
+                    messages=[{"role": "user", "content": "hi"}],
+                    model="demo-model",
+                    thinking={"enabled": "false", "budget": True},
+                )
+    finally:
+        await proxy.aclose()

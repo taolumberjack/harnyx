@@ -9,8 +9,9 @@ import pytest
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCallOutcome, ToolExecutionFacts
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.llm.pricing import parse_tool_model, price_llm
+from harnyx_commons.llm.pricing import price_llm
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
+from harnyx_commons.llm.tool_models import parse_tool_model
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -497,6 +498,7 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
         kwargs={
             "model": model,
             "messages": [{"role": "user", "content": "ping"}],
+            "thinking": {"enabled": True, "effort": "medium"},
         },
     )
 
@@ -518,6 +520,152 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
     assert stored_session.usage.cost_by_provider["chutes"] == pytest.approx(
         price_llm(parse_tool_model(model), usage)
     )
+
+
+async def test_execute_tool_counts_reasoning_tokens_in_missing_total_fallback() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    usage = LlmUsage(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=None,
+        reasoning_tokens=7,
+    )
+
+    class UsageToolInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            response = LlmResponse(
+                id="offline-chutes",
+                choices=(
+                    LlmChoice(
+                        index=0,
+                        message=LlmChoiceMessage(
+                            role="assistant",
+                            content=(LlmMessageContentPart(type="text", text="ok"),),
+                        ),
+                    ),
+                ),
+                usage=usage,
+            )
+            return response.to_payload()
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=UsageToolInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="llm_chat",
+        args=(),
+        kwargs={
+            "model": "deepseek-ai/DeepSeek-V3.2-TEE",
+            "messages": [{"role": "user", "content": "ping"}],
+        },
+    )
+
+    result = await executor.execute(request)
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.llm_tokens_last_call == 22
+    usage_totals = stored_session.usage.llm_usage_totals["chutes"]["deepseek-ai/DeepSeek-V3.2-TEE"]
+    assert usage_totals.prompt_tokens == 10
+    assert usage_totals.completion_tokens == 5
+    assert usage_totals.reasoning_tokens == 7
+    assert usage_totals.total_tokens == 22
+    assert result.usage is not None
+    assert result.usage.total_tokens == 22
+    assert result.response_payload["usage"]["total_tokens"] is None
+
+
+async def test_execute_tool_counts_reasoning_only_usage_in_missing_total_fallback() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    usage = LlmUsage(reasoning_tokens=7)
+
+    class UsageToolInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            response = LlmResponse(
+                id="offline-chutes",
+                choices=(
+                    LlmChoice(
+                        index=0,
+                        message=LlmChoiceMessage(
+                            role="assistant",
+                            content=(LlmMessageContentPart(type="text", text="ok"),),
+                        ),
+                    ),
+                ),
+                usage=usage,
+            )
+            return response.to_payload()
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=UsageToolInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="llm_chat",
+        args=(),
+        kwargs={
+            "model": "deepseek-ai/DeepSeek-V3.2-TEE",
+            "messages": [{"role": "user", "content": "ping"}],
+        },
+    )
+
+    result = await executor.execute(request)
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.llm_tokens_last_call == 7
+    usage_totals = stored_session.usage.llm_usage_totals["chutes"]["deepseek-ai/DeepSeek-V3.2-TEE"]
+    assert usage_totals.prompt_tokens == 0
+    assert usage_totals.completion_tokens == 0
+    assert usage_totals.reasoning_tokens == 7
+    assert usage_totals.total_tokens == 7
+    assert result.usage is not None
+    assert result.usage.total_tokens == 7
+    assert result.response_payload["usage"]["total_tokens"] is None
+    assert result.response_payload["usage"]["reasoning_tokens"] == 7
 
 
 async def test_execute_tool_ignores_stale_response_model_metadata_for_llm_chat() -> None:

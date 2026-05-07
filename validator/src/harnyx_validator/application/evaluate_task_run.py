@@ -19,9 +19,10 @@ from harnyx_commons.domain.tool_usage import (
     SearchToolUsageSummary,
     ToolUsageSummary,
 )
-from harnyx_commons.llm.pricing import ALLOWED_TOOL_MODELS, parse_tool_model, price_llm, price_search
+from harnyx_commons.llm.pricing import price_llm, price_search
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, parse_tool_model
 from harnyx_commons.miner_task_scoring import EvaluationScoringService
 from harnyx_commons.tools.types import SearchToolName, is_search_tool
 from harnyx_validator.application.dto.evaluation import (
@@ -140,6 +141,7 @@ class UsageSummarizer:
         prompt_tokens = 0
         completion_tokens = 0
         total_tokens = 0
+        reasoning_tokens = 0
         total_cost = 0.0
         providers: dict[str, dict[str, LlmModelUsageCost]] = {}
 
@@ -162,6 +164,7 @@ class UsageSummarizer:
                 prompt_tokens += totals.prompt_tokens
                 completion_tokens += totals.completion_tokens
                 total_tokens += totals.total_tokens
+                reasoning_tokens += totals.reasoning_tokens
                 total_cost += cost
 
         return (
@@ -170,6 +173,7 @@ class UsageSummarizer:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                reasoning_tokens=reasoning_tokens,
                 providers=providers,
                 cost=round(total_cost, 6),
             ),
@@ -188,6 +192,7 @@ class UsageSummarizer:
             prompt_tokens=totals.prompt_tokens or 0,
             completion_tokens=totals.completion_tokens or 0,
             total_tokens=totals.total_tokens or 0,
+            reasoning_tokens=totals.reasoning_tokens or 0,
         )
 
 

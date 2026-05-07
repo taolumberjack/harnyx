@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from harnyx_commons.llm.adapter import LlmProviderAdapter
+from harnyx_commons.llm.adapter import LlmProviderAdapter, canonical_model_for_provider_model
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -234,6 +234,36 @@ async def test_adapter_applies_default_vertex_aliases(model: str, expected: str)
     await provider.invoke(request)
 
     assert delegate.requests[0].model == expected
+
+
+def test_canonical_model_for_provider_model_reverses_vertex_tool_alias() -> None:
+    assert (
+        canonical_model_for_provider_model(
+            provider_name="vertex",
+            model="deepseek-ai/deepseek-v3.2-maas",
+        )
+        == "deepseek-ai/DeepSeek-V3.2-TEE"
+    )
+
+
+def test_canonical_model_for_provider_model_reverses_custom_openai_compatible_tool_alias() -> None:
+    assert (
+        canonical_model_for_provider_model(
+            provider_name=GEMMA_CLOUD_RUN_ROUTE_TARGET,
+            model=GEMMA_CLOUD_RUN_NATIVE_MODEL,
+        )
+        == GEMMA_CHUTES_MODEL
+    )
+
+
+def test_canonical_model_for_provider_model_returns_unknown_model_unchanged() -> None:
+    assert (
+        canonical_model_for_provider_model(
+            provider_name="vertex",
+            model="unmapped-provider-model",
+        )
+        == "unmapped-provider-model"
+    )
 
 
 @pytest.mark.parametrize("model", VERTEX_ALIASED_TOOL_MODELS)

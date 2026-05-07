@@ -270,7 +270,7 @@ async def test_runtime_invoker_routes_llm_chat(model: str) -> None:
     assert "metadata" not in result
     assert "postprocessed" not in result
     assert "logprobs" not in result["choices"][0]
-    assert "reasoning" not in result["choices"][0]["message"]
+    assert result["choices"][0]["message"]["reasoning"] == "ignored"
     assert "refusal" not in result["choices"][0]["message"]
     assert result["usage"]["prompt_cached_tokens"] == 4
     assert result["usage"]["reasoning_tokens"] == 3
@@ -308,6 +308,97 @@ async def test_runtime_invoker_does_not_expose_internal_provider_metadata_for_ll
     assert "harnyx_model" not in invocation_output.public_payload
     assert stub_provider.calls[0].provider == "vertex"
     assert stub_provider.calls[0].model == ALLOWED_TOOL_MODELS[0]
+
+
+async def test_runtime_invoker_forwards_llm_chat_thinking_config() -> None:
+    stub_provider = StubChutesProvider()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=stub_provider,
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    await _invoke(
+        invoker,
+        "llm_chat",
+        kwargs={
+            "messages": [{"role": "user", "content": "hi"}],
+            "model": ALLOWED_TOOL_MODELS[0],
+            "thinking": {"enabled": True, "effort": "high"},
+        },
+    )
+
+    thinking = stub_provider.calls[0].thinking
+    assert thinking is not None
+    assert thinking.enabled is True
+    assert thinking.effort == "high"
+    assert thinking.budget is None
+
+
+async def test_runtime_invoker_rejects_llm_chat_thinking_effort_and_budget() -> None:
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=StubChutesProvider(),
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(ValidationError):
+        await _invoke(
+            invoker,
+            "llm_chat",
+            kwargs={
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+                "thinking": {"enabled": True, "effort": "high", "budget": 1024},
+            },
+        )
+
+
+async def test_runtime_invoker_rejects_coerced_llm_chat_thinking_scalars() -> None:
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=StubChutesProvider(),
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(ValidationError):
+        await _invoke(
+            invoker,
+            "llm_chat",
+            kwargs={
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+                "thinking": {"enabled": "false", "budget": True},
+            },
+        )
+
+
+async def test_runtime_invoker_rejects_raw_llm_chat_provider_body_kwargs() -> None:
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=StubChutesProvider(),
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+
+    with pytest.raises(ValidationError) as excinfo:
+        await _invoke(
+            invoker,
+            "llm_chat",
+            kwargs={
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+                "chat_template_kwargs": {"thinking": True},
+            },
+        )
+
+    assert any(
+        err.get("type") == "extra_forbidden" and err.get("loc") == ("chat_template_kwargs",)
+        for err in excinfo.value.errors()
+    )
 
 
 async def test_runtime_invoker_returns_public_payload_plus_execution_facts(

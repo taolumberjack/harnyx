@@ -10,18 +10,49 @@ from harnyx_commons.llm.providers.chutes import (
     _parse_chutes_response_payload,
     resolve_chutes_embedding_base_url,
 )
-from harnyx_commons.llm.providers.chutes_codec import _ChutesChatResponse, _ChutesReasoningStreamState
+from harnyx_commons.llm.providers.chutes_codec import (
+    _ChutesChatRequest,
+    _ChutesChatResponse,
+    _ChutesReasoningStreamState,
+)
 from harnyx_commons.llm.providers.openai_stream import (
     OpenAiStreamError,
     OpenAiStreamState,
     _OpenAiStreamEvent,
     iter_openai_sse_events,
 )
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse, LlmUsage
+from harnyx_commons.llm.schema import (
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmResponse,
+    LlmThinkingConfig,
+    LlmUsage,
+)
 
 
 class _JudgeDecision(BaseModel):
     better: str
+
+
+def _basic_chutes_request(
+    *,
+    model: str = "deepseek-ai/DeepSeek-V3.2-TEE",
+    thinking: LlmThinkingConfig | None = None,
+) -> LlmRequest:
+    return LlmRequest(
+        provider="chutes",
+        model=model,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hi"),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=32,
+        thinking=thinking,
+    )
 
 
 def test_parse_payload_skips_malformed_choice_and_keeps_valid_choice() -> None:
@@ -152,6 +183,93 @@ def test_parse_payload_normalizes_string_reasoning_field() -> None:
     parsed = _parse_chutes_response_payload(payload)
 
     assert parsed.choices[0].message.reasoning == "model supplied unsupported reasoning shape"
+
+
+def test_chutes_thinking_omitted_is_noop() -> None:
+    payload = _ChutesChatRequest.from_request(_basic_chutes_request()).model_dump(
+        mode="python",
+        exclude_none=True,
+    )
+
+    assert "chat_template_kwargs" not in payload
+    assert "reasoning_effort" not in payload
+
+
+def test_chutes_deepseek_thinking_enabled_and_disabled_use_template_kwargs() -> None:
+    enabled = _ChutesChatRequest.from_request(
+        _basic_chutes_request(thinking=LlmThinkingConfig(enabled=True))
+    ).model_dump(mode="python", exclude_none=True)
+    disabled = _ChutesChatRequest.from_request(
+        _basic_chutes_request(thinking=LlmThinkingConfig(enabled=False))
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert enabled["chat_template_kwargs"] == {"thinking": True}
+    assert disabled["chat_template_kwargs"] == {"thinking": False}
+    assert "reasoning_effort" not in enabled
+    assert "reasoning_effort" not in disabled
+
+
+def test_chutes_glm_thinking_disabled_uses_enable_thinking_template_kwarg() -> None:
+    payload = _ChutesChatRequest.from_request(
+        _basic_chutes_request(
+            model="zai-org/GLM-5-TEE",
+            thinking=LlmThinkingConfig(enabled=False),
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in payload
+
+
+def test_chutes_unsupported_thinking_capability_serializes_nothing() -> None:
+    payload = _ChutesChatRequest.from_request(
+        _basic_chutes_request(
+            model="Qwen/Qwen3-Next-80B-A3B-Instruct",
+            thinking=LlmThinkingConfig(enabled=True, effort="high"),
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert "chat_template_kwargs" not in payload
+    assert "reasoning_effort" not in payload
+
+
+def test_chutes_gemma_thinking_serializes_nothing_without_custom_route() -> None:
+    payload = _ChutesChatRequest.from_request(
+        _basic_chutes_request(
+            model="google/gemma-4-31B-turbo-TEE",
+            thinking=LlmThinkingConfig(enabled=False),
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert "chat_template_kwargs" not in payload
+    assert "reasoning_effort" not in payload
+
+
+def test_parse_payload_preserves_reasoning_usage_without_double_counting_completion_tokens() -> None:
+    payload = {
+        "id": "resp_reasoning_usage",
+        "choices": [
+            {
+                "message": {
+                    "content": "ok",
+                    "reasoning": "thinking trace",
+                },
+            },
+        ],
+        "usage": {
+            "prompt_tokens": 4,
+            "completion_tokens": 3,
+            "reasoning_tokens": 2,
+            "total_tokens": 7,
+        },
+    }
+
+    response = _parse_chutes_response_payload(payload).to_llm_response()
+
+    assert response.choices[0].message.reasoning == "thinking trace"
+    assert response.usage.completion_tokens == 1
+    assert response.usage.reasoning_tokens == 2
+    assert response.usage.total_tokens == 7
 
 
 def test_resolve_chutes_embedding_base_url_returns_expected_live_base_url() -> None:
@@ -327,6 +445,85 @@ def test_streamed_fallback_reasoning_preserves_exact_chunk_text() -> None:
     response = _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state)
 
     assert response.to_llm_response().choices[0].message.reasoning == "step two"
+
+
+def test_streamed_reasoning_content_is_preserved_as_reasoning_clue() -> None:
+    state = OpenAiStreamState()
+    reasoning_state = _ChutesReasoningStreamState()
+
+    first_event = _OpenAiStreamEvent.model_validate(
+        {"choices": [{"index": 0, "delta": {"content": "ok", "reasoning_content": "step"}}]}
+    )
+    second_event = _OpenAiStreamEvent.model_validate(
+        {"choices": [{"index": 0, "delta": {"reasoning_content": " two"}, "finish_reason": "stop"}]}
+    )
+
+    reasoning_state.merge_event(first_event)
+    assert state.merge_event(first_event, reasoning_keys=()) is True
+    reasoning_state.merge_event(second_event)
+    assert state.merge_event(second_event, reasoning_keys=()) is False
+
+    response = _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state).to_llm_response()
+
+    assert response.choices[0].message.reasoning == "step two"
+
+
+def test_streamed_multipart_reasoning_content_is_preserved_as_reasoning_clue() -> None:
+    state = OpenAiStreamState()
+    reasoning_state = _ChutesReasoningStreamState()
+
+    event = _OpenAiStreamEvent.model_validate(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": "ok",
+                        "reasoning_content": [
+                            {"type": "text", "text": "step"},
+                            {"type": "text", "text": " two"},
+                        ],
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+
+    reasoning_state.merge_event(event)
+    assert state.merge_event(event, reasoning_keys=()) is True
+
+    response = _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state).to_llm_response()
+
+    assert response.choices[0].message.reasoning == "step two"
+
+
+def test_streamed_mirrored_reasoning_keys_are_deduplicated_per_event() -> None:
+    state = OpenAiStreamState()
+    reasoning_state = _ChutesReasoningStreamState()
+
+    event = _OpenAiStreamEvent.model_validate(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "content": "ok",
+                        "reasoning": "think",
+                        "reasoning_content": "think",
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+
+    reasoning_state.merge_event(event)
+    assert state.merge_event(event, reasoning_keys=()) is True
+
+    response = _ChutesChatResponse.from_stream_state(state, reasoning_state=reasoning_state).to_llm_response()
+
+    assert response.choices[0].message.reasoning == "think"
 
 
 def test_build_payload_accepts_json_object_output_mode() -> None:

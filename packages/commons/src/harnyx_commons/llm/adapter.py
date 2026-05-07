@@ -87,6 +87,29 @@ def _adapt_model_aliases(provider: str, request: AbstractLlmRequest, aliases: Ma
     return replace(request, model=resolved)
 
 
+def canonical_model_for_provider_model(
+    *,
+    provider_name: str,
+    model: str,
+    model_aliases: Mapping[str, str] = _DEFAULT_MODEL_ALIASES,
+) -> str:
+    normalized_provider = provider_name.strip().lower()
+    normalized_model = model.strip()
+    if not normalized_provider or not normalized_model:
+        return normalized_model
+    normalized_model_key = normalized_model.lower()
+    for alias_key, provider_model in model_aliases.items():
+        normalized_alias_key = alias_key.strip().lower()
+        provider_prefix = f"{normalized_provider}:"
+        if not normalized_alias_key.startswith(provider_prefix):
+            continue
+        if provider_model.strip().lower() != normalized_model_key:
+            continue
+        return alias_key[len(provider_prefix) :].strip()
+    return normalized_model
+
+
 __all__ = [
     "LlmProviderAdapter",
+    "canonical_model_for_provider_model",
 ]

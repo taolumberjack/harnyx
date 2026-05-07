@@ -6,13 +6,17 @@ from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.llm.pricing import (
     MODEL_PRICING,
     SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
-    parse_tool_model,
     price_llm,
 )
 from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, parse_tool_model
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker, build_miner_sandbox_tool_invoker
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
+    assert set(MODEL_PRICING) == set(ALLOWED_TOOL_MODELS)
 
 
 async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:

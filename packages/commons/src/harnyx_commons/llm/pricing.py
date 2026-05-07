@@ -10,41 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, cast
 
 from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.llm.tool_models import ToolModelName
 from harnyx_commons.tools.types import SearchToolName
-
-# Canonical model ids allowed for tool LLM calls.
-ToolModelName = Literal[
-    "deepseek-ai/DeepSeek-V3.1-TEE",
-    "deepseek-ai/DeepSeek-V3.2-TEE",
-    "zai-org/GLM-5-TEE",
-    "Qwen/Qwen3-Next-80B-A3B-Instruct",
-    "google/gemma-4-31B-turbo-TEE",
-]
-
-ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
-    "deepseek-ai/DeepSeek-V3.1-TEE",
-    "deepseek-ai/DeepSeek-V3.2-TEE",
-    "zai-org/GLM-5-TEE",
-    "Qwen/Qwen3-Next-80B-A3B-Instruct",
-    "google/gemma-4-31B-turbo-TEE",
-)
-
-
-def parse_tool_model(raw: str | None) -> ToolModelName:
-    """Parse and validate a tool LLM model identifier.
-
-    Only canonical model ids from ALLOWED_TOOL_MODELS are accepted.
-    """
-    if raw is None:
-        raise ValueError("model must be provided for validator tools")
-    value = raw.strip()
-    if not value or value not in ALLOWED_TOOL_MODELS:
-        raise ValueError(f"model {value!r} is not allowed for validator tools")
-    return cast(ToolModelName, value)
-
 
 # Per-referenceable-result rates for search tools, keyed by tool name.
 SEARCH_PRICING_PER_REFERENCEABLE_RESULT: dict[SearchToolName, float] = {
@@ -99,12 +68,9 @@ def price_search(tool_name: SearchToolName, *, referenceable_results: int) -> fl
 
 
 __all__ = [
-    "ALLOWED_TOOL_MODELS",
-    "ToolModelName",
     "price_llm",
     "price_search",
     "MODEL_PRICING",
     "SEARCH_PRICING_PER_REFERENCEABLE_RESULT",
     "ModelPricing",
-    "parse_tool_model",
 ]

@@ -20,7 +20,7 @@ from harnyx_commons.domain.miner_task import (
     Response,
     ScoreBreakdown,
 )
-from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import (
     SearchToolResult,
     ToolCall,
@@ -31,7 +31,10 @@ from harnyx_commons.domain.tool_call import (
 from harnyx_commons.domain.tool_usage import SearchToolUsageSummary, ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.llm.pricing import price_llm
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.llm.tool_models import parse_tool_model
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
@@ -275,6 +278,49 @@ def test_usage_summarizer_falls_back_to_referenceable_result_count_when_search_c
     assert total_tool_usage.search_tool.call_count == 1
     assert total_tool_usage.search_tool.cost == pytest.approx(0.0002)
     assert total_tool_usage.search_tool_cost == pytest.approx(0.0002)
+
+
+def test_usage_summarizer_preserves_reasoning_tokens_in_llm_summary() -> None:
+    model = "deepseek-ai/DeepSeek-V3.2-TEE"
+    totals = LlmUsageTotals(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=22,
+        reasoning_tokens=7,
+        call_count=1,
+    )
+    session = Session(
+        session_id=uuid4(),
+        uid=7,
+        task_id=uuid4(),
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=1.0,
+        usage=SessionUsage(
+            llm_usage_totals={
+                "chutes": {
+                    model: totals,
+                },
+            },
+        ),
+    )
+
+    _, total_tool_usage = UsageSummarizer().summarize(session, ())
+
+    expected_cost = price_llm(
+        parse_tool_model(model),
+        LlmUsage(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=22,
+            reasoning_tokens=7,
+        ),
+    )
+    model_usage = total_tool_usage.llm.providers["deepseek-ai"][model]
+    assert total_tool_usage.llm.reasoning_tokens == 7
+    assert model_usage.usage.reasoning_tokens == 7
+    assert model_usage.cost == pytest.approx(expected_cost)
+    assert total_tool_usage.llm_cost == pytest.approx(expected_cost)
 
 
 def _sandbox_invocation_error(
