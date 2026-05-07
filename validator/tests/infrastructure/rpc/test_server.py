@@ -429,7 +429,7 @@ def test_execute_tool_endpoint_records_provider_call_on_live_llm_success() -> No
 def test_execute_tool_endpoint_records_custom_openai_compatible_provider_call() -> None:
     provider = TrackingDependencyProvider(
         llm_provider=_SuccessfulLlmProvider(),
-        llm_provider_name="custom-openai-compatible:gemma4-cloud-run",
+        llm_provider_name="custom-openai-compatible:gemma4-cloud-run-turbo",
     )
     app = create_test_app(provider)
     client = TestClient(app)
@@ -441,7 +441,7 @@ def test_execute_tool_endpoint_records_custom_openai_compatible_provider_call() 
             "args": [],
             "kwargs": {
                 "messages": [{"role": "user", "content": "hi"}],
-                "model": "google/gemma-4-31B-it",
+                "model": "google/gemma-4-31B-turbo-TEE",
             },
         },
         headers={
@@ -453,8 +453,8 @@ def test_execute_tool_endpoint_records_custom_openai_compatible_provider_call() 
     assert response.status_code == 200
     assert provider.progress_tracker.provider_evidence(provider.batch_id) == (
         {
-            "provider": "custom-openai-compatible:gemma4-cloud-run",
-            "model": "google/gemma-4-31B-it",
+            "provider": "custom-openai-compatible:gemma4-cloud-run-turbo",
+            "model": "google/gemma-4-31B-turbo-TEE",
             "total_calls": 1,
             "failed_calls": 0,
         },

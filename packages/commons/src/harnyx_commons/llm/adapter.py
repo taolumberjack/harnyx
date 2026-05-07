@@ -24,6 +24,9 @@ _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
     "vertex:zai-org/GLM-5-TEE": "zai-org/glm-5-maas",
     "vertex:Qwen/Qwen3-235B-A22B-Instruct-2507-TEE": "qwen3-235b-a22b-instruct-2507-maas",
     "vertex:Qwen/Qwen3-Next-80B-A3B-Instruct": "publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
+    "custom-openai-compatible:gemma4-cloud-run-turbo:google/gemma-4-31B-turbo-TEE": (
+        "nvidia/Gemma-4-31B-IT-NVFP4"
+    ),
 }
 
 

@@ -21,8 +21,9 @@ from harnyx_commons.llm.schema import (
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
-_GEMMA_MODEL = "google/gemma-4-31B-it"
-_GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run"
+_GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
+_GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
+_GEMMA_NATIVE_MODEL = "nvidia/Gemma-4-31B-IT-NVFP4"
 
 
 class JsonObjectAnswer(BaseModel):
@@ -64,7 +65,7 @@ async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
 
     assert response.raw_text
     assert response.metadata is not None
-    assert response.metadata["effective_provider"] == "custom-openai-compatible:gemma4-cloud-run"
+    assert response.metadata["effective_provider"] == _GEMMA_ROUTE_TARGET
     assert response.metadata["effective_model"] == _GEMMA_MODEL
 
 
@@ -141,7 +142,7 @@ def test_gemma_live_settings_use_runtime_env_contract() -> None:
             "LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON": json.dumps(
                 [
                     {
-                        "id": "gemma4-cloud-run",
+                        "id": "gemma4-cloud-run-turbo",
                         "base_url": "https://gemma.example.run.app/v1",
                         "auth": {
                             "type": "google_id_token",
@@ -157,7 +158,7 @@ def test_gemma_live_settings_use_runtime_env_contract() -> None:
         }
     )
 
-    assert "gemma4-cloud-run" in settings.openai_compatible_endpoints
+    assert "gemma4-cloud-run-turbo" in settings.openai_compatible_endpoints
     assert settings.llm_model_provider_overrides["tool"][_GEMMA_MODEL] == _GEMMA_ROUTE_TARGET
 
 
@@ -168,7 +169,7 @@ def test_gemma_live_settings_rejects_wrong_runtime_route() -> None:
                 "LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON": json.dumps(
                     [
                         {
-                            "id": "gemma4-cloud-run",
+                            "id": "gemma4-cloud-run-turbo",
                             "base_url": "https://gemma.example.run.app/v1",
                             "auth": {
                                 "type": "google_id_token",

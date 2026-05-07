@@ -164,7 +164,7 @@ def _endpoint(*, auth: dict[str, object]):
 def _request() -> LlmRequest:
     return LlmRequest(
         provider="custom-openai-compatible:local",
-        model="google/gemma-4-31B-it",
+        model="nvidia/Gemma-4-31B-IT-NVFP4",
         messages=(
             LlmMessage(
                 role="user",

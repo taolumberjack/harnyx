@@ -66,10 +66,12 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["reasoning_per_million"] == pytest.approx(
         MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].billable_reasoning_per_million
     )
-    assert "google/gemma-4-31B-it" in payload["allowed_tool_models"]
-    assert model_prices["google/gemma-4-31B-it"]["input_per_million"] == pytest.approx(0.13)
-    assert model_prices["google/gemma-4-31B-it"]["output_per_million"] == pytest.approx(0.38)
-    assert model_prices["google/gemma-4-31B-it"]["reasoning_per_million"] == pytest.approx(0.38)
+    assert "google/gemma-4-31B-it" not in payload["allowed_tool_models"]
+    assert "google/gemma-4-31B-it" not in model_prices
+    assert "google/gemma-4-31B-turbo-TEE" in payload["allowed_tool_models"]
+    assert model_prices["google/gemma-4-31B-turbo-TEE"]["input_per_million"] == pytest.approx(0.13)
+    assert model_prices["google/gemma-4-31B-turbo-TEE"]["output_per_million"] == pytest.approx(0.38)
+    assert model_prices["google/gemma-4-31B-turbo-TEE"]["reasoning_per_million"] == pytest.approx(0.38)
     for model in ("deepseek-ai/DeepSeek-V3.1-TEE", "deepseek-ai/DeepSeek-V3.2-TEE"):
         assert model in payload["allowed_tool_models"]
         assert MODEL_PRICING[model].reasoning_per_million == pytest.approx(0.0)
@@ -104,10 +106,15 @@ def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.1-TEE"), usage) == pytest.approx(2.27)
     assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.2-TEE"), usage) == pytest.approx(1.12)
     assert price_llm(parse_tool_model("zai-org/GLM-5-TEE"), usage) == pytest.approx(6.05)
-    assert price_llm(parse_tool_model("google/gemma-4-31B-it"), usage) == pytest.approx(0.89)
+    assert price_llm(parse_tool_model("google/gemma-4-31B-turbo-TEE"), usage) == pytest.approx(0.89)
 
 
 @pytest.mark.parametrize("model", ("openai/gpt-oss-20b-TEE", "openai/gpt-oss-120b-TEE"))
 def test_retired_openai_gpt_oss_tool_models_are_rejected(model: str) -> None:
     with pytest.raises(ValueError, match="not allowed for validator tools"):
         parse_tool_model(model)
+
+
+def test_old_gemma_cloud_run_tool_model_is_rejected() -> None:
+    with pytest.raises(ValueError, match="not allowed for validator tools"):
+        parse_tool_model("google/gemma-4-31B-it")

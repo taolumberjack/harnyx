@@ -89,12 +89,12 @@ def _settings_with_gemma_tool_route() -> Settings:
             scoring_llm_provider="chutes",
             chutes_api_key=SecretStr("test-key"),
             llm_model_provider_overrides_json=json.dumps(
-                {"tool": {"google/gemma-4-31B-it": "custom-openai-compatible:gemma4-cloud-run"}}
+                {"tool": {"google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo"}}
             ),
             openai_compatible_endpoints_json=json.dumps(
                 [
                     {
-                        "id": "gemma4-cloud-run",
+                        "id": "gemma4-cloud-run-turbo",
                         "base_url": "https://gemma.example.run.app/v1",
                         "auth": {"type": "none"},
                     }
@@ -114,7 +114,7 @@ def _settings_with_gemma_tool_route() -> Settings:
 def _gemma_tool_request() -> LlmRequest:
     return LlmRequest(
         provider="chutes",
-        model="google/gemma-4-31B-it",
+        model="google/gemma-4-31B-turbo-TEE",
         messages=(
             LlmMessage(
                 role="user",
@@ -258,8 +258,8 @@ async def test_build_llm_clients_routes_gemma_tool_model_to_custom_endpoint(
     assert tool_provider is not None
     await tool_provider.invoke(_gemma_tool_request())
 
-    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run"][0].provider == (
-        "custom-openai-compatible:gemma4-cloud-run"
+    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run-turbo"][0].provider == (
+        "custom-openai-compatible:gemma4-cloud-run-turbo"
     )
 
 
@@ -276,8 +276,8 @@ async def test_build_local_eval_tooling_clients_routes_gemma_tool_model_to_custo
     assert tool_provider is not None
     await tool_provider.invoke(_gemma_tool_request())
 
-    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run"][0].provider == (
-        "custom-openai-compatible:gemma4-cloud-run"
+    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run-turbo"][0].provider == (
+        "custom-openai-compatible:gemma4-cloud-run-turbo"
     )
 
 

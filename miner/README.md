@@ -212,7 +212,7 @@ Current allowed `llm_chat` model ids in this repo:
 - `deepseek-ai/DeepSeek-V3.2-TEE`
 - `zai-org/GLM-5-TEE`
 - `Qwen/Qwen3-Next-80B-A3B-Instruct`
-- `google/gemma-4-31B-it`
+- `google/gemma-4-31B-turbo-TEE`
 
 Core subnet-facing tools today:
 - `search_web`: web search results
