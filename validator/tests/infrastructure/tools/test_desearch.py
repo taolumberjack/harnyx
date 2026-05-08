@@ -160,7 +160,7 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
     assert response.completion == "hello"
 
 
-async def test_desearch_client_search_ai_preserves_retry_metadata() -> None:
+async def test_desearch_client_search_ai_clamps_count_and_preserves_retry_metadata() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path != "/desearch/ai/search":
             raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -169,7 +169,7 @@ async def test_desearch_client_search_ai_preserves_retry_metadata() -> None:
         assert payload["tools"] == ["web", "hackernews", "reddit", "wikipedia", "youtube", "arxiv"]
         assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
         assert payload["system_message"] == ""
-        assert payload["count"] == 3
+        assert payload["count"] == 10
         return httpx.Response(
             200,
             json={
