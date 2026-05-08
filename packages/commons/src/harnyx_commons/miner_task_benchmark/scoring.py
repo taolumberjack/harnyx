@@ -101,7 +101,7 @@ class BenchmarkCorrectnessScoringConfig:
     temperature: float | None = None
     max_output_tokens: int | None = 512
     reasoning_effort: str | None = None
-    timeout_seconds: float = 60.0
+    timeout_seconds: float = 300.0
 
 
 class BenchmarkCorrectnessScoringService:

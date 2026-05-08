@@ -88,7 +88,7 @@ class VertexLlmProvider(BaseLlmProvider):
         *,
         project: str | None,
         location: str | None,
-        timeout: float = 30.0,
+        timeout: float = 300.0,
         credentials_path: str | None = None,
         service_account_b64: str | None = None,
         max_concurrent: int | None = None,
@@ -98,6 +98,7 @@ class VertexLlmProvider(BaseLlmProvider):
         super().__init__(provider_label="vertex", max_concurrent=max_concurrent)
         self._project = project
         self._location = location
+        self._timeout = timeout
         self._credentials, self._credentials_file = prepare_credentials(credentials_path, service_account_b64)
         self._http_credentials: GoogleCredentials | None = self._credentials
         http_timeout = math.ceil(timeout * 1000) if timeout and timeout > 0 else None
@@ -379,7 +380,10 @@ class VertexLlmProvider(BaseLlmProvider):
 
         started_at = time.perf_counter()
         ttft_ms: float | None = None
-        async with self._anthropic_client.messages.stream(timeout=request.timeout_seconds or 900, **kwargs) as stream:
+        async with self._anthropic_client.messages.stream(
+            timeout=request.timeout_seconds if request.timeout_seconds is not None else self._timeout,
+            **kwargs,
+        ) as stream:
             async for text in stream.text_stream:
                 if text and ttft_ms is None:
                     ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)

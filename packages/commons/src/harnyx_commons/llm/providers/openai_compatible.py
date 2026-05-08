@@ -59,7 +59,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=str(endpoint.base_url).rstrip("/"),
-            timeout=endpoint.timeout_seconds or 30.0,
+            timeout=endpoint.timeout_seconds or 300.0,
         )
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:

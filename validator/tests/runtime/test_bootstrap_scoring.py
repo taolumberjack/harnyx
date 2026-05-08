@@ -77,8 +77,8 @@ class _FakeLlmRegistry:
         return provider
 
 
-def test_llm_settings_default_scoring_timeout_is_two_minutes() -> None:
-    assert LlmSettings().scoring_llm_timeout_seconds == pytest.approx(120.0)
+def test_llm_settings_default_scoring_timeout_is_300_seconds() -> None:
+    assert LlmSettings().scoring_llm_timeout_seconds == pytest.approx(300.0)
 
 
 def _settings_with_gemma_tool_route() -> Settings:
@@ -302,7 +302,7 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
         llm=LlmSettings.model_construct(
             scoring_llm_provider="chutes",
             scoring_llm_temperature=None,
-            scoring_llm_max_output_tokens=1024,
+            scoring_llm_max_output_tokens=20480,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),
@@ -362,7 +362,7 @@ def test_create_scoring_service_uses_effective_route_model_and_provider() -> Non
         llm=LlmSettings.model_construct(
             scoring_llm_provider="vertex",
             scoring_llm_temperature=None,
-            scoring_llm_max_output_tokens=1024,
+            scoring_llm_max_output_tokens=20480,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),

@@ -333,6 +333,27 @@ def _async_return(value: Any) -> Callable[[], Any]:
     return _inner
 
 
+async def test_vertex_provider_defaults_clients_to_300_second_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+    _patch_vertex_maas_http_client(monkeypatch, captured)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+    )
+
+    try:
+        http_options = captured["client_kwargs"]["http_options"]
+        assert http_options.timeout == 300_000
+        assert captured["http_client_kwargs"]["timeout"] == pytest.approx(300.0)
+    finally:
+        await provider.aclose()
+
+
 async def test_vertex_provider_invokes_generative_model(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -345,7 +366,6 @@ async def test_vertex_provider_invokes_generative_model(
     provider = VertexLlmProvider(
         project="demo-project",
         location="us-central1",
-        timeout=CHUTES.timeout_seconds,
     )
 
     request = LlmRequest(
@@ -1879,7 +1899,6 @@ async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: py
     provider = VertexLlmProvider(
         project="demo-project",
         location="us-central1",
-        timeout=CHUTES.timeout_seconds,
     )
 
     async def fake_call_claude(request: Any) -> LlmResponse:
@@ -2009,6 +2028,7 @@ async def test_vertex_claude_stream_default_reconstructs_final_response(
     response = await provider.invoke(request)
 
     assert captured_stream_kwargs["model"] == "claude-sonnet-4-5@20250929"
+    assert captured_stream_kwargs["timeout"] == pytest.approx(300.0)
     assert response.raw_text == "ok"
     assert response.metadata is not None
     assert response.metadata["raw_response"] == {"id": "claude-stream-response", "mode": "json"}

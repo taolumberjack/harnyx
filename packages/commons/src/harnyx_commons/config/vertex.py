@@ -20,7 +20,7 @@ class VertexSettings(BaseSettings):
 
     gcp_project_id: str | None = Field(default=None, alias="GCP_PROJECT_ID")
     gcp_location: str | None = Field(default=None, alias="GCP_LOCATION")
-    vertex_timeout_seconds: float = Field(default=60.0, alias="VERTEX_TIMEOUT_SECONDS")
+    vertex_timeout_seconds: float = Field(default=300.0, alias="VERTEX_TIMEOUT_SECONDS")
     gcp_service_account_credential_b64: SecretStr = Field(
         default_factory=lambda: SecretStr(""), alias="GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64"
     )

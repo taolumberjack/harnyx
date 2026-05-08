@@ -124,7 +124,7 @@ class EvaluationScoringConfig:
     temperature: float | None = None
     max_output_tokens: int | None = 256
     reasoning_effort: str | None = None
-    timeout_seconds: float = 120.0
+    timeout_seconds: float = 300.0
     scoring_version: str = "v1"
 
 

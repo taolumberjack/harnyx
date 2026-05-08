@@ -35,6 +35,20 @@ class _JudgeDecision(BaseModel):
     better: str
 
 
+def test_chutes_provider_defaults_client_timeout_to_300(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("harnyx_commons.llm.providers.chutes.httpx.AsyncClient", _FakeAsyncClient)
+
+    ChutesLlmProvider(base_url="https://llm.chutes.ai", api_key="key")
+
+    assert captured["timeout"] == pytest.approx(300.0)
+
+
 def _basic_chutes_request(
     *,
     model: str = "deepseek-ai/DeepSeek-V3.2-TEE",

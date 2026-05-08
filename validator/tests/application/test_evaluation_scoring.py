@@ -226,10 +226,10 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     )
 
 
-def test_evaluation_scoring_config_default_timeout_is_two_minutes() -> None:
+def test_evaluation_scoring_config_default_timeout_is_300_seconds() -> None:
     config = EvaluationScoringConfig(provider="chutes", model="judge-model")
 
-    assert config.timeout_seconds == pytest.approx(120.0)
+    assert config.timeout_seconds == pytest.approx(300.0)
 
 
 async def test_scoring_service_deduplicates_exact_payloads_and_caps_citations() -> None:

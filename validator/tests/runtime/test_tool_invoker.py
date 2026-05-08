@@ -283,6 +283,7 @@ async def test_runtime_invoker_routes_llm_chat(model: str) -> None:
     assert recorded.messages[0].content[0].type == "input_text"
     assert recorded.messages[0].content[0].text == "hi"
     assert recorded.provider == "chutes"
+    assert recorded.timeout_seconds == pytest.approx(120.0)
 
 
 async def test_runtime_invoker_does_not_expose_internal_provider_metadata_for_llm_chat() -> None:

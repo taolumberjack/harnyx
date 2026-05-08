@@ -44,6 +44,7 @@ from harnyx_commons.tools.types import TOOL_NAMES, SearchToolName, ToolName, is_
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
 
 MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(TOOL_NAMES))
+DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = 120.0
 
 
 class LlmToolMessage(BaseModel):
@@ -349,6 +350,7 @@ class RuntimeToolInvoker(ToolInvoker):
             tools=tools,
             tool_choice=invocation.tool_choice,
             include=invocation.include,
+            timeout_seconds=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS,
             thinking=invocation.thinking.to_schema() if invocation.thinking is not None else None,
             use_case="tool_runtime_invoker",
         )
@@ -434,6 +436,7 @@ def _public_llm_tool_call_payload(call: LlmMessageToolCall) -> JsonObject:
 
 __all__ = [
     "ALLOWED_TOOL_MODELS",
+    "DEFAULT_TOOL_LLM_TIMEOUT_SECONDS",
     "LlmToolInvocation",
     "LlmToolMessage",
     "LlmThinkingConfigPayload",

@@ -43,6 +43,23 @@ def test_endpoint_config_rejects_raw_bearer_token_field() -> None:
         parse_openai_compatible_endpoints_json(raw)
 
 
+def test_openai_compatible_provider_defaults_client_timeout_to_300(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(openai_compatible.httpx, "AsyncClient", _FakeAsyncClient)
+
+    OpenAiCompatibleLlmProvider(endpoint=_endpoint(auth={"type": "none"}))
+
+    assert captured["timeout"] == pytest.approx(300.0)
+
+
 async def test_bearer_token_env_auth_adds_authorization_header(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOCAL_OPENAI_COMPATIBLE_TOKEN", "test-token")
     endpoint = _endpoint(
