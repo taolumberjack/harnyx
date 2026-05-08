@@ -201,11 +201,15 @@ class _CliProgressReporter(ProgressRecorder):
         session_id: UUID,
         provider: str,
         model: str,
+        reason: str,
     ) -> None:
         evidence = self._provider_evidence(session_id=session_id, provider=provider, model=model)
         if evidence is None:
             return
         evidence["failed_calls"] += 1
+        failure_reason = reason.strip()
+        if failure_reason:
+            evidence["failure_reason"] = failure_reason
         self._failed_provider_keys_by_session.setdefault(session_id, set()).add((provider, model))
 
     def consume_provider_failures(self, session_id: UUID) -> tuple[ProviderFailureEvidence, ...]:

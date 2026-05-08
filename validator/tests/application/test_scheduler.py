@@ -127,7 +127,14 @@ class DummyProgressRecorder:
     def record_provider_call(self, *, session_id: UUID, provider: str, model: str) -> None:
         return None
 
-    def record_provider_failure(self, *, session_id: UUID, provider: str, model: str) -> None:
+    def record_provider_failure(
+        self,
+        *,
+        session_id: UUID,
+        provider: str,
+        model: str,
+        reason: str,
+    ) -> None:
         return None
 
     def consume_provider_failures(self, session_id: UUID) -> tuple[dict[str, object], ...]:

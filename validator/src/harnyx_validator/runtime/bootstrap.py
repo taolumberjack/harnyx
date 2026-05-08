@@ -111,7 +111,7 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         )
         try:
             response = await super()._invoke_tool_output_async(request)
-        except ToolProviderError:
+        except ToolProviderError as exc:
             self._record_provider_call(request=request, provider_key=provider_key)
             if provider_key is not None:
                 provider, model = provider_key
@@ -119,6 +119,7 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
                     session_id=request.session_id,
                     provider=provider,
                     model=model,
+                    reason=_provider_failure_reason(exc),
                 )
             raise
         self._record_provider_call(request=request, provider_key=provider_key)
@@ -138,6 +139,12 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
             provider=provider,
             model=model,
         )
+
+
+def _provider_failure_reason(exc: ToolProviderError) -> str:
+    source = exc.__cause__ or exc
+    reason = " ".join(str(source).split())
+    return reason or type(source).__name__
 
 
 @dataclass(frozen=True, slots=True)

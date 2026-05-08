@@ -490,6 +490,40 @@ def test_execute_tool_endpoint_records_provider_failure_on_live_llm_provider_err
             "model": ALLOWED_TOOL_MODELS[0],
             "total_calls": 1,
             "failed_calls": 1,
+            "failure_reason": "provider timed out",
+        },
+    )
+
+
+def test_execute_tool_endpoint_records_provider_failure_reason_from_cause() -> None:
+    provider = TrackingDependencyProvider(llm_provider=_RetryExhaustedLlmProvider())
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "llm_chat",
+            "args": [],
+            "kwargs": {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+            },
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider.progress_tracker.consume_provider_failures(provider.session.session_id) == (
+        {
+            "provider": "openai",
+            "model": ALLOWED_TOOL_MODELS[0],
+            "total_calls": 1,
+            "failed_calls": 1,
+            "failure_reason": "provider timed out",
         },
     )
 

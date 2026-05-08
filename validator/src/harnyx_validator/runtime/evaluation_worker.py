@@ -29,7 +29,8 @@ logger = logging.getLogger("harnyx_validator.evaluation_worker")
 _PROVIDER_BATCH_FAILURE_PATTERN = re.compile(
     r"^provider failure threshold reached "
     r"\(provider=(?P<provider>\S+) model=(?P<model>\S+) "
-    r"failed_calls=(?P<failed_calls>\d+) total_calls=(?P<total_calls>\d+)\)$"
+    r"failed_calls=(?P<failed_calls>\d+) total_calls=(?P<total_calls>\d+)"
+    r"(?: reason=(?P<reason>.*))?\)$"
 )
 
 
@@ -118,17 +119,21 @@ def _provider_failure_scope_fields(
     model = match.group("model")
     failed_calls = int(match.group("failed_calls"))
     total_calls = int(match.group("total_calls"))
+    reason = match.group("reason")
+    context: dict[str, object] = {
+        "provider": provider,
+        "model": model,
+        "failed_calls": failed_calls,
+        "total_calls": total_calls,
+    }
+    if reason is not None:
+        context["reason"] = reason
     return (
         {
             "provider": provider,
             "model": model,
         },
-        {
-            "provider": provider,
-            "model": model,
-            "failed_calls": failed_calls,
-            "total_calls": total_calls,
-        },
+        context,
         ["validator-batch", detail.error_code, provider, model],
     )
 

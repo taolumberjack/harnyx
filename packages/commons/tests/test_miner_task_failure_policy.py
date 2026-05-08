@@ -17,6 +17,7 @@ from harnyx_commons.miner_task_failure_policy import (
     is_script_validation_sandbox_invocation,
     is_timeout_sandbox_invocation,
     provider_batch_failure_evidence,
+    provider_batch_failure_message,
 )
 
 
@@ -59,6 +60,22 @@ def test_provider_batch_failure_requires_minimum_calls_and_failure_rate() -> Non
     }
 
     assert provider_batch_failure_evidence((below_calls, threshold_met)) == threshold_met
+
+
+def test_provider_batch_failure_message_includes_reason_when_available() -> None:
+    evidence: ProviderFailureEvidence = {
+        "provider": "desearch",
+        "model": "search_web",
+        "total_calls": 10,
+        "failed_calls": 10,
+        "failure_reason": "http_402: subscription usage cap exceeded",
+    }
+
+    assert provider_batch_failure_message(evidence) == (
+        "provider failure threshold reached "
+        "(provider=desearch model=search_web failed_calls=10 total_calls=10 "
+        "reason=http_402: subscription usage cap exceeded)"
+    )
 
 
 def test_delivery_exclusion_selects_first_validator_owned_completed_pair_failure() -> None:

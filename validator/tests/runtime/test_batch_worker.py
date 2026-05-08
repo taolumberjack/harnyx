@@ -439,7 +439,9 @@ async def test_evaluation_worker_sends_batch_failure_scope_to_sentry(monkeypatch
         batch,
         error_code="provider_batch_failure",
         error_message=(
-            "provider failure threshold reached (provider=desearch model=search_web failed_calls=10 total_calls=10)"
+            "provider failure threshold reached "
+            "(provider=desearch model=search_web failed_calls=10 total_calls=10 "
+            "reason=http_402: subscription usage cap exceeded)"
         ),
         task_id=batch.tasks[0].task_id,
         exception_type="SandboxInvocationError",
@@ -475,7 +477,9 @@ async def test_evaluation_worker_sends_batch_failure_scope_to_sentry(monkeypatch
         "batch_id": str(batch.batch_id),
         "error_code": "provider_batch_failure",
         "error_message": (
-            "provider failure threshold reached (provider=desearch model=search_web failed_calls=10 total_calls=10)"
+            "provider failure threshold reached "
+            "(provider=desearch model=search_web failed_calls=10 total_calls=10 "
+            "reason=http_402: subscription usage cap exceeded)"
         ),
         "occurred_at": occurred_at.isoformat(),
         "artifact_id": str(batch.artifacts[0].artifact_id),
@@ -486,6 +490,7 @@ async def test_evaluation_worker_sends_batch_failure_scope_to_sentry(monkeypatch
         "model": "search_web",
         "failed_calls": 10,
         "total_calls": 10,
+        "reason": "http_402: subscription usage cap exceeded",
     }
     assert payload["fingerprint"] == [
         "validator-batch",
@@ -493,6 +498,31 @@ async def test_evaluation_worker_sends_batch_failure_scope_to_sentry(monkeypatch
         "desearch",
         "search_web",
     ]
+
+
+def test_batch_failure_capture_payload_parses_legacy_provider_failure_message() -> None:
+    batch = _sample_batch()
+    occurred_at = datetime.now(UTC)
+    error = _validator_batch_failed_error(
+        batch,
+        error_code="provider_batch_failure",
+        error_message=(
+            "provider failure threshold reached "
+            "(provider=desearch model=search_web failed_calls=10 total_calls=10)"
+        ),
+        task_id=batch.tasks[0].task_id,
+        exception_type="SandboxInvocationError",
+        occurred_at=occurred_at,
+    )
+
+    payload = worker_mod._batch_failure_capture_payload(batch_id=batch.batch_id, exc=error)
+
+    assert payload.tags["provider"] == "desearch"
+    assert payload.tags["model"] == "search_web"
+    assert payload.context["failed_calls"] == 10
+    assert payload.context["total_calls"] == 10
+    assert "reason" not in payload.context
+
 
 @pytest.mark.anyio
 async def test_evaluation_worker_keeps_batch_processing_until_failed_batch_returns() -> None:

@@ -660,6 +660,7 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
                 "model": "search_web",
                 "total_calls": 12,
                 "failed_calls": 5,
+                "failure_reason": "provider timed out",
             },
         ),
     }
@@ -683,6 +684,7 @@ def test_progress_endpoint_includes_specifics_and_task_fields() -> None:
             "model": "search_web",
             "total_calls": 12,
             "failed_calls": 5,
+            "failure_reason": "provider timed out",
         }
     ]
 
@@ -1252,6 +1254,7 @@ def test_accept_batch_endpoint_forwards_terminal_timeout_failed_restore_run_and_
                     "model": "gpt-4o",
                     "total_calls": 3,
                     "failed_calls": 1,
+                    "failure_reason": "rate limited",
                 }
             ],
         },
@@ -1272,6 +1275,7 @@ def test_accept_batch_endpoint_forwards_terminal_timeout_failed_restore_run_and_
             "model": "gpt-4o",
             "total_calls": 3,
             "failed_calls": 1,
+            "failure_reason": "rate limited",
         },
     )
 

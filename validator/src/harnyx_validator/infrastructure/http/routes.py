@@ -471,6 +471,7 @@ def _serialize_provider_evidence(entry: ProviderFailureEvidence) -> ProviderEvid
         model=entry["model"],
         total_calls=entry["total_calls"],
         failed_calls=entry["failed_calls"],
+        failure_reason=entry.get("failure_reason"),
     )
 
 
