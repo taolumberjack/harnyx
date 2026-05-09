@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import runpy
 import stat
 import threading
@@ -2145,6 +2146,74 @@ def test_local_eval_logs_progress_to_stderr_and_keeps_stdout_json_clean(
     assert "[local-eval] target task 1/2 complete" in captured.err
     assert "[local-eval] finished champion evaluation" in captured.err
     assert "[local-eval] reports written:" in captured.err
+
+
+def test_main_configures_cli_logging_before_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+    calls: list[str] = []
+
+    async def fake_amain(argv: Sequence[str] | None) -> None:
+        calls.append(f"amain:{list(argv or ())}")
+
+    def fake_run(coroutine: Any) -> None:
+        calls.append("run")
+        coroutine.close()
+
+    monkeypatch.setattr(local_eval, "_configure_cli_logging", lambda: calls.append("configured"))
+    monkeypatch.setattr(local_eval, "_amain", fake_amain)
+    monkeypatch.setattr(local_eval.asyncio, "run", fake_run)
+
+    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    assert calls == ["configured", "run"]
+
+
+def test_configure_cli_logging_writes_to_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = logging.getLogger()
+    tools_logger = logging.getLogger("harnyx_commons.tools")
+    old_level = root.level
+    old_handlers = list(root.handlers)
+    old_tools_level = tools_logger.level
+    old_tools_disabled = tools_logger.disabled
+    old_tools_propagate = tools_logger.propagate
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    tools_logger.setLevel(logging.WARNING)
+    tools_logger.disabled = True
+    tools_logger.propagate = False
+
+    try:
+        local_eval._configure_cli_logging()
+
+        assert root.level == logging.DEBUG
+        assert root.handlers
+        assert root.handlers[0].stream is local_eval.sys.stderr
+        assert tools_logger.isEnabledFor(logging.DEBUG)
+        assert not tools_logger.disabled
+        assert tools_logger.propagate
+    finally:
+        root.setLevel(old_level)
+        root.handlers = old_handlers
+        tools_logger.setLevel(old_tools_level)
+        tools_logger.disabled = old_tools_disabled
+        tools_logger.propagate = old_tools_propagate
+
+
+def test_main_reports_invalid_log_level_as_system_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+    monkeypatch.setenv("LOG_LEVEL", "NO_SUCH_LEVEL")
+
+    with pytest.raises(SystemExit) as exc_info:
+        local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    assert "Unknown level" in str(exc_info.value)
 
 
 def test_local_eval_still_fails_before_runtime_when_batch_detail_fetch_fails(

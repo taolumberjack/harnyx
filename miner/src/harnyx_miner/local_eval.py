@@ -6,6 +6,8 @@ import base64
 import binascii
 import contextlib
 import json
+import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,7 @@ from harnyx_commons.miner_task_ranking import (
     ordered_challengers,
 )
 from harnyx_commons.miner_task_scoring import EvaluationScoringConfig, EvaluationScoringService
+from harnyx_commons.observability.logging import ExtrasFormatter
 from harnyx_commons.sandbox.agent_staging import stage_agent_source
 from harnyx_commons.sandbox.diagnostic_files import (
     ensure_private_diagnostic_dir,
@@ -79,6 +82,11 @@ from harnyx_validator.runtime.bootstrap import (
 from harnyx_validator.runtime.settings import Settings
 from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
 
+_CLI_LOGGER_ROOTS = (
+    "harnyx_commons",
+    "harnyx_miner",
+    "harnyx_validator",
+)
 _LOCAL_SESSION_TTL = timedelta(minutes=30)
 _LOCAL_VALIDATOR_UID = 0
 _LOCAL_SELECTION_VALIDATOR_ID = UUID(int=0)
@@ -1714,8 +1722,36 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _configure_cli_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(os.getenv("LOG_LEVEL", "WARNING").upper())
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(ExtrasFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.handlers = [handler]
+    _reset_cli_package_loggers(root.level)
+
+
+def _reset_cli_package_loggers(root_level: int) -> None:
+    for root_name in _CLI_LOGGER_ROOTS:
+        logger = logging.getLogger(root_name)
+        logger.setLevel(root_level)
+        logger.disabled = False
+        logger.propagate = True
+
+    for name, entry in logging.Logger.manager.loggerDict.items():
+        if not isinstance(entry, logging.Logger):
+            continue
+        for root_name in _CLI_LOGGER_ROOTS:
+            if name.startswith(f"{root_name}."):
+                entry.setLevel(logging.NOTSET)
+                entry.disabled = False
+                entry.propagate = True
+                break
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     try:
+        _configure_cli_logging()
         asyncio.run(_amain(argv))
     except KeyboardInterrupt:
         raise

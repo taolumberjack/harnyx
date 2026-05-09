@@ -113,16 +113,48 @@ class ToolExecutor:
                 "kwargs": dict(request.kwargs),
             }
         )
+        debug_call_id = str(uuid4())
         tool_logger.info("tool call started", extra={**log_context, "event": "tool_call_start"})
+        _debug_tool_event(
+            "miner_tool_call.started",
+            lambda: _tool_call_debug_data(
+                call_id=debug_call_id,
+                session=session,
+                request=request,
+                request_payload=request_payload,
+                response_payload=None,
+                usage=None,
+                cost_usd=None,
+                budget=None,
+                elapsed_ms=None,
+                error=None,
+            ),
+        )
 
         try:
             result = await self._execute_and_record_async(
                 session,
                 request,
+                debug_call_id=debug_call_id,
                 request_payload=request_payload,
             )
         except Exception as exc:
             self._log_failure(log_context, exc)
+            _debug_tool_event(
+                "miner_tool_call.failed",
+                lambda exc=exc: _tool_call_debug_data(
+                    call_id=debug_call_id,
+                    session=session,
+                    request=request,
+                    request_payload=request_payload,
+                    response_payload=None,
+                    usage=None,
+                    cost_usd=None,
+                    budget=None,
+                    elapsed_ms=None,
+                    error=_debug_error_data(exc),
+                ),
+            )
             raise
 
         self._log_success(log_context, result)
@@ -189,6 +221,7 @@ class ToolExecutor:
         session: Session,
         request: ToolInvocationRequest,
         *,
+        debug_call_id: str,
         request_payload: JsonValue | None,
     ) -> _ExecutionResult:
         started_at = self._clock()
@@ -224,12 +257,7 @@ class ToolExecutor:
             ),
         )
         self._receipts.record(receipt)
-        if should_raise_budget_exhausted:
-            raise BudgetExceededError(
-                f"session {session.session_id} exhausted during tool accounting"
-            )
-
-        return _ExecutionResult(
+        result = _ExecutionResult(
             receipt=receipt,
             response_payload=invocation_output.public_payload,
             results=results,
@@ -237,6 +265,27 @@ class ToolExecutor:
             usage_details=usage_details,
             budget=budget_snapshot,
         )
+        _debug_tool_event(
+            "miner_tool_call.completed",
+            lambda: _tool_call_debug_data(
+                call_id=debug_call_id,
+                session=updated_session,
+                request=request,
+                request_payload=request_payload,
+                response_payload=result.response_payload,
+                usage=asdict(result.usage_details) if result.usage_details else None,
+                cost_usd=result.receipt.details.cost_usd,
+                budget=asdict(result.budget),
+                elapsed_ms=_elapsed_ms_from_receipt(result.receipt),
+                error=None,
+            ),
+        )
+        if should_raise_budget_exhausted:
+            raise BudgetExceededError(
+                f"session {session.session_id} exhausted during tool accounting"
+            )
+
+        return result
 
     def _settle_usage(
         self,
@@ -296,7 +345,7 @@ class ToolExecutor:
         )
 
     def _log_failure(self, log_context: dict[str, object], exc: Exception) -> None:
-        tool_logger.exception(
+        tool_logger.error(
             "tool call failed",
             extra={
                 **log_context,
@@ -646,12 +695,62 @@ SENSITIVE_KEY_SUBSTRINGS = (
     "auth",
     "password",
 )
+def _debug_tool_event(event: str, data_factory: Callable[[], dict[str, JsonValue]]) -> None:
+    if not tool_logger.isEnabledFor(logging.DEBUG):
+        return
+    tool_logger.debug(event, extra={"data": data_factory()})
+
+
+def _debug_error_data(exc: Exception) -> dict[str, str]:
+    return {"type": exc.__class__.__name__, "message": str(exc)}
+
+
+def _tool_call_debug_data(
+    *,
+    call_id: str,
+    session: Session,
+    request: ToolInvocationRequest,
+    request_payload: JsonValue | None,
+    response_payload: JsonValue | None,
+    usage: JsonValue | None,
+    cost_usd: float | None,
+    budget: JsonValue | None,
+    elapsed_ms: float | None,
+    error: JsonValue | None,
+) -> dict[str, JsonValue]:
+    return {
+        "call_id": call_id,
+        "session_id": str(session.session_id),
+        "task_id": str(session.task_id),
+        "uid": session.uid,
+        "attempt": session.active_attempt,
+        "tool_name": request.tool,
+        "request": _normalize_payload(request_payload),
+        "response": _normalize_payload(response_payload),
+        "usage": usage,
+        "cost_usd": cost_usd,
+        "budget": budget,
+        "elapsed_ms": elapsed_ms,
+        "error": error,
+    }
+
+
+def _elapsed_ms_from_receipt(receipt: ToolCall) -> float | None:
+    execution = receipt.details.execution
+    return None if execution is None else execution.elapsed_ms
+
+
+def _is_sensitive_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(fragment in lowered for fragment in SENSITIVE_KEY_SUBSTRINGS)
 
 
 def _build_tool_log_context(request: ToolInvocationRequest, session: Session) -> dict[str, object]:
     return {
         "tool_name": request.tool,
         "session_id": str(session.session_id),
+        "task_id": str(session.task_id),
+        "attempt": session.active_attempt,
         "uid": session.uid,
         "tool_args": _summarize_args(request.args),
         "tool_kwargs": _sanitize_kwargs(request.kwargs),
@@ -665,8 +764,7 @@ def _summarize_args(args: Sequence[object]) -> tuple[str, ...]:
 def _sanitize_kwargs(kwargs: Mapping[str, object]) -> dict[str, object]:
     sanitized: dict[str, object] = {}
     for key, value in kwargs.items():
-        lowered = key.lower()
-        if any(fragment in lowered for fragment in SENSITIVE_KEY_SUBSTRINGS):
+        if _is_sensitive_key(key):
             sanitized[key] = "<redacted>"
         else:
             sanitized[key] = _summarize_value(value)

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
+import harnyx_commons.tools.executor as tool_executor_module
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCallOutcome, ToolExecutionFacts
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
@@ -94,6 +96,34 @@ def build_executor(
         clock=clock or (lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC)),
     )
     return executor, invoker, receipt_log, session_registry, token_registry
+
+
+def build_executor_with_invoker(
+    session: Session,
+    *,
+    token: str,
+    invoker: ToolInvoker,
+) -> tuple[ToolExecutor, FakeReceiptLog, FakeSessionRegistry]:
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=invoker,
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+    return executor, receipt_log, session_registry
+
+
+def require_log_record(caplog: pytest.LogCaptureFixture, message: str) -> logging.LogRecord:
+    return next(record for record in caplog.records if record.message == message)
 
 
 async def test_execute_tool_records_receipt_and_updates_budget() -> None:
@@ -349,6 +379,172 @@ async def test_execute_tool_logs_response_preview(caplog: pytest.LogCaptureFixtu
     assert "response_preview={'data': [], 'search_queries': ['harnyx', 'subnet']}" in completed.message
     assert completed.response_preview == "{'data': [], 'search_queries': ['harnyx', 'subnet']}"
     assert completed.results_preview == "()"
+
+
+async def test_execute_tool_debug_log_includes_full_request_response_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = make_session()
+    token = generate_token()
+    executor, *_ = build_executor(session, token=token)
+    request = make_request(session, token=token)
+
+    with caplog.at_level("DEBUG", logger="harnyx_commons.tools"):
+        await executor.execute(request)
+
+    started = require_log_record(caplog, "miner_tool_call.started")
+    completed = require_log_record(caplog, "miner_tool_call.completed")
+    assert started.data["call_id"] == completed.data["call_id"]
+    assert completed.data["tool_name"] == "search_web"
+    assert completed.data["session_id"] == str(session.session_id)
+    assert completed.data["task_id"] == str(session.task_id)
+    assert completed.data["attempt"] == session.active_attempt
+    assert completed.data["request"] == {
+        "args": [],
+        "kwargs": {"search_queries": ["harnyx", "subnet"]},
+    }
+    assert completed.data["response"] == {
+        "data": [],
+        "search_queries": ["harnyx", "subnet"],
+    }
+    assert completed.data["budget"]["session_budget_usd"] == pytest.approx(session.budget_usd)
+    assert completed.data["error"] is None
+
+
+async def test_execute_tool_debug_log_preserves_raw_payload_and_error_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = make_session()
+    token = generate_token()
+
+    class FailingInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            raise RuntimeError(
+                'access_token=access-secret Authorization: Bearer bearer-secret '
+                '{"api_key":"json-secret"} password: "password-secret" '
+                '{"authorization":"Bearer quoted-bearer-secret"} token=plain-token-secret '
+                '"token":"json-token-secret" '
+                "provider failed GET /oauth?access_token=query-secret&error=invalid_grant status=400"
+            )
+
+    executor, _, _ = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=FailingInvoker(),
+    )
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="search_web",
+        args=(),
+        kwargs={"api_key": "secret", "prompt": "visible"},
+    )
+
+    with caplog.at_level("DEBUG", logger="harnyx_commons.tools"):
+        with pytest.raises(RuntimeError):
+            await executor.execute(request)
+
+    started = require_log_record(caplog, "miner_tool_call.started")
+    failed = require_log_record(caplog, "miner_tool_call.failed")
+    normal_failure = require_log_record(caplog, "tool call failed")
+    assert started.data["request"]["kwargs"]["api_key"] == "secret"
+    assert started.data["request"]["kwargs"]["prompt"] == "visible"
+    assert "access-secret" in failed.data["error"]["message"]
+    assert "bearer-secret" in failed.data["error"]["message"]
+    assert "json-secret" in failed.data["error"]["message"]
+    assert "password-secret" in failed.data["error"]["message"]
+    assert "quoted-bearer-secret" in failed.data["error"]["message"]
+    assert "plain-token-secret" in failed.data["error"]["message"]
+    assert "json-token-secret" in failed.data["error"]["message"]
+    assert "query-secret" in failed.data["error"]["message"]
+    assert "&error=invalid_grant" in failed.data["error"]["message"]
+    assert "access-secret" in normal_failure.error
+    assert "bearer-secret" in normal_failure.error
+    assert "json-secret" in normal_failure.error
+    assert "password-secret" in normal_failure.error
+    assert "quoted-bearer-secret" in normal_failure.error
+    assert "plain-token-secret" in normal_failure.error
+    assert "json-token-secret" in normal_failure.error
+    assert "query-secret" in normal_failure.error
+    assert "&error=invalid_grant" in normal_failure.error
+    assert normal_failure.exc_info is None
+
+
+async def test_execute_tool_skips_failure_debug_payload_when_debug_disabled(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    token = generate_token()
+
+    class FailingInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            raise RuntimeError("authorization=secret")
+
+    def fail_debug_error_data(exc: Exception) -> dict[str, str]:
+        raise AssertionError("_debug_error_data should only run when DEBUG is enabled")
+
+    executor, _, _ = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=FailingInvoker(),
+    )
+    monkeypatch.setattr(tool_executor_module, "_debug_error_data", fail_debug_error_data)
+
+    with caplog.at_level("INFO", logger="harnyx_commons.tools"):
+        with pytest.raises(RuntimeError):
+            await executor.execute(make_request(session, token=token))
+
+    assert not any(record.message == "miner_tool_call.failed" for record in caplog.records)
+
+
+async def test_execute_tool_debug_logs_completion_before_budget_exhausted_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = make_session(budget_usd=0.00005, hard_limit_usd=0.00005)
+    token = generate_token()
+
+    class SearchWebInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            assert tool_name == "search_web"
+            return {"data": [{"link": "https://a.example", "snippet": "A"}]}
+
+    executor, _, _ = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=SearchWebInvoker(),
+    )
+
+    with caplog.at_level("DEBUG", logger="harnyx_commons.tools"):
+        with pytest.raises(BudgetExceededError):
+            await executor.execute(make_request(session, token=token))
+
+    completed = require_log_record(caplog, "miner_tool_call.completed")
+    failed = require_log_record(caplog, "miner_tool_call.failed")
+    assert completed.data["call_id"] == failed.data["call_id"]
+    assert completed.data["response"] == {
+        "data": [{"link": "https://a.example", "snippet": "A"}]
+    }
+    assert completed.data["cost_usd"] == pytest.approx(0.0001)
+    assert completed.data["budget"]["session_used_budget_usd"] == pytest.approx(0.0001)
 
 
 async def test_execute_tool_rejects_unknown_session() -> None:
