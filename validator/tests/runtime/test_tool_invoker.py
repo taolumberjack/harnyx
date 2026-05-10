@@ -203,14 +203,14 @@ async def test_runtime_invoker_routes_search_ai() -> None:
     result = await _invoke(
         invoker,
         "search_ai",
-        kwargs={"prompt": "harnyx subnet", "count": 1},
+        kwargs={"prompt": "harnyx subnet", "count": 10},
     )
 
     assert result["data"][0]["url"] == "https://example.com"
     assert result["data"][0]["title"] == "Example"
     assert result["data"][0]["note"] == "Summary"
 
-    assert stub_desearch.calls[-1] == ("search_ai", {"prompt": "harnyx subnet", "count": 1})
+    assert stub_desearch.calls[-1] == ("search_ai", {"prompt": "harnyx subnet", "count": 10})
 
 
 async def test_runtime_invoker_rejects_repo_tools_as_unregistered() -> None:
@@ -442,7 +442,7 @@ async def test_runtime_invoker_rejects_blank_search_ai_prompt() -> None:
         await _invoke(
             invoker,
             "search_ai",
-            kwargs={"prompt": "   ", "count": 1},
+            kwargs={"prompt": "   ", "count": 10},
         )
     assert any(
         err.get("type") == "string_too_short" and err.get("loc") == ("prompt",)

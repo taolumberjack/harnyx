@@ -16,6 +16,7 @@ from harnyx_miner_sdk.tools.http_models import (
 )
 from harnyx_miner_sdk.tools.search_models import (
     FetchPageResponse,
+    SearchAiSearchRequest,
     SearchAiSearchResponse,
     SearchWebSearchResponse,
 )
@@ -178,8 +179,9 @@ async def search_web(
 async def search_ai(prompt: str, /, **kwargs: Any) -> ToolCallResponse[SearchAiSearchResponse]:
     """Execute the validator-hosted AI search tool and return its response payload."""
 
-    payload = {"prompt": prompt}
-    payload.update(kwargs)
+    payload = SearchAiSearchRequest.model_validate(
+        {"prompt": prompt, **kwargs}
+    ).model_dump(exclude_none=True, mode="json")
     raw_response = await _current_tool_invoker().invoke("search_ai", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="search_ai response payload must be a mapping")

@@ -189,7 +189,7 @@ async def test_desearch_client_search_ai_clamps_count_and_preserves_retry_metada
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="harnyx subnet", count=3))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="harnyx subnet", count=10))
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -226,7 +226,7 @@ async def test_desearch_client_search_ai_accepts_summary_and_results_shape() -> 
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=10))
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -262,7 +262,7 @@ async def test_desearch_client_search_ai_accepts_sdk_search_results_shape() -> N
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=10))
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -288,7 +288,7 @@ async def test_desearch_client_search_ai_summary_only_shape_returns_empty_result
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=10))
 
     assert response.data == []
     assert response.attempts == 1

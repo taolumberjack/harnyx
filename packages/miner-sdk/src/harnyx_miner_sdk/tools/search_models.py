@@ -156,7 +156,6 @@ SearchAiDateFilter = Literal[
 
 SearchAiResultType = Literal[
     "ONLY_LINKS",
-    "LINKS_WITH_SUMMARIES",
     "LINKS_WITH_FINAL_SUMMARY",
 ]
 
@@ -167,7 +166,7 @@ class SearchAiSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     prompt: str = Field(min_length=1)
-    count: int = Field(default=10, ge=1, le=200)
+    count: int = Field(default=10, ge=10, le=200)
 
 
 class SearchAiResult(BaseModel):

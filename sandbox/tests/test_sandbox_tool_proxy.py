@@ -237,7 +237,7 @@ async def test_search_ai_helper_invokes_tool_proxy() -> None:
     )
     try:
         with bind_tool_invoker(proxy):
-            result = await search_ai("harnyx subnet", count=3)
+            result = await search_ai("harnyx subnet", count=10)
     finally:
         await proxy.aclose()
 
@@ -248,7 +248,17 @@ async def test_search_ai_helper_invokes_tool_proxy() -> None:
     payload = captured["payload"]
     assert payload["tool"] == "search_ai"
     assert payload["kwargs"]["prompt"] == "harnyx subnet"
-    assert payload["kwargs"]["count"] == 3
+    assert payload["kwargs"]["count"] == 10
+
+
+async def test_search_ai_helper_rejects_count_below_provider_minimum() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        await search_ai("harnyx subnet", count=3)
+
+    assert any(
+        err.get("type") == "greater_than_equal" and err.get("loc") == ("count",) and err.get("ctx") == {"ge": 10}
+        for err in excinfo.value.errors()
+    )
 
 
 async def test_llm_chat_helper_invokes_tool_proxy() -> None:

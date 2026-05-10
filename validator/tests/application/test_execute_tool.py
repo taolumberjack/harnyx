@@ -347,7 +347,7 @@ async def test_execute_tool_prices_search_ai_by_referenceable_results() -> None:
         token=token,
         tool="search_ai",
         args=(),
-        kwargs={"prompt": "harnyx subnet", "count": 3},
+        kwargs={"prompt": "harnyx subnet", "count": 10},
     )
 
     result = await executor.execute(request)
