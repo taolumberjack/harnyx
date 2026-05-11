@@ -27,6 +27,7 @@ _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
     "custom-openai-compatible:gemma4-cloud-run-turbo:google/gemma-4-31B-turbo-TEE": (
         "nvidia/Gemma-4-31B-IT-NVFP4"
     ),
+    "custom-openai-compatible:qwen36-cloud-run:Qwen/Qwen3.6-27B-TEE": "Qwen/Qwen3.6-27B-FP8",
 }
 
 

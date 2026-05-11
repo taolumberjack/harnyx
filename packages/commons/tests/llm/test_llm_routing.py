@@ -33,11 +33,21 @@ def test_parse_llm_model_provider_overrides_accepts_surface_scoped_json() -> Non
 
 def test_parse_llm_model_provider_overrides_accepts_custom_openai_compatible_target() -> None:
     parsed = parse_llm_model_provider_overrides(
-        '{"tool":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:gemma4-cloud-run-turbo"}}',
-        custom_openai_compatible_endpoint_ids={"gemma4-cloud-run-turbo"},
+        (
+            '{"tool":{'
+            '"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:gemma4-cloud-run-turbo",'
+            '"Qwen/Qwen3.6-27B-TEE":"custom-openai-compatible:qwen36-cloud-run"'
+            "}}"
+        ),
+        custom_openai_compatible_endpoint_ids={"gemma4-cloud-run-turbo", "qwen36-cloud-run"},
     )
 
-    assert parsed == {"tool": {"google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo"}}
+    assert parsed == {
+        "tool": {
+            "google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo",
+            "Qwen/Qwen3.6-27B-TEE": "custom-openai-compatible:qwen36-cloud-run",
+        }
+    }
 
 
 def test_parse_llm_model_provider_overrides_rejects_unknown_custom_endpoint() -> None:
@@ -77,7 +87,12 @@ def test_resolve_llm_route_rejects_provider_not_allowed_for_surface() -> None:
 
 
 def test_resolve_llm_route_allows_custom_target_only_when_enabled() -> None:
-    overrides = {"tool": {"google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo"}}
+    overrides = {
+        "tool": {
+            "google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo",
+            "Qwen/Qwen3.6-27B-TEE": "custom-openai-compatible:qwen36-cloud-run",
+        }
+    }
 
     route = resolve_llm_route(
         surface="tool",
@@ -92,6 +107,19 @@ def test_resolve_llm_route_allows_custom_target_only_when_enabled() -> None:
         surface="tool",
         provider="custom-openai-compatible:gemma4-cloud-run-turbo",
         model="google/gemma-4-31B-turbo-TEE",
+    )
+    qwen_route = resolve_llm_route(
+        surface="tool",
+        default_provider="chutes",
+        model="Qwen/Qwen3.6-27B-TEE",
+        overrides=overrides,
+        allowed_providers={"chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+    )
+    assert qwen_route == ResolvedLlmRoute(
+        surface="tool",
+        provider="custom-openai-compatible:qwen36-cloud-run",
+        model="Qwen/Qwen3.6-27B-TEE",
     )
     with pytest.raises(ValueError, match="not supported"):
         resolve_llm_route(

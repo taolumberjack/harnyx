@@ -216,6 +216,7 @@ Current allowed `llm_chat` model ids in this repo:
 - `deepseek-ai/DeepSeek-V3.2-TEE`
 - `zai-org/GLM-5-TEE`
 - `Qwen/Qwen3-Next-80B-A3B-Instruct`
+- `Qwen/Qwen3.6-27B-TEE`
 - `google/gemma-4-31B-turbo-TEE`
 
 You can request model thinking/reasoning through the typed `thinking` option on `llm_chat`.
@@ -229,6 +230,7 @@ Thinking controls are provider/model specific:
 | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |
 | `Qwen/Qwen3-Next-80B-A3B-Instruct` | No verified request-side control; accepted but serializes no thinking field | Ignored | Ignored |
+| `Qwen/Qwen3.6-27B-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Qwen endpoint | No verified knob; ignored | No verified knob; ignored |
 | `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Gemma endpoint | No verified knob; ignored | No verified knob; ignored |
 
 ```python

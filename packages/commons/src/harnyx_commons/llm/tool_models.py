@@ -17,6 +17,7 @@ ToolModelName = Literal[
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "zai-org/GLM-5-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
+    "Qwen/Qwen3.6-27B-TEE",
     "google/gemma-4-31B-turbo-TEE",
 ]
 
@@ -31,6 +32,7 @@ ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "zai-org/GLM-5-TEE",
     "Qwen/Qwen3-Next-80B-A3B-Instruct",
+    "Qwen/Qwen3.6-27B-TEE",
     "google/gemma-4-31B-turbo-TEE",
 )
 
@@ -82,6 +84,9 @@ TOOL_MODEL_THINKING_CAPABILITIES: Mapping[
         "vertex": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
     },
     "google/gemma-4-31B-turbo-TEE": {
+        "custom-openai-compatible": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
+    },
+    "Qwen/Qwen3.6-27B-TEE": {
         "custom-openai-compatible": ToolModelThinkingCapability("chat_template_kwargs.enable_thinking"),
     },
 }

@@ -20,6 +20,11 @@ from harnyx_commons.llm.schema import (
 from harnyx_commons.tools import invocation_clients
 from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 
+GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
+GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
+QWEN36_MODEL = "Qwen/Qwen3.6-27B-TEE"
+QWEN36_ROUTE_TARGET = "custom-openai-compatible:qwen36-cloud-run"
+
 
 class _FakeLlmProvider:
     def __init__(self) -> None:
@@ -69,7 +74,12 @@ def _llm_settings() -> LlmSettings:
         tool_llm_provider="chutes",
         chutes_api_key=SecretStr("test-key"),
         llm_model_provider_overrides_json=json.dumps(
-            {"tool": {"google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo"}}
+            {
+                "tool": {
+                    GEMMA_MODEL: GEMMA_ROUTE_TARGET,
+                    QWEN36_MODEL: QWEN36_ROUTE_TARGET,
+                }
+            }
         ),
         openai_compatible_endpoints_json=json.dumps(
             [
@@ -77,7 +87,12 @@ def _llm_settings() -> LlmSettings:
                     "id": "gemma4-cloud-run-turbo",
                     "base_url": "https://gemma.example.run.app/v1",
                     "auth": {"type": "none"},
-                }
+                },
+                {
+                    "id": "qwen36-cloud-run",
+                    "base_url": "https://qwen.example.run.app/v1",
+                    "auth": {"type": "none"},
+                },
             ]
         ),
     )
@@ -86,7 +101,22 @@ def _llm_settings() -> LlmSettings:
 def _gemma_tool_request() -> LlmRequest:
     return LlmRequest(
         provider="chutes",
-        model="google/gemma-4-31B-turbo-TEE",
+        model=GEMMA_MODEL,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=8,
+    )
+
+
+def _qwen36_tool_request() -> LlmRequest:
+    return LlmRequest(
+        provider="chutes",
+        model=QWEN36_MODEL,
         messages=(
             LlmMessage(
                 role="user",
@@ -154,6 +184,25 @@ async def test_tool_invocation_clients_route_tool_model_to_custom_endpoint(
     assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run-turbo"][0].provider == (
         "custom-openai-compatible:gemma4-cloud-run-turbo"
     )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_tool_invocation_clients_route_qwen36_tool_model_to_custom_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeLlmRegistry()
+    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: registry)
+
+    clients = build_tool_invocation_clients(
+        llm_settings=_llm_settings(),
+        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
+        vertex_settings=VertexSettings.model_construct(gcp_project_id="project", gcp_location="us-central1"),
+    )
+
+    assert clients.tool_llm_provider is not None
+    await clients.tool_llm_provider.invoke(_qwen36_tool_request())
+
+    assert registry.requests_by_provider[QWEN36_ROUTE_TARGET][0].provider == QWEN36_ROUTE_TARGET
 
 
 @pytest.mark.parametrize(

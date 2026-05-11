@@ -9,7 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from harnyx_commons.config.bedrock import BedrockSettings
-from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.config.llm import LlmSettings, OpenAiCompatibleGoogleIdTokenAuthConfig
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
 from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry, build_routed_llm_provider
@@ -18,11 +18,18 @@ from harnyx_commons.llm.schema import (
     LlmMessageContentPart,
     LlmRequest,
     LlmResponse,
+    LlmThinkingConfig,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+pytestmark = [pytest.mark.integration]
 _GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
+_GEMMA_ENDPOINT_ID = "gemma4-cloud-run-turbo"
 _GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
+_GEMMA_SERVICE_URL = "https://gemma-4-31b-turbo-obbrpx3ppa-uc.a.run.app"
+_QWEN36_MODEL = "Qwen/Qwen3.6-27B-TEE"
+_QWEN36_ENDPOINT_ID = "qwen36-cloud-run"
+_QWEN36_ROUTE_TARGET = "custom-openai-compatible:qwen36-cloud-run"
+_QWEN36_SERVICE_URL = "https://qwen3-6-27b-obbrpx3ppa-uc.a.run.app"
 
 
 class JsonObjectAnswer(BaseModel):
@@ -45,6 +52,8 @@ def test_gemma_live_test_source_has_no_test_only_env_contract() -> None:
     assert not any(name in source for name in forbidden_env_names)
 
 
+@pytest.mark.expensive
+@pytest.mark.anyio("asyncio")
 async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
     response = await _invoke_live_gemma(
         LlmRequest(
@@ -68,6 +77,25 @@ async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
     assert response.metadata["effective_model"] == _GEMMA_MODEL
 
 
+@pytest.mark.expensive
+@pytest.mark.anyio("asyncio")
+async def test_qwen36_cloud_run_custom_openai_compatible_live() -> None:
+    response = await _invoke_live_tool_model(
+        model=_QWEN36_MODEL,
+        endpoint_id=_QWEN36_ENDPOINT_ID,
+        route_target=_QWEN36_ROUTE_TARGET,
+        prompt='Reply with only "ok".',
+        max_output_tokens=32,
+    )
+
+    assert response.raw_text
+    assert response.metadata is not None
+    assert response.metadata["effective_provider"] == _QWEN36_ROUTE_TARGET
+    assert response.metadata["effective_model"] == _QWEN36_MODEL
+
+
+@pytest.mark.expensive
+@pytest.mark.anyio("asyncio")
 async def test_gemma_cloud_run_json_object_live() -> None:
     response = await _invoke_live_gemma(
         LlmRequest(
@@ -100,6 +128,8 @@ async def test_gemma_cloud_run_json_object_live() -> None:
     assert response.metadata["effective_model"] == _GEMMA_MODEL
 
 
+@pytest.mark.expensive
+@pytest.mark.anyio("asyncio")
 async def test_gemma_cloud_run_json_schema_live_with_throwaway_schema() -> None:
     response = await _invoke_live_gemma(
         LlmRequest(
@@ -135,73 +165,162 @@ async def test_gemma_cloud_run_json_schema_live_with_throwaway_schema() -> None:
     assert response.metadata["effective_model"] == _GEMMA_MODEL
 
 
-def test_gemma_live_settings_use_runtime_env_contract() -> None:
+def test_gemma_live_settings_use_test_endpoint_and_route() -> None:
     settings = _build_live_gemma_settings(
         {
-            "LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON": json.dumps(
-                [
-                    {
-                        "id": "gemma4-cloud-run-turbo",
-                        "base_url": "https://gemma.example.run.app/v1",
-                        "auth": {
-                            "type": "google_id_token",
-                            "audience": "https://gemma.example.run.app",
-                            "credential_source": "service_account_json_b64_env",
-                            "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
-                        },
-                    }
-                ]
-            ),
-            "LLM_MODEL_PROVIDER_OVERRIDES_JSON": json.dumps({"tool": {_GEMMA_MODEL: _GEMMA_ROUTE_TARGET}}),
             "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64": "present",
         }
     )
 
     assert "gemma4-cloud-run-turbo" in settings.openai_compatible_endpoints
+    auth = settings.openai_compatible_endpoints["gemma4-cloud-run-turbo"].auth
+    assert isinstance(auth, OpenAiCompatibleGoogleIdTokenAuthConfig)
+    assert auth.audience == _GEMMA_SERVICE_URL
+    assert auth.credential_source == "service_account_json_b64_env"
+    assert auth.credential_env == "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64"
     assert settings.llm_model_provider_overrides["tool"][_GEMMA_MODEL] == _GEMMA_ROUTE_TARGET
 
 
-def test_gemma_live_settings_rejects_wrong_runtime_route() -> None:
-    with pytest.raises(RuntimeError, match="must route"):
-        _build_live_gemma_settings(
-            {
-                "LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON": json.dumps(
-                    [
-                        {
-                            "id": "gemma4-cloud-run-turbo",
-                            "base_url": "https://gemma.example.run.app/v1",
-                            "auth": {
-                                "type": "google_id_token",
-                                "audience": "https://gemma.example.run.app",
-                                "credential_source": "service_account_json_b64_env",
-                                "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
-                            },
-                        }
-                    ]
-                ),
-                "LLM_MODEL_PROVIDER_OVERRIDES_JSON": json.dumps({"tool": {_GEMMA_MODEL: "chutes"}}),
-                "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64": "present",
-            }
+def test_qwen36_live_settings_use_test_endpoint_and_route() -> None:
+    settings = _build_live_settings(
+        {
+            "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64": "present",
+        },
+        required_model=_QWEN36_MODEL,
+        required_endpoint_id=_QWEN36_ENDPOINT_ID,
+        required_route=_QWEN36_ROUTE_TARGET,
+        service_url=_QWEN36_SERVICE_URL,
+    )
+
+    assert "qwen36-cloud-run" in settings.openai_compatible_endpoints
+    auth = settings.openai_compatible_endpoints["qwen36-cloud-run"].auth
+    assert isinstance(auth, OpenAiCompatibleGoogleIdTokenAuthConfig)
+    assert auth.audience == _QWEN36_SERVICE_URL
+    assert auth.credential_source == "service_account_json_b64_env"
+    assert auth.credential_env == "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64"
+    assert settings.llm_model_provider_overrides["tool"][_QWEN36_MODEL] == _QWEN36_ROUTE_TARGET
+
+
+def test_qwen36_live_settings_requires_service_account_credentials() -> None:
+    with pytest.raises(RuntimeError, match="GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64 must be configured"):
+        _build_live_settings(
+            {},
+            required_model=_QWEN36_MODEL,
+            required_endpoint_id=_QWEN36_ENDPOINT_ID,
+            required_route=_QWEN36_ROUTE_TARGET,
+            service_url=_QWEN36_SERVICE_URL,
         )
 
 
 def _build_live_gemma_settings(environ: Mapping[str, str]) -> LlmSettings:
+    return _build_live_settings(
+        environ,
+        required_model=_GEMMA_MODEL,
+        required_endpoint_id=_GEMMA_ENDPOINT_ID,
+        required_route=_GEMMA_ROUTE_TARGET,
+        service_url=_GEMMA_SERVICE_URL,
+    )
+
+
+def _build_live_settings(
+    environ: Mapping[str, str],
+    *,
+    required_model: str,
+    required_endpoint_id: str,
+    required_route: str,
+    service_url: str,
+) -> LlmSettings:
     _require_mapping_env(environ, "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64")
     settings = LlmSettings(
-        LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=_require_mapping_env(environ, "LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON"),
-        LLM_MODEL_PROVIDER_OVERRIDES_JSON=_require_mapping_env(environ, "LLM_MODEL_PROVIDER_OVERRIDES_JSON"),
+        LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=json.dumps(
+            [_cloud_run_endpoint_config(required_endpoint_id, service_url)]
+        ),
+        LLM_MODEL_PROVIDER_OVERRIDES_JSON=json.dumps({"tool": {required_model: required_route}}),
     )
-    configured_route = settings.llm_model_provider_overrides.get("tool", {}).get(_GEMMA_MODEL)
-    if configured_route != _GEMMA_ROUTE_TARGET:
-        raise RuntimeError(
-            "LLM_MODEL_PROVIDER_OVERRIDES_JSON.tool must route "
-            f"{_GEMMA_MODEL} to {_GEMMA_ROUTE_TARGET}"
-        )
+    _require_cloud_run_google_id_token_auth(settings, required_endpoint_id)
     return settings
+
+
+def _cloud_run_endpoint_config(endpoint_id: str, service_url: str) -> dict[str, object]:
+    return {
+        "id": endpoint_id,
+        "base_url": f"{service_url}/v1",
+        "auth": {
+            "type": "google_id_token",
+            "audience": service_url,
+            "credential_source": "service_account_json_b64_env",
+            "credential_env": "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64",
+        },
+    }
+
+
+def _require_cloud_run_google_id_token_auth(settings: LlmSettings, endpoint_id: str) -> None:
+    endpoint = settings.openai_compatible_endpoints.get(endpoint_id)
+    if endpoint is None:
+        raise RuntimeError(f"LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON must include endpoint id {endpoint_id}")
+    auth = endpoint.auth
+    if not isinstance(auth, OpenAiCompatibleGoogleIdTokenAuthConfig):
+        raise RuntimeError(f"OpenAI-compatible endpoint {endpoint_id} must use google_id_token auth")
+    expected_audience = _cloud_run_audience_from_base_url(str(endpoint.base_url))
+    if auth.audience != expected_audience:
+        raise RuntimeError(
+            f"OpenAI-compatible endpoint {endpoint_id} google_id_token audience must be {expected_audience}"
+        )
+    if auth.credential_source != "service_account_json_b64_env":
+        raise RuntimeError(
+            f"OpenAI-compatible endpoint {endpoint_id} must use service_account_json_b64_env credentials"
+        )
+    if auth.credential_env != "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64":
+        raise RuntimeError(
+            f"OpenAI-compatible endpoint {endpoint_id} credential_env must be GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64"
+        )
+
+
+def _cloud_run_audience_from_base_url(base_url: str) -> str:
+    stripped = base_url.rstrip("/")
+    if not stripped.endswith("/v1"):
+        raise RuntimeError("Cloud Run OpenAI-compatible endpoint base_url must end with /v1")
+    return stripped[: -len("/v1")]
+
+
+async def _invoke_live_tool_model(
+    *,
+    model: str,
+    endpoint_id: str,
+    route_target: str,
+    prompt: str,
+    max_output_tokens: int,
+) -> LlmResponse:
+    request = LlmRequest(
+        provider="chutes",
+        model=model,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text(prompt),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=max_output_tokens,
+        thinking=LlmThinkingConfig(enabled=False),
+        timeout_seconds=180.0,
+    )
+    settings = _build_live_settings(
+        os.environ,
+        required_model=model,
+        required_endpoint_id=endpoint_id,
+        required_route=route_target,
+        service_url=_QWEN36_SERVICE_URL,
+    )
+    return await _invoke_live_request(settings=settings, request=request)
 
 
 async def _invoke_live_gemma(request: LlmRequest) -> LlmResponse:
     settings = _build_live_gemma_settings(os.environ)
+    return await _invoke_live_request(settings=settings, request=request)
+
+
+async def _invoke_live_request(*, settings: LlmSettings, request: LlmRequest) -> LlmResponse:
     registry = build_cached_llm_provider_registry(
         llm_settings=settings,
         bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),

@@ -42,6 +42,7 @@ MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
     "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
     "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
     "Qwen/Qwen3-Next-80B-A3B-Instruct": ModelPricing(0.10, 0.80, 0.0),
+    "Qwen/Qwen3.6-27B-TEE": ModelPricing(0.50, 2.00, 0.0),
     "google/gemma-4-31B-turbo-TEE": ModelPricing(0.13, 0.38, 0.0),
 }
 

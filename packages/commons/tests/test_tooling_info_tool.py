@@ -70,6 +70,10 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["reasoning_per_million"] == pytest.approx(
         MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].billable_reasoning_per_million
     )
+    assert "Qwen/Qwen3.6-27B-TEE" in payload["allowed_tool_models"]
+    assert model_prices["Qwen/Qwen3.6-27B-TEE"]["input_per_million"] == pytest.approx(0.50)
+    assert model_prices["Qwen/Qwen3.6-27B-TEE"]["output_per_million"] == pytest.approx(2.00)
+    assert model_prices["Qwen/Qwen3.6-27B-TEE"]["reasoning_per_million"] == pytest.approx(2.00)
     assert "google/gemma-4-31B-it" not in payload["allowed_tool_models"]
     assert "google/gemma-4-31B-it" not in model_prices
     assert "google/gemma-4-31B-turbo-TEE" in payload["allowed_tool_models"]
@@ -110,6 +114,7 @@ def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.1-TEE"), usage) == pytest.approx(2.27)
     assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.2-TEE"), usage) == pytest.approx(1.12)
     assert price_llm(parse_tool_model("zai-org/GLM-5-TEE"), usage) == pytest.approx(6.05)
+    assert price_llm(parse_tool_model("Qwen/Qwen3.6-27B-TEE"), usage) == pytest.approx(4.50)
     assert price_llm(parse_tool_model("google/gemma-4-31B-turbo-TEE"), usage) == pytest.approx(0.89)
 
 

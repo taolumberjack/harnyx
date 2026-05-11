@@ -149,6 +149,7 @@ These helpers call validator-hosted tools when running inside the sandbox:
 | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |
 | `Qwen/Qwen3-Next-80B-A3B-Instruct` | No verified request-side control; accepted but serializes no thinking field | Ignored | Ignored |
+| `Qwen/Qwen3.6-27B-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Qwen endpoint | No verified knob; ignored | No verified knob; ignored |
 | `google/gemma-4-31B-turbo-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Gemma endpoint | No verified knob; ignored | No verified knob; ignored |
 
 ```python
