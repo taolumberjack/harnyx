@@ -8,7 +8,7 @@ ENTRYPOINT_TIMEOUT_ENV_VAR = "ENTRYPOINT_TIMEOUT_SECONDS"
 
 
 def load_entrypoint_timeout_seconds() -> float:
-    raw_timeout = os.getenv(ENTRYPOINT_TIMEOUT_ENV_VAR, "120")
+    raw_timeout = os.getenv(ENTRYPOINT_TIMEOUT_ENV_VAR, "300")
     try:
         timeout_seconds = float(raw_timeout)
     except ValueError as exc:

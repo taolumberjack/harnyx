@@ -49,7 +49,7 @@ class HttpSandboxClient(SandboxClient):
         base_url: str,
         *,
         host_container_url: str | None = None,
-        timeout: float = 130.0,
+        timeout: float = 310.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._token_header = DEFAULT_TOKEN_HEADER
