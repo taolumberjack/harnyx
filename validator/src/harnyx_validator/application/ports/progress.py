@@ -51,6 +51,7 @@ class ProgressRecorder(Protocol):
         session_id: UUID,
         provider: str,
         model: str,
+        reason: str,
     ) -> None:
         ...
 

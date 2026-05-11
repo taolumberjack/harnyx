@@ -38,6 +38,7 @@ Body: [MinerTaskBatchRequestModel](#model-minertaskbatchrequestmodel)
 | `cutoff_at` |  |  | req | `string` |
 | `restore_provider_evidence` |  |  | opt | array[[ProviderEvidenceModel](#model-providerevidencemodel)] |
 |  | `failed_calls` |  | req | `integer` |
+|  | `failure_reason` |  | opt | `string` (nullable) |
 |  | `model` |  | req | `string` |
 |  | `provider` |  | req | `string` |
 |  | `total_calls` |  | req | `integer` |
@@ -183,6 +184,7 @@ Body: [ProgressResponse](#model-progressresponse)
 |  |  | `uid` | req | `integer` |
 | `provider_model_evidence` |  |  | opt | array[[ProviderEvidenceModel](#model-providerevidencemodel)] |
 |  | `failed_calls` |  | req | `integer` |
+|  | `failure_reason` |  | opt | `string` (nullable) |
 |  | `model` |  | req | `string` |
 |  | `provider` |  | req | `string` |
 |  | `total_calls` |  | req | `integer` |
@@ -1076,6 +1078,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `cutoff_at` |  |  | req | `string` |
 | `restore_provider_evidence` |  |  | opt | array[[ProviderEvidenceModel](#model-providerevidencemodel)] |
 |  | `failed_calls` |  | req | `integer` |
+|  | `failure_reason` |  | opt | `string` (nullable) |
 |  | `model` |  | req | `string` |
 |  | `provider` |  | req | `string` |
 |  | `total_calls` |  | req | `integer` |
@@ -1556,6 +1559,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 |  |  | `uid` | req | `integer` |
 | `provider_model_evidence` |  |  | opt | array[[ProviderEvidenceModel](#model-providerevidencemodel)] |
 |  | `failed_calls` |  | req | `integer` |
+|  | `failure_reason` |  | opt | `string` (nullable) |
 |  | `model` |  | req | `string` |
 |  | `provider` |  | req | `string` |
 |  | `total_calls` |  | req | `integer` |
@@ -1658,6 +1662,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `failed_calls` |  |  | req | `integer` |
+| `failure_reason` |  |  | opt | `string` (nullable) |
 | `model` |  |  | req | `string` |
 | `provider` |  |  | req | `string` |
 | `total_calls` |  |  | req | `integer` |
@@ -1673,6 +1678,18 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minimum": 0.0,
       "title": "Failed Calls",
       "type": "integer"
+    },
+    "failure_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Failure Reason"
     },
     "model": {
       "minLength": 1,

@@ -39,6 +39,8 @@ from harnyx_commons.tools.search_models import (
 )
 
 _LOGGER = logging.getLogger("harnyx_commons.tools.desearch.calls")
+_DESEARCH_AI_MIN_COUNT = 10
+_DESEARCH_AI_MAX_COUNT = 200
 
 
 class _DeSearchCrawlResponsePayload(BaseModel):
@@ -92,7 +94,6 @@ class DeSearchAiDateFilter(StrEnum):
 
 class DeSearchAiResultType(StrEnum):
     ONLY_LINKS = "ONLY_LINKS"
-    LINKS_WITH_SUMMARIES = "LINKS_WITH_SUMMARIES"
     LINKS_WITH_FINAL_SUMMARY = "LINKS_WITH_FINAL_SUMMARY"
 
 
@@ -428,7 +429,7 @@ class DeSearchClient:
             "result_type": result_type.value,
             "system_message": system_message,
             "streaming": False,
-            "count": min(200, count),
+            "count": max(_DESEARCH_AI_MIN_COUNT, min(_DESEARCH_AI_MAX_COUNT, count)),
         }
         payload = {key: value for key, value in payload_items.items() if value is not None}
         data = await self._post("desearch/ai/search", payload, expect_data=False)

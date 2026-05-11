@@ -41,6 +41,7 @@ from harnyx_commons.llm.schema import (
     LlmMessageToolCall,
     LlmRequest,
     LlmResponse,
+    LlmThinkingConfig,
     LlmTool,
     LlmUsage,
 )
@@ -332,6 +333,27 @@ def _async_return(value: Any) -> Callable[[], Any]:
     return _inner
 
 
+async def test_vertex_provider_defaults_clients_to_300_second_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    captured: dict[str, Any] = {}
+    _patch_google_client(monkeypatch, captured)
+    _patch_vertex_maas_http_client(monkeypatch, captured)
+
+    provider = VertexLlmProvider(
+        project="demo-project",
+        location="us-central1",
+    )
+
+    try:
+        http_options = captured["client_kwargs"]["http_options"]
+        assert http_options.timeout == 300_000
+        assert captured["http_client_kwargs"]["timeout"] == pytest.approx(300.0)
+    finally:
+        await provider.aclose()
+
+
 async def test_vertex_provider_invokes_generative_model(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -344,7 +366,6 @@ async def test_vertex_provider_invokes_generative_model(
     provider = VertexLlmProvider(
         project="demo-project",
         location="us-central1",
-        timeout=CHUTES.timeout_seconds,
     )
 
     request = LlmRequest(
@@ -1458,6 +1479,74 @@ def test_vertex_maas_chat_payload_supports_structured_output() -> None:
     assert "temperature" not in payload
 
 
+def _basic_vertex_maas_request(
+    *,
+    model: str = "deepseek-ai/deepseek-v3.2-maas",
+    thinking: LlmThinkingConfig | None = None,
+) -> LlmRequest:
+    return LlmRequest(
+        provider="vertex",
+        model=model,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hi"),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=32,
+        thinking=thinking,
+    )
+
+
+def test_vertex_maas_thinking_omitted_is_noop() -> None:
+    payload = _VertexMaasChatRequest.from_request(_basic_vertex_maas_request()).model_dump(
+        mode="python",
+        exclude_none=True,
+    )
+
+    assert "chat_template_kwargs" not in payload
+    assert "reasoning_effort" not in payload
+
+
+def test_vertex_maas_deepseek_thinking_enabled_and_disabled_use_template_kwargs() -> None:
+    enabled = _VertexMaasChatRequest.from_request(
+        _basic_vertex_maas_request(thinking=LlmThinkingConfig(enabled=True))
+    ).model_dump(mode="python", exclude_none=True)
+    disabled = _VertexMaasChatRequest.from_request(
+        _basic_vertex_maas_request(thinking=LlmThinkingConfig(enabled=False))
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert enabled["chat_template_kwargs"] == {"thinking": True}
+    assert disabled["chat_template_kwargs"] == {"thinking": False}
+    assert "reasoning_effort" not in enabled
+    assert "reasoning_effort" not in disabled
+
+
+def test_vertex_maas_glm_thinking_disabled_uses_enable_thinking_template_kwarg() -> None:
+    payload = _VertexMaasChatRequest.from_request(
+        _basic_vertex_maas_request(
+            model="zai-org/glm-5-maas",
+            thinking=LlmThinkingConfig(enabled=False),
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in payload
+
+
+def test_vertex_maas_unsupported_thinking_capability_serializes_nothing() -> None:
+    payload = _VertexMaasChatRequest.from_request(
+        _basic_vertex_maas_request(
+            model="publishers/qwen/models/qwen3-next-80b-a3b-instruct-maas",
+            thinking=LlmThinkingConfig(enabled=True, effort="high"),
+        )
+    ).model_dump(mode="python", exclude_none=True)
+
+    assert "chat_template_kwargs" not in payload
+    assert "reasoning_effort" not in payload
+
+
 def test_vertex_maas_response_payload_maps_reasoning_tool_calls_and_usage() -> None:
     payload = {
         "id": "chatcmpl-123",
@@ -1503,9 +1592,117 @@ def test_vertex_maas_response_payload_maps_reasoning_tool_calls_and_usage() -> N
     assert response.tool_calls[0].arguments == {"query": "paris"}
     assert response.usage.prompt_tokens == 14
     assert response.usage.prompt_cached_tokens == 2
-    assert response.usage.completion_tokens == 7
+    assert response.usage.completion_tokens == 4
     assert response.usage.reasoning_tokens == 3
     assert response.usage.total_tokens == 24
+
+
+def test_vertex_maas_deepseek_v31_splits_inline_reasoning_from_content() -> None:
+    payload = {
+        "id": "chatcmpl-v31",
+        "model": "deepseek-ai/deepseek-v3.1-maas",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "content": "private trace</think>final answer",
+                    "reasoning_content": None,
+                },
+            }
+        ],
+    }
+
+    response = _VertexMaasChatResponse.model_validate(payload).to_llm_response()
+
+    assert response.raw_text == "final answer"
+    assert response.choices[0].message.reasoning == "private trace"
+
+
+def test_vertex_maas_deepseek_v31_alias_splits_inline_reasoning_from_content() -> None:
+    payload = {
+        "id": "chatcmpl-v31",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "content": "<think>private trace</think>final answer",
+                    "reasoning_content": None,
+                },
+            }
+        ],
+    }
+
+    response = _VertexMaasChatResponse.model_validate(payload).to_llm_response(
+        model="deepseek-ai/DeepSeek-V3.1-TEE"
+    )
+
+    assert response.raw_text == "final answer"
+    assert response.choices[0].message.reasoning == "private trace"
+
+
+def test_vertex_maas_deepseek_v31_strips_truncated_inline_reasoning() -> None:
+    payload = {
+        "id": "chatcmpl-v31-truncated",
+        "model": "deepseek-ai/deepseek-v3.1-maas",
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {
+                    "content": "<think>private trace",
+                    "reasoning_content": None,
+                },
+            }
+        ],
+    }
+
+    response = _VertexMaasChatResponse.model_validate(payload).to_llm_response()
+
+    assert response.raw_text is None
+    assert response.choices[0].message.reasoning == "private trace"
+    assert VertexLlmProvider._verify_response(response) == (False, True, "empty_output")
+
+
+def test_vertex_maas_deepseek_v31_keeps_delimiterless_length_content_as_answer() -> None:
+    payload = {
+        "id": "chatcmpl-v31-delimiterless-truncated",
+        "model": "deepseek-ai/deepseek-v3.1-maas",
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {
+                    "content": "visible truncated answer",
+                    "reasoning_content": None,
+                },
+            }
+        ],
+    }
+
+    response = _VertexMaasChatResponse.model_validate(payload).to_llm_response()
+
+    assert response.raw_text == "visible truncated answer"
+    assert response.choices[0].message.reasoning is None
+    assert VertexLlmProvider._verify_response(response) == (True, False, None)
+
+
+def test_vertex_maas_deepseek_v32_length_content_is_not_inline_reasoning() -> None:
+    payload = {
+        "id": "chatcmpl-v32-truncated",
+        "model": "deepseek-ai/deepseek-v3.2-maas",
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {
+                    "content": "visible truncated answer",
+                    "reasoning_content": None,
+                },
+            }
+        ],
+    }
+
+    response = _VertexMaasChatResponse.model_validate(payload).to_llm_response()
+
+    assert response.raw_text == "visible truncated answer"
+    assert response.choices[0].message.reasoning is None
 
 
 def test_openai_stream_state_deduplicates_vertex_reasoning_keys_per_event() -> None:
@@ -1702,7 +1899,6 @@ async def test_vertex_provider_routes_claude_models_to_anthropic(monkeypatch: py
     provider = VertexLlmProvider(
         project="demo-project",
         location="us-central1",
-        timeout=CHUTES.timeout_seconds,
     )
 
     async def fake_call_claude(request: Any) -> LlmResponse:
@@ -1832,6 +2028,7 @@ async def test_vertex_claude_stream_default_reconstructs_final_response(
     response = await provider.invoke(request)
 
     assert captured_stream_kwargs["model"] == "claude-sonnet-4-5@20250929"
+    assert captured_stream_kwargs["timeout"] == pytest.approx(300.0)
     assert response.raw_text == "ok"
     assert response.metadata is not None
     assert response.metadata["raw_response"] == {"id": "claude-stream-response", "mode": "json"}

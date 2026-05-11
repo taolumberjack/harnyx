@@ -6,6 +6,8 @@ import base64
 import binascii
 import contextlib
 import json
+import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,7 @@ from harnyx_commons.miner_task_ranking import (
     ordered_challengers,
 )
 from harnyx_commons.miner_task_scoring import EvaluationScoringConfig, EvaluationScoringService
+from harnyx_commons.observability.logging import ExtrasFormatter
 from harnyx_commons.sandbox.agent_staging import stage_agent_source
 from harnyx_commons.sandbox.diagnostic_files import (
     ensure_private_diagnostic_dir,
@@ -38,6 +41,7 @@ from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
 from harnyx_commons.sandbox.state import DEFAULT_STATE_DIR
 from harnyx_commons.tools.executor import ToolExecutor
+from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 from harnyx_miner.agent_source import (
     agent_sha256,
     load_agent_bytes,
@@ -70,14 +74,19 @@ from harnyx_validator.application.services.evaluation_runner import (
 )
 from harnyx_validator.infrastructure.http.local_tool_host import LocalToolHostHandle, start_local_tool_host
 from harnyx_validator.runtime.bootstrap import (
-    _build_local_eval_tooling_clients,
     _build_state,
     _build_tooling,
     _create_scoring_service,
+    _resolve_scoring_judge_route,
 )
 from harnyx_validator.runtime.settings import Settings
 from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
 
+_CLI_LOGGER_ROOTS = (
+    "harnyx_commons",
+    "harnyx_miner",
+    "harnyx_validator",
+)
 _LOCAL_SESSION_TTL = timedelta(minutes=30)
 _LOCAL_VALIDATOR_UID = 0
 _LOCAL_SELECTION_VALIDATOR_ID = UUID(int=0)
@@ -200,11 +209,15 @@ class _CliProgressReporter(ProgressRecorder):
         session_id: UUID,
         provider: str,
         model: str,
+        reason: str,
     ) -> None:
         evidence = self._provider_evidence(session_id=session_id, provider=provider, model=model)
         if evidence is None:
             return
         evidence["failed_calls"] += 1
+        failure_reason = reason.strip()
+        if failure_reason:
+            evidence["failure_reason"] = failure_reason
         self._failed_provider_keys_by_session.setdefault(session_id, set()).add((provider, model))
 
     def consume_provider_failures(self, session_id: UUID) -> tuple[ProviderFailureEvidence, ...]:
@@ -266,7 +279,7 @@ class LocalEvaluationRuntime:
     _search_client: Any
     _llm_provider_registry: Any
     _tool_llm_provider: Any
-    _scoring_llm_provider: Any
+    _scoring_llm_provider: Any | None
     _sandbox_manager: SandboxManager
     _tool_host: LocalToolHostHandle | None
     _tool_host_lock: asyncio.Lock
@@ -277,25 +290,78 @@ class LocalEvaluationRuntime:
     def create(cls, *, progress_reporter: _CliProgressReporter | None = None) -> LocalEvaluationRuntime:
         settings = Settings.load()
         state = _build_state()
-        (
-            search_client,
-            llm_provider_registry,
-            tool_llm_provider,
-            scoring_llm_provider,
-            scoring_route,
-        ) = _build_local_eval_tooling_clients(settings)
-        _, tool_executor = _build_tooling(
-            state=state,
-            resolved=settings,
-            search_client=search_client,
-            tool_llm_provider=tool_llm_provider,
+        invocation_clients = build_tool_invocation_clients(
+            llm_settings=settings.llm,
+            bedrock_settings=settings.bedrock,
+            vertex_settings=settings.vertex,
         )
+        scoring_route = _resolve_scoring_judge_route(settings)
+        scoring_llm_provider = invocation_clients.llm_provider_registry.resolve(scoring_route.provider)
         scoring_service = _create_scoring_service(
             settings,
             scoring_llm_provider,
             scoring_route=scoring_route,
         )
         scoring_config = cast(EvaluationScoringConfig, scoring_service._config)
+        return cls._from_components(
+            settings=settings,
+            state=state,
+            search_client=invocation_clients.search_client,
+            llm_provider_registry=invocation_clients.llm_provider_registry,
+            tool_llm_provider=invocation_clients.tool_llm_provider,
+            scoring_llm_provider=scoring_llm_provider,
+            scoring_service=scoring_service,
+            scoring_config=scoring_config,
+            progress_reporter=progress_reporter,
+        )
+
+    @classmethod
+    def create_invocation_only(
+        cls,
+        *,
+        scoring_service: EvaluationScoringService,
+        scoring_config: EvaluationScoringConfig,
+        progress_reporter: _CliProgressReporter | None = None,
+    ) -> LocalEvaluationRuntime:
+        settings = Settings.load()
+        state = _build_state()
+        invocation_clients = build_tool_invocation_clients(
+            llm_settings=settings.llm,
+            bedrock_settings=settings.bedrock,
+            vertex_settings=settings.vertex,
+        )
+        return cls._from_components(
+            settings=settings,
+            state=state,
+            search_client=invocation_clients.search_client,
+            llm_provider_registry=invocation_clients.llm_provider_registry,
+            tool_llm_provider=invocation_clients.tool_llm_provider,
+            scoring_llm_provider=None,
+            scoring_service=scoring_service,
+            scoring_config=scoring_config,
+            progress_reporter=progress_reporter,
+        )
+
+    @classmethod
+    def _from_components(
+        cls,
+        *,
+        settings: Settings,
+        state: Any,
+        search_client: Any,
+        llm_provider_registry: Any,
+        tool_llm_provider: Any,
+        scoring_llm_provider: Any | None,
+        scoring_service: EvaluationScoringService,
+        scoring_config: EvaluationScoringConfig,
+        progress_reporter: _CliProgressReporter | None,
+    ) -> LocalEvaluationRuntime:
+        _, tool_executor = _build_tooling(
+            state=state,
+            resolved=settings,
+            search_client=search_client,
+            tool_llm_provider=tool_llm_provider,
+        )
         runner = EvaluationRunner(
             subtensor_client=_LocalSubtensorClient(),
             session_manager=state.session_manager,
@@ -339,6 +405,7 @@ class LocalEvaluationRuntime:
         artifact: ScriptArtifactSpec,
         batch_id: UUID,
         tasks: Sequence[MinerTask],
+        scoring_service: EvaluationScoringService | None = None,
     ) -> ArtifactEvaluationOutcome:
         if self._progress_reporter is not None:
             self._progress_reporter.begin_artifact(
@@ -393,7 +460,7 @@ class LocalEvaluationRuntime:
                     receipt_log=self._state.receipt_log,
                 ),
                 receipt_log=self._state.receipt_log,
-                scoring_service=self.scoring_service,
+                scoring_service=scoring_service or self.scoring_service,
                 session_registry=self._state.session_registry,
                 clock=_utcnow,
             )
@@ -1655,8 +1722,36 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _configure_cli_logging() -> None:
+    root = logging.getLogger()
+    root.setLevel(os.getenv("LOG_LEVEL", "WARNING").upper())
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(ExtrasFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.handlers = [handler]
+    _reset_cli_package_loggers(root.level)
+
+
+def _reset_cli_package_loggers(root_level: int) -> None:
+    for root_name in _CLI_LOGGER_ROOTS:
+        logger = logging.getLogger(root_name)
+        logger.setLevel(root_level)
+        logger.disabled = False
+        logger.propagate = True
+
+    for name, entry in logging.Logger.manager.loggerDict.items():
+        if not isinstance(entry, logging.Logger):
+            continue
+        for root_name in _CLI_LOGGER_ROOTS:
+            if name.startswith(f"{root_name}."):
+                entry.setLevel(logging.NOTSET)
+                entry.disabled = False
+                entry.propagate = True
+                break
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     try:
+        _configure_cli_logging()
         asyncio.run(_amain(argv))
     except KeyboardInterrupt:
         raise

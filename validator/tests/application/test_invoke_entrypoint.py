@@ -151,6 +151,7 @@ async def test_invoke_entrypoint_returns_tool_receipts() -> None:
 async def test_invoke_entrypoint_hydrates_same_session_citations() -> None:
     token = uuid4().hex
     invoker, sandbox, session_id, _, _, _, receipt_log = _build_invoker(token)
+    source_text = "Primary source"
     receipt = ToolCall(
         receipt_id="receipt-1",
         session_id=session_id,
@@ -167,7 +168,7 @@ async def test_invoke_entrypoint_hydrates_same_session_citations() -> None:
                     index=0,
                     result_id="result-1",
                     url="https://example.com/source",
-                    note="Primary source",
+                    note=source_text,
                     title="Example source",
                 ),
             ),
@@ -193,11 +194,63 @@ async def test_invoke_entrypoint_hydrates_same_session_citations() -> None:
         citations=(
             AnswerCitation(
                 url="https://example.com/source",
-                note="Primary source",
+                note=f"[slice 0:{len(source_text)}]\n{source_text}",
                 title="Example source",
             ),
         ),
     )
+
+
+async def test_invoke_entrypoint_hydrates_same_session_citation_slices() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, receipt_log = _build_invoker(token)
+    source_text = "x" * 160
+    receipt_log.record(
+        ToolCall(
+            receipt_id="receipt-1",
+            session_id=session_id,
+            uid=42,
+            tool="search_web",
+            issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+            outcome=ToolCallOutcome.OK,
+            details=ToolCallDetails(
+                request_hash="req",
+                response_hash="res",
+                result_policy=ToolResultPolicy.REFERENCEABLE,
+                results=(
+                    SearchToolResult(
+                        index=0,
+                        result_id="result-1",
+                        url="https://example.com/source",
+                        note=source_text,
+                        title="Example source",
+                    ),
+                ),
+            ),
+        )
+    )
+    sandbox.response = {
+        "text": "Answer",
+        "citations": [
+            {
+                "receipt_id": "receipt-1",
+                "result_id": "result-1",
+                "slices": [{"start": 0, "end": 120}],
+            }
+        ],
+    }
+
+    result = await invoker.invoke(
+        EntrypointInvocationRequest(
+            session_id=session_id,
+            token=token,
+            uid=42,
+            query=Query(text="hello"),
+        ),
+    )
+
+    assert result.response.citations is not None
+    assert result.response.citations[0].note == f"[slice 0:120]\n{source_text[:120]}"
 
 
 async def test_invoke_entrypoint_normalizes_null_citations_to_absent() -> None:
@@ -265,14 +318,62 @@ async def test_invoke_entrypoint_rejects_whitespace_only_response_text() -> None
         )
 
 
-async def test_invoke_entrypoint_rejects_more_than_fifty_citations() -> None:
+async def test_invoke_entrypoint_rejects_more_than_two_hundred_citations() -> None:
     token = uuid4().hex
     invoker, sandbox, session_id, _, _, _, _ = _build_invoker(token)
     sandbox.response = {
         "text": "Answer",
         "citations": [
             {"receipt_id": f"receipt-{index}", "result_id": f"result-{index}"}
-            for index in range(51)
+            for index in range(201)
+        ],
+    }
+
+    with pytest.raises(MinerResponseValidationError):
+        await invoker.invoke(
+            EntrypointInvocationRequest(
+                session_id=session_id,
+                token=token,
+                uid=42,
+                query=Query(text="hello"),
+            ),
+        )
+
+
+async def test_invoke_entrypoint_rejects_source_dependent_invalid_slice() -> None:
+    token = uuid4().hex
+    invoker, sandbox, session_id, _, _, _, receipt_log = _build_invoker(token)
+    receipt_log.record(
+        ToolCall(
+            receipt_id="receipt-1",
+            session_id=session_id,
+            uid=42,
+            tool="search_web",
+            issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+            outcome=ToolCallOutcome.OK,
+            details=ToolCallDetails(
+                request_hash="req",
+                response_hash="res",
+                result_policy=ToolResultPolicy.REFERENCEABLE,
+                results=(
+                    SearchToolResult(
+                        index=0,
+                        result_id="result-1",
+                        url="https://example.com/source",
+                        note="x" * 160,
+                    ),
+                ),
+            ),
+        )
+    )
+    sandbox.response = {
+        "text": "Answer",
+        "citations": [
+            {
+                "receipt_id": "receipt-1",
+                "result_id": "result-1",
+                "slices": [{"start": 0, "end": 500}],
+            }
         ],
     }
 

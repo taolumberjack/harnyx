@@ -20,7 +20,7 @@ from harnyx_commons.domain.miner_task import (
     Response,
     ScoreBreakdown,
 )
-from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import (
     SearchToolResult,
     ToolCall,
@@ -31,7 +31,10 @@ from harnyx_commons.domain.tool_call import (
 from harnyx_commons.domain.tool_usage import SearchToolUsageSummary, ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.llm.pricing import price_llm
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.llm.tool_models import parse_tool_model
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
@@ -275,6 +278,49 @@ def test_usage_summarizer_falls_back_to_referenceable_result_count_when_search_c
     assert total_tool_usage.search_tool.call_count == 1
     assert total_tool_usage.search_tool.cost == pytest.approx(0.0002)
     assert total_tool_usage.search_tool_cost == pytest.approx(0.0002)
+
+
+def test_usage_summarizer_preserves_reasoning_tokens_in_llm_summary() -> None:
+    model = "deepseek-ai/DeepSeek-V3.2-TEE"
+    totals = LlmUsageTotals(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=22,
+        reasoning_tokens=7,
+        call_count=1,
+    )
+    session = Session(
+        session_id=uuid4(),
+        uid=7,
+        task_id=uuid4(),
+        issued_at=datetime(2025, 10, 17, 12, tzinfo=UTC),
+        expires_at=datetime(2025, 10, 17, 13, tzinfo=UTC),
+        budget_usd=1.0,
+        usage=SessionUsage(
+            llm_usage_totals={
+                "chutes": {
+                    model: totals,
+                },
+            },
+        ),
+    )
+
+    _, total_tool_usage = UsageSummarizer().summarize(session, ())
+
+    expected_cost = price_llm(
+        parse_tool_model(model),
+        LlmUsage(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=22,
+            reasoning_tokens=7,
+        ),
+    )
+    model_usage = total_tool_usage.llm.providers["deepseek-ai"][model]
+    assert total_tool_usage.llm.reasoning_tokens == 7
+    assert model_usage.usage.reasoning_tokens == 7
+    assert model_usage.cost == pytest.approx(expected_cost)
+    assert total_tool_usage.llm_cost == pytest.approx(expected_cost)
 
 
 def _sandbox_invocation_error(
@@ -587,6 +633,7 @@ def _record_provider_failure(
     request: MinerTaskRunRequest,
     provider: str = "desearch",
     model: str = "search_web",
+    reason: str = "http_402: subscription usage cap exceeded",
 ) -> None:
     progress.record_provider_call(
         session_id=request.session_id,
@@ -597,6 +644,7 @@ def _record_provider_failure(
         session_id=request.session_id,
         provider=provider,
         model=model,
+        reason=reason,
     )
 
 
@@ -625,6 +673,7 @@ def _seed_provider_evidence(
                 session_id=session_id,
                 provider=provider,
                 model=model,
+                reason="http_402: subscription usage cap exceeded",
             )
         progress.clear_task_session(session_id)
 
@@ -1879,8 +1928,68 @@ async def test_evaluation_runner_keeps_valid_response_when_provider_failure_stay
             "model": "search_web",
             "total_calls": 1,
             "failed_calls": 1,
+            "failure_reason": "http_402: subscription usage cap exceeded",
         },
     )
+
+
+async def test_evaluation_runner_fails_batch_when_successful_fallback_crosses_provider_threshold() -> None:
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    evaluation_store = _RecordingEvaluationStore()
+    receipt_log = FakeReceiptLog()
+    progress = InMemoryRunProgress()
+    batch_id = uuid4()
+    _seed_provider_evidence(
+        progress,
+        batch_id=batch_id,
+        provider="desearch",
+        model="search_web",
+        total_calls=9,
+        failed_calls=9,
+    )
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        progress=progress,
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="provider failure fallback"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    orchestrator = _ProviderFailureThenSuccessOrchestrator(
+        progress=progress,
+    )
+
+    with pytest.raises(ValidatorBatchFailedError, match="provider failure threshold reached") as exc_info:
+        await runner.evaluate_artifact(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=(task,),
+            orchestrator=cast(TaskRunOrchestrator, orchestrator),
+        )
+
+    assert exc_info.value.error_code == "provider_batch_failure"
+    assert exc_info.value.failure_detail.error_message == (
+        "provider failure threshold reached "
+        "(provider=desearch model=search_web failed_calls=10 total_calls=10 "
+        "reason=http_402: subscription usage cap exceeded)"
+    )
+    assert orchestrator.calls == 1
+    assert evaluation_store.records == []
 
 
 async def test_evaluation_runner_escalates_provider_failure_only_after_batch_threshold() -> None:
@@ -1937,6 +2046,7 @@ async def test_evaluation_runner_escalates_provider_failure_only_after_batch_thr
     assert exc_info.value.failure_detail.artifact_id == artifact.artifact_id
     assert exc_info.value.failure_detail.task_id == task.task_id
     assert exc_info.value.failure_detail.uid == artifact.uid
+    assert "reason=http_402: subscription usage cap exceeded" in exc_info.value.failure_detail.error_message
     assert orchestrator.calls == 1
     assert evaluation_store.records == []
 

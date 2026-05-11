@@ -429,7 +429,7 @@ def test_execute_tool_endpoint_records_provider_call_on_live_llm_success() -> No
 def test_execute_tool_endpoint_records_custom_openai_compatible_provider_call() -> None:
     provider = TrackingDependencyProvider(
         llm_provider=_SuccessfulLlmProvider(),
-        llm_provider_name="custom-openai-compatible:gemma4-cloud-run",
+        llm_provider_name="custom-openai-compatible:gemma4-cloud-run-turbo",
     )
     app = create_test_app(provider)
     client = TestClient(app)
@@ -441,7 +441,7 @@ def test_execute_tool_endpoint_records_custom_openai_compatible_provider_call() 
             "args": [],
             "kwargs": {
                 "messages": [{"role": "user", "content": "hi"}],
-                "model": "google/gemma-4-31B-it",
+                "model": "google/gemma-4-31B-turbo-TEE",
             },
         },
         headers={
@@ -453,8 +453,8 @@ def test_execute_tool_endpoint_records_custom_openai_compatible_provider_call() 
     assert response.status_code == 200
     assert provider.progress_tracker.provider_evidence(provider.batch_id) == (
         {
-            "provider": "custom-openai-compatible:gemma4-cloud-run",
-            "model": "google/gemma-4-31B-it",
+            "provider": "custom-openai-compatible:gemma4-cloud-run-turbo",
+            "model": "google/gemma-4-31B-turbo-TEE",
             "total_calls": 1,
             "failed_calls": 0,
         },
@@ -490,6 +490,40 @@ def test_execute_tool_endpoint_records_provider_failure_on_live_llm_provider_err
             "model": ALLOWED_TOOL_MODELS[0],
             "total_calls": 1,
             "failed_calls": 1,
+            "failure_reason": "provider timed out",
+        },
+    )
+
+
+def test_execute_tool_endpoint_records_provider_failure_reason_from_cause() -> None:
+    provider = TrackingDependencyProvider(llm_provider=_RetryExhaustedLlmProvider())
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "llm_chat",
+            "args": [],
+            "kwargs": {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+            },
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider.progress_tracker.consume_provider_failures(provider.session.session_id) == (
+        {
+            "provider": "openai",
+            "model": ALLOWED_TOOL_MODELS[0],
+            "total_calls": 1,
+            "failed_calls": 1,
+            "failure_reason": "provider timed out",
         },
     )
 

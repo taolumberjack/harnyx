@@ -45,7 +45,7 @@ class ChutesLlmProvider(BaseLlmProvider):
         *,
         base_url: str,
         api_key: str,
-        timeout: float = 30.0,
+        timeout: float = 300.0,
         client: httpx.AsyncClient | None = None,
         auth_header: str = "Authorization",
         max_concurrent: int | None = None,

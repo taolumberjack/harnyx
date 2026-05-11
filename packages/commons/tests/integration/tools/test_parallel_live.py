@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from harnyx_commons.clients import PARALLEL
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.search_models import FetchPageRequest, SearchAiSearchRequest, SearchWebSearchRequest
@@ -14,7 +15,7 @@ def _build_parallel_client(settings: LlmSettings) -> ParallelClient:
     return ParallelClient(
         base_url=settings.parallel_base_url,
         api_key=settings.parallel_api_key_value,
-        timeout=settings.llm_timeout_seconds,
+        timeout=PARALLEL.timeout_seconds,
         max_concurrent=settings.parallel_max_concurrent,
     )
 
@@ -36,7 +37,7 @@ async def test_parallel_search_ai_live() -> None:
         response = await client.search_ai(
             SearchAiSearchRequest(
                 prompt="Find the official Python documentation homepage",
-                count=3,
+                count=10,
             )
         )
         assert isinstance(response.data, list)

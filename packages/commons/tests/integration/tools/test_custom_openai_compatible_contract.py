@@ -24,10 +24,10 @@ async def test_custom_openai_compatible_provider_contract_against_local_server()
     server, base_url = _start_openai_compatible_server(seen_payloads)
     settings = LlmSettings(
         LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=(
-            f'[{{"id":"local-openai-compatible","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
+            f'[{{"id":"gemma4-cloud-run-turbo","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
         ),
         LLM_MODEL_PROVIDER_OVERRIDES_JSON=(
-            '{"tool":{"google/gemma-4-31B-it":"custom-openai-compatible:local-openai-compatible"}}'
+            '{"tool":{"google/gemma-4-31B-turbo-TEE":"custom-openai-compatible:gemma4-cloud-run-turbo"}}'
         ),
     )
     registry = build_cached_llm_provider_registry(
@@ -53,7 +53,7 @@ async def test_custom_openai_compatible_provider_contract_against_local_server()
         response = await provider.invoke(
             LlmRequest(
                 provider="chutes",
-                model="google/gemma-4-31B-it",
+                model="google/gemma-4-31B-turbo-TEE",
                 messages=(
                     LlmMessage(
                         role="user",
@@ -70,9 +70,68 @@ async def test_custom_openai_compatible_provider_contract_against_local_server()
 
     assert response.raw_text == "ok"
     assert response.metadata is not None
-    assert response.metadata["effective_provider"] == "custom-openai-compatible:local-openai-compatible"
+    assert response.metadata["effective_provider"] == "custom-openai-compatible:gemma4-cloud-run-turbo"
+    assert response.metadata["effective_model"] == "google/gemma-4-31B-turbo-TEE"
     assert seen_payloads
-    assert seen_payloads[0]["model"] == "google/gemma-4-31B-it"
+    assert seen_payloads[0]["model"] == "nvidia/Gemma-4-31B-IT-NVFP4"
+    assert seen_payloads[0]["stream"] is True
+
+
+async def test_qwen36_custom_openai_compatible_provider_contract_against_local_server() -> None:
+    seen_payloads: list[dict[str, object]] = []
+    server, base_url = _start_openai_compatible_server(seen_payloads)
+    settings = LlmSettings(
+        LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=(
+            f'[{{"id":"qwen36-cloud-run","base_url":"{base_url}/v1","auth":{{"type":"none"}}}}]'
+        ),
+        LLM_MODEL_PROVIDER_OVERRIDES_JSON=(
+            '{"tool":{"Qwen/Qwen3.6-27B-TEE":"custom-openai-compatible:qwen36-cloud-run"}}'
+        ),
+    )
+    registry = build_cached_llm_provider_registry(
+        llm_settings=settings,
+        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
+        vertex_settings=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_timeout_seconds=60.0,
+            gcp_service_account_credential_b64="",
+        ),
+    )
+    provider = build_routed_llm_provider(
+        surface="tool",
+        default_provider="chutes",
+        llm_settings=settings,
+        allowed_providers={"chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+        provider_registry=registry,
+    )
+
+    try:
+        response = await provider.invoke(
+            LlmRequest(
+                provider="chutes",
+                model="Qwen/Qwen3.6-27B-TEE",
+                messages=(
+                    LlmMessage(
+                        role="user",
+                        content=(LlmMessageContentPart.input_text('Reply with only "ok".'),),
+                    ),
+                ),
+                temperature=0.0,
+                max_output_tokens=16,
+            )
+        )
+    finally:
+        await registry.aclose()
+        server.should_exit = True
+
+    assert response.raw_text == "ok"
+    assert response.metadata is not None
+    assert response.metadata["effective_provider"] == "custom-openai-compatible:qwen36-cloud-run"
+    assert response.metadata["effective_model"] == "Qwen/Qwen3.6-27B-TEE"
+    assert seen_payloads
+    assert seen_payloads[0]["model"] == "Qwen/Qwen3.6-27B-FP8"
     assert seen_payloads[0]["stream"] is True
 
 

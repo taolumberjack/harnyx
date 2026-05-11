@@ -33,6 +33,7 @@ class _SessionRunContext:
 class _ProviderEvidenceCounter:
     total_calls: int = 0
     failed_calls: int = 0
+    failure_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -104,6 +105,7 @@ class InMemoryRunProgress:
             restored = _ProviderEvidenceCounter(
                 total_calls=entry["total_calls"],
                 failed_calls=entry["failed_calls"],
+                failure_reason=entry.get("failure_reason"),
             )
             current = merged.get(key)
             if current is None:
@@ -112,6 +114,7 @@ class InMemoryRunProgress:
             merged[key] = _ProviderEvidenceCounter(
                 total_calls=max(current.total_calls, restored.total_calls),
                 failed_calls=max(current.failed_calls, restored.failed_calls),
+                failure_reason=current.failure_reason or restored.failure_reason,
             )
         return merged
 
@@ -150,6 +153,7 @@ class InMemoryRunProgress:
         session_id: UUID,
         provider: str,
         model: str,
+        reason: str,
     ) -> None:
         key = _provider_model_key(provider=provider, model=model)
         context = self.session_context_by_id.get(session_id)
@@ -160,6 +164,9 @@ class InMemoryRunProgress:
             _ProviderEvidenceCounter(),
         )
         counter.failed_calls += 1
+        failure_reason = reason.strip()
+        if failure_reason:
+            counter.failure_reason = failure_reason
         keys = self.failed_provider_keys_by_session.setdefault(session_id, set())
         keys.add(key)
 
@@ -239,12 +246,15 @@ class InMemoryRunProgress:
         if counter is None:
             return None
         provider, model = key
-        return {
+        snapshot: ProviderEvidenceSnapshot = {
             "provider": provider,
             "model": model,
             "total_calls": counter.total_calls,
             "failed_calls": counter.failed_calls,
         }
+        if counter.failure_reason is not None:
+            snapshot["failure_reason"] = counter.failure_reason
+        return snapshot
 
     @staticmethod
     def _record_submission(

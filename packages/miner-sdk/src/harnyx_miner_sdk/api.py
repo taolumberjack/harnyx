@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, Generic, TypeVar, cast
+from dataclasses import asdict, dataclass
+from typing import Any, Generic, Literal, TypeVar, cast
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator, model_validator
 
 from harnyx_miner_sdk._internal.tool_invoker import _current_tool_invoker
-from harnyx_miner_sdk.llm import LlmResponse
+from harnyx_miner_sdk.llm import LlmResponse, LlmThinkingConfig
 from harnyx_miner_sdk.tools.http_models import (
     ToolBudgetDTO,
     ToolExecuteResponseDTO,
@@ -16,6 +16,7 @@ from harnyx_miner_sdk.tools.http_models import (
 )
 from harnyx_miner_sdk.tools.search_models import (
     FetchPageResponse,
+    SearchAiSearchRequest,
     SearchAiSearchResponse,
     SearchWebSearchResponse,
 )
@@ -67,6 +68,42 @@ class _SearchWebInvocationPayload(BaseModel):
         if isinstance(value, str):
             return (value,)
         return value
+
+
+class _LlmChatThinkingPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: StrictBool
+    budget: StrictInt | None = None
+    effort: Literal["low", "medium", "high"] | None = None
+
+    @field_validator("budget")
+    @classmethod
+    def _validate_budget(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("thinking.budget must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_single_tuning_knob(self) -> _LlmChatThinkingPayload:
+        if self.budget is not None and self.effort is not None:
+            raise ValueError("thinking.budget and thinking.effort are mutually exclusive")
+        return self
+
+
+class _LlmChatInvocationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    messages: list[dict[str, Any]]
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+    max_tokens: int | None = None
+    response_format: Any | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: Literal["auto", "required"] | None = None
+    include: list[str] | None = None
+    thinking: _LlmChatThinkingPayload | None = None
 
 def _parse_execute_response(raw_response: object) -> ToolExecuteResponseDTO:
     return ToolExecuteResponseDTO.model_validate(raw_response)
@@ -142,8 +179,9 @@ async def search_web(
 async def search_ai(prompt: str, /, **kwargs: Any) -> ToolCallResponse[SearchAiSearchResponse]:
     """Execute the validator-hosted AI search tool and return its response payload."""
 
-    payload = {"prompt": prompt}
-    payload.update(kwargs)
+    payload = SearchAiSearchRequest.model_validate(
+        {"prompt": prompt, **kwargs}
+    ).model_dump(exclude_none=True, mode="json")
     raw_response = await _current_tool_invoker().invoke("search_ai", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="search_ai response payload must be a mapping")
@@ -183,15 +221,22 @@ async def llm_chat(
     *,
     messages: Sequence[Mapping[str, Any]],
     model: str,
+    thinking: Mapping[str, Any] | LlmThinkingConfig | None = None,
     **params: Any,
 ) -> LlmChatResult:
     """Invoke the validator-hosted LLM chat tool and return its response payload."""
 
-    payload = {"model": model, "messages": [dict(message) for message in messages]}
+    payload_raw = {"model": model, "messages": [dict(message) for message in messages]}
+    if thinking is not None:
+        payload_raw["thinking"] = asdict(thinking) if isinstance(thinking, LlmThinkingConfig) else thinking
     if "provider" in params:
         params = {k: v for k, v in params.items() if k != "provider"}
     if params:
-        payload.update(params)
+        payload_raw.update(params)
+    payload = _LlmChatInvocationPayload.model_validate(payload_raw).model_dump(
+        exclude_none=True,
+        mode="json",
+    )
     raw_response = await _current_tool_invoker().invoke(
         "llm_chat",
         args=(),

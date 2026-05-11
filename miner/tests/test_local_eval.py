@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import runpy
 import stat
 import threading
@@ -535,7 +536,17 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    scoring_llm_provider = _FakeAsyncResource()
+
+    class _FakeRegistry(_FakeAsyncResource):
+        def resolve(self, name: str) -> _FakeAsyncResource:
+            assert name == "chutes"
+            return scoring_llm_provider
+
     settings = SimpleNamespace(
+        llm=object(),
+        bedrock=object(),
+        vertex=object(),
         sandbox=SimpleNamespace(
             sandbox_image="local/harnyx-sandbox:0.1.0-dev",
             sandbox_pull_policy="missing",
@@ -550,14 +561,17 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch.setattr(local_eval, "_build_state", lambda: _minimal_local_eval_state())
     monkeypatch.setattr(
         local_eval,
-        "_build_local_eval_tooling_clients",
-        lambda settings: (
-            _FakeAsyncResource(),
-            _FakeAsyncResource(),
-            _FakeAsyncResource(),
-            _FakeAsyncResource(),
-            object(),
+        "build_tool_invocation_clients",
+        lambda **_kwargs: SimpleNamespace(
+            search_client=_FakeAsyncResource(),
+            llm_provider_registry=_FakeRegistry(),
+            tool_llm_provider=_FakeAsyncResource(),
         ),
+    )
+    monkeypatch.setattr(
+        local_eval,
+        "_resolve_scoring_judge_route",
+        lambda _settings: SimpleNamespace(provider="chutes"),
     )
     monkeypatch.setattr(local_eval, "_build_tooling", lambda **_: (object(), _UnusedToolExecutor()))
     monkeypatch.setattr(
@@ -965,6 +979,53 @@ def test_render_answer_markdown_uses_shared_models_and_ignores_empty_optional_ci
         "  - https://example.com/source",
     ]
 
+
+def test_invocation_only_runtime_factory_skips_default_scoring_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = cast(
+        Any,
+        SimpleNamespace(
+            llm=object(),
+            bedrock=object(),
+            vertex=object(),
+        ),
+    )
+    state = SimpleNamespace(
+        session_manager=object(),
+        evaluation_records=object(),
+        receipt_log=object(),
+    )
+    scoring_service = cast(Any, object())
+    scoring_config = EvaluationScoringConfig(
+        provider="chutes",
+        model="benchmark-invocation-only",
+        scoring_version="benchmark-invocation-only",
+    )
+
+    monkeypatch.setattr(local_eval.Settings, "load", staticmethod(lambda: settings))
+    monkeypatch.setattr(local_eval, "_build_state", lambda: state)
+    monkeypatch.setattr(
+        local_eval,
+        "build_tool_invocation_clients",
+        lambda **_kwargs: SimpleNamespace(
+            search_client=None,
+            llm_provider_registry=object(),
+            tool_llm_provider=None,
+        ),
+    )
+    monkeypatch.setattr(local_eval, "_build_tooling", lambda **_kwargs: (object(), object()))
+    monkeypatch.setattr(local_eval, "create_sandbox_manager", lambda **_kwargs: object())
+
+    runtime = local_eval.LocalEvaluationRuntime.create_invocation_only(
+        scoring_service=scoring_service,
+        scoring_config=scoring_config,
+    )
+
+    assert runtime.settings is settings
+    assert runtime.scoring_service is scoring_service
+    assert runtime.scoring_config is scoring_config
+    assert runtime._scoring_llm_provider is None
 
 def test_local_eval_target_only_skips_champion_fetch_and_keeps_recorded_context(
     tmp_path: Path,
@@ -2085,6 +2146,74 @@ def test_local_eval_logs_progress_to_stderr_and_keeps_stdout_json_clean(
     assert "[local-eval] target task 1/2 complete" in captured.err
     assert "[local-eval] finished champion evaluation" in captured.err
     assert "[local-eval] reports written:" in captured.err
+
+
+def test_main_configures_cli_logging_before_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+    calls: list[str] = []
+
+    async def fake_amain(argv: Sequence[str] | None) -> None:
+        calls.append(f"amain:{list(argv or ())}")
+
+    def fake_run(coroutine: Any) -> None:
+        calls.append("run")
+        coroutine.close()
+
+    monkeypatch.setattr(local_eval, "_configure_cli_logging", lambda: calls.append("configured"))
+    monkeypatch.setattr(local_eval, "_amain", fake_amain)
+    monkeypatch.setattr(local_eval.asyncio, "run", fake_run)
+
+    local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    assert calls == ["configured", "run"]
+
+
+def test_configure_cli_logging_writes_to_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = logging.getLogger()
+    tools_logger = logging.getLogger("harnyx_commons.tools")
+    old_level = root.level
+    old_handlers = list(root.handlers)
+    old_tools_level = tools_logger.level
+    old_tools_disabled = tools_logger.disabled
+    old_tools_propagate = tools_logger.propagate
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    tools_logger.setLevel(logging.WARNING)
+    tools_logger.disabled = True
+    tools_logger.propagate = False
+
+    try:
+        local_eval._configure_cli_logging()
+
+        assert root.level == logging.DEBUG
+        assert root.handlers
+        assert root.handlers[0].stream is local_eval.sys.stderr
+        assert tools_logger.isEnabledFor(logging.DEBUG)
+        assert not tools_logger.disabled
+        assert tools_logger.propagate
+    finally:
+        root.setLevel(old_level)
+        root.handlers = old_handlers
+        tools_logger.setLevel(old_tools_level)
+        tools_logger.disabled = old_tools_disabled
+        tools_logger.propagate = old_tools_propagate
+
+
+def test_main_reports_invalid_log_level_as_system_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_path = tmp_path / "agent.py"
+    _write_agent(agent_path)
+    monkeypatch.setenv("LOG_LEVEL", "NO_SUCH_LEVEL")
+
+    with pytest.raises(SystemExit) as exc_info:
+        local_eval.main(["--agent-path", str(agent_path), "--output-dir", str(tmp_path)])
+
+    assert "Unknown level" in str(exc_info.value)
 
 
 def test_local_eval_still_fails_before_runtime_when_batch_detail_fetch_fails(

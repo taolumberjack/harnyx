@@ -11,7 +11,13 @@ from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.adapter import LlmProviderAdapter
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
-from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmRequest
+from harnyx_commons.llm.schema import (
+    GroundedLlmRequest,
+    LlmMessage,
+    LlmMessageContentPart,
+    LlmRequest,
+    LlmThinkingConfig,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio("asyncio")]
 
@@ -167,6 +173,58 @@ async def test_vertex_tool_model_maas_alias_completion_live(model: str) -> None:
         await provider.aclose()
 
     assert response.raw_text
+
+
+async def test_vertex_deepseek_thinking_enabled_live() -> None:
+    vertex = VertexSettings()
+    project = vertex.gcp_project_id
+    location = vertex.gcp_location
+    credentials_b64 = vertex.gcp_sa_credential_b64_value
+
+    assert project, "GCP_PROJECT_ID must be configured"
+    assert location, "GCP_LOCATION must be configured"
+    assert credentials_b64, "Vertex credentials must be configured"
+
+    provider = LlmProviderAdapter(
+        provider_name="vertex",
+        delegate=VertexLlmProvider(
+            project=project,
+            location=location,
+            timeout=float(vertex.vertex_timeout_seconds or PLATFORM.timeout_seconds),
+            credentials_path=None,
+            service_account_b64=credentials_b64 or "",
+        ),
+    )
+    try:
+        response = await provider.invoke(
+            LlmRequest(
+                provider="vertex",
+                model="deepseek-ai/DeepSeek-V3.2-TEE",
+                messages=(
+                    LlmMessage(
+                        role="user",
+                        content=(
+                            LlmMessageContentPart.input_text(
+                                'Think briefly, then reply with only "ok".'
+                            ),
+                        ),
+                    ),
+                ),
+                temperature=0.0,
+                max_output_tokens=128,
+                thinking=LlmThinkingConfig(enabled=True),
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text
+    assert response.metadata is not None
+    assert isinstance(response.metadata.get("raw_response"), dict)
+    if response.choices and response.choices[0].message.reasoning is not None:
+        assert response.choices[0].message.reasoning.strip()
+    if response.usage.reasoning_tokens is not None:
+        assert response.usage.reasoning_tokens >= 0
 
 
 async def test_vertex_multimodal_image_live() -> None:

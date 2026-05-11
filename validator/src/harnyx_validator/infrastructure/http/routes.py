@@ -7,7 +7,7 @@ import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, Security, status
@@ -28,7 +28,7 @@ from harnyx_commons.domain.session import Session
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolInvocationRequest
-from harnyx_commons.tools.executor import ToolExecutor
+from harnyx_commons.tools.executor import ToolExecutor, execute_tool_with_token_permit
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
@@ -137,7 +137,11 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
             kwargs=payload.kwargs,
         )
         try:
-            result = await _execute_with_semaphore_async(invocation, deps)
+            result = await execute_tool_with_token_permit(
+                deps.tool_executor,
+                deps.token_semaphore,
+                invocation,
+            )
         except ToolProviderError as exc:
             _log_tool_error(session_id, invocation, exc)
             raise HTTPException(status_code=400, detail=_public_error_message(exc)) from exc
@@ -344,16 +348,6 @@ def add_control_routes(
             return _control_route_internal_error_response(request, exc)
 
 
-async def _execute_with_semaphore_async(invocation: ToolInvocationRequest, deps: ToolRouteDeps) -> Any:
-    token = invocation.token
-    semaphore = deps.token_semaphore
-    await semaphore.acquire_async(token)
-    try:
-        return await deps.tool_executor.execute(invocation)
-    finally:
-        semaphore.release(token)
-
-
 def _log_tool_error(
     request_session_id: UUID,
     invocation: ToolInvocationRequest,
@@ -477,6 +471,7 @@ def _serialize_provider_evidence(entry: ProviderFailureEvidence) -> ProviderEvid
         model=entry["model"],
         total_calls=entry["total_calls"],
         failed_calls=entry["failed_calls"],
+        failure_reason=entry.get("failure_reason"),
     )
 
 

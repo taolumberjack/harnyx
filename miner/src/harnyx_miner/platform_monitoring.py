@@ -3,12 +3,12 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 from uuid import UUID
 
 import httpx
-from dotenv import load_dotenv
+
+from harnyx_miner.env import load_public_env
 
 _QueryParamValue = str | int | float | None
 
@@ -71,7 +71,7 @@ class SelectedBatchContext:
 
 
 def platform_base_url_from_env() -> str:
-    load_dotenv(dotenv_path=Path(".env"), override=False)
+    load_public_env()
     base_url = (os.getenv("PLATFORM_BASE_URL") or "").strip()
     if not base_url:
         raise RuntimeError("PLATFORM_BASE_URL must be set (for example: https://api.harnyx.ai)")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from pydantic import SecretStr
 
@@ -13,6 +15,18 @@ def test_llm_settings_default_provider_concurrency_targets_match_activation_slic
     assert LlmSettings.model_fields["bedrock_max_concurrent"].default == 20
     assert LlmSettings.model_fields["chutes_max_concurrent"].default == 20
     assert LlmSettings.model_fields["vertex_max_concurrent"].default == 10
+
+
+def test_default_llm_timeout_surfaces_are_300_seconds() -> None:
+    assert LlmSettings().llm_timeout_seconds == pytest.approx(300.0)
+    assert LlmSettings().scoring_llm_timeout_seconds == pytest.approx(300.0)
+    assert VertexSettings().vertex_timeout_seconds == pytest.approx(300.0)
+    assert BedrockSettings().read_timeout_seconds == pytest.approx(300.0)
+    assert provider_factory.CHUTES.timeout_seconds == pytest.approx(300.0)
+
+
+def test_default_scoring_llm_max_output_tokens_is_20480() -> None:
+    assert LlmSettings().scoring_llm_max_output_tokens == 20480
 
 
 def test_build_cached_llm_provider_resolver_caches_by_provider_name(
@@ -190,18 +204,27 @@ async def test_build_cached_llm_provider_registry_closes_later_providers_after_f
 def test_build_cached_llm_provider_registry_caches_custom_openai_compatible_endpoint(
     monkeypatch,
 ) -> None:
-    captured: list[OpenAiCompatibleEndpointConfig] = []
+    captured_endpoints: list[OpenAiCompatibleEndpointConfig] = []
+    captured_adapters: list[tuple[str, object]] = []
 
     class _FakeOpenAiCompatibleProvider:
         def __init__(self, *, endpoint: OpenAiCompatibleEndpointConfig) -> None:
-            captured.append(endpoint)
+            self.endpoint = endpoint
+            captured_endpoints.append(endpoint)
+
+    class _FakeAdapter:
+        def __init__(self, *, provider_name: str, delegate: object) -> None:
+            self.provider_name = provider_name
+            self.delegate = delegate
+            captured_adapters.append((provider_name, delegate))
 
     monkeypatch.setattr(provider_factory, "OpenAiCompatibleLlmProvider", _FakeOpenAiCompatibleProvider)
+    monkeypatch.setattr(provider_factory, "LlmProviderAdapter", _FakeAdapter)
 
     registry = provider_factory.build_cached_llm_provider_registry(
         llm_settings=LlmSettings(
             LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=(
-                '[{"id":"gemma4-cloud-run","base_url":"https://example.com/v1","auth":{"type":"none"}}]'
+                '[{"id":"gemma4-cloud-run-turbo","base_url":"https://example.com/v1","auth":{"type":"none"}}]'
             )
         ),
         bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
@@ -213,9 +236,13 @@ def test_build_cached_llm_provider_registry_caches_custom_openai_compatible_endp
         ),
     )
 
-    first = registry.resolve("custom-openai-compatible:gemma4-cloud-run")
-    second = registry.resolve("custom-openai-compatible:gemma4-cloud-run")
+    first = registry.resolve("custom-openai-compatible:gemma4-cloud-run-turbo")
+    second = registry.resolve("custom-openai-compatible:gemma4-cloud-run-turbo")
 
     assert first is second
-    assert len(captured) == 1
-    assert captured[0].id == "gemma4-cloud-run"
+    assert len(captured_endpoints) == 1
+    assert captured_endpoints[0].id == "gemma4-cloud-run-turbo"
+    first_adapter = cast(_FakeAdapter, first)
+    first_delegate = cast(_FakeOpenAiCompatibleProvider, first_adapter.delegate)
+    assert captured_adapters == [("custom-openai-compatible:gemma4-cloud-run-turbo", first_delegate)]
+    assert first_delegate.endpoint.id == "gemma4-cloud-run-turbo"

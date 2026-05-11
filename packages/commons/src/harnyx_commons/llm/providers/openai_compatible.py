@@ -21,6 +21,7 @@ from harnyx_commons.config.llm import (
     OpenAiCompatibleGoogleIdTokenAuthConfig,
     OpenAiCompatibleNoAuthConfig,
 )
+from harnyx_commons.llm.adapter import canonical_model_for_provider_model
 from harnyx_commons.llm.provider import BaseLlmProvider
 from harnyx_commons.llm.provider_types import custom_openai_compatible_target
 from harnyx_commons.llm.providers.openai_chat_codec import OpenAiChatRequestParts
@@ -40,6 +41,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.llm.tool_models import tool_model_thinking_capability
 
 
 class OpenAiCompatibleLlmProvider(BaseLlmProvider):
@@ -57,7 +59,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=str(endpoint.base_url).rstrip("/"),
-            timeout=endpoint.timeout_seconds or 30.0,
+            timeout=endpoint.timeout_seconds or 300.0,
         )
 
     async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
@@ -119,7 +121,7 @@ class OpenAiCompatibleLlmProvider(BaseLlmProvider):
                 invalid_data_message="OpenAI-compatible chat completions returned non-JSON SSE data",
                 invalid_event_message="OpenAI-compatible chat completions SSE event must be a JSON object",
             ):
-                if state.merge_event(event, reasoning_keys=()):
+                if state.merge_event(event, reasoning_keys=("reasoning", "reasoning_content")):
                     if ttft_ms is None:
                         ttft_ms = round((time.perf_counter() - started_at) * 1000, 2)
         return _OpenAiCompatibleChatResponse.from_stream_state(state), ttft_ms
@@ -174,6 +176,7 @@ class _OpenAiCompatibleChatRequest(BaseModel):
     tool_choice: str | None = None
     include: list[str] | None = None
     response_format: dict[str, Any] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
 
     @classmethod
     def from_request(cls, request: AbstractLlmRequest, *, provider_name: str) -> _OpenAiCompatibleChatRequest:
@@ -204,9 +207,38 @@ class _OpenAiCompatibleChatRequest(BaseModel):
                 else None
             ),
         )
+        payload = _apply_openai_compatible_thinking(payload, request, provider_name=provider_name)
         if request.extra:
             payload = payload.model_copy(update=dict(request.extra))
         return payload.model_copy(update={"stream": True})
+
+
+def _apply_openai_compatible_thinking(
+    payload: _OpenAiCompatibleChatRequest,
+    request: AbstractLlmRequest,
+    *,
+    provider_name: str,
+) -> _OpenAiCompatibleChatRequest:
+    thinking = request.thinking
+    if thinking is None:
+        return payload
+    canonical_model = canonical_model_for_provider_model(
+        provider_name=provider_name,
+        model=request.model,
+    )
+    capability = tool_model_thinking_capability(canonical_model, provider_name=provider_name)
+    if capability is None:
+        return payload
+    return _with_chat_template_kwargs(payload, capability.chat_template_kwargs(enabled=thinking.enabled))
+
+
+def _with_chat_template_kwargs(
+    payload: _OpenAiCompatibleChatRequest,
+    updates: dict[str, Any],
+) -> _OpenAiCompatibleChatRequest:
+    merged = dict(payload.chat_template_kwargs or {})
+    merged.update(updates)
+    return payload.model_copy(update={"chat_template_kwargs": merged})
 
 
 class _OpenAiCompatibleUsageDetails(BaseModel):
@@ -221,19 +253,39 @@ class _OpenAiCompatibleUsagePayload(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    reasoning_tokens: int | None = None
     completion_tokens_details: _OpenAiCompatibleUsageDetails | None = None
 
     def to_usage(self) -> LlmUsage:
+        reasoning_tokens = self._reasoning_tokens()
         return LlmUsage(
             prompt_tokens=self.prompt_tokens,
-            completion_tokens=self.completion_tokens,
-            total_tokens=self.total_tokens,
-            reasoning_tokens=(
-                self.completion_tokens_details.reasoning_tokens
-                if self.completion_tokens_details is not None
-                else None
+            completion_tokens=_completion_tokens_excluding_reasoning(
+                completion_tokens=self.completion_tokens,
+                reasoning_tokens=reasoning_tokens,
             ),
+            total_tokens=self.total_tokens,
+            reasoning_tokens=reasoning_tokens,
         )
+
+    def _reasoning_tokens(self) -> int | None:
+        if self.reasoning_tokens is not None:
+            return self.reasoning_tokens
+        if self.completion_tokens_details is None:
+            return None
+        return self.completion_tokens_details.reasoning_tokens
+
+
+def _completion_tokens_excluding_reasoning(
+    *,
+    completion_tokens: int | None,
+    reasoning_tokens: int | None,
+) -> int | None:
+    # OpenAI-style usage includes reasoning inside completion tokens; internal
+    # pricing tracks reasoning separately, so normalize completion first.
+    if completion_tokens is None or reasoning_tokens is None:
+        return completion_tokens
+    return max(0, completion_tokens - reasoning_tokens)
 
 
 class _OpenAiCompatibleChatResponse(BaseModel):
@@ -267,6 +319,7 @@ class _OpenAiCompatibleChoicePayload(BaseModel):
 
     index: int
     content: str
+    reasoning: str | None = None
     tool_calls: tuple[LlmMessageToolCall, ...] | None = None
     finish_reason: str | None = None
 
@@ -275,6 +328,7 @@ class _OpenAiCompatibleChoicePayload(BaseModel):
         return cls(
             index=index,
             content=state.content_text,
+            reasoning=state.reasoning_text or None,
             tool_calls=_to_llm_tool_calls(state),
             finish_reason=state.finish_reason,
         )
@@ -285,6 +339,7 @@ class _OpenAiCompatibleChoicePayload(BaseModel):
             message=LlmChoiceMessage(
                 role="assistant",
                 content=(LlmMessageContentPart(type="text", text=self.content),),
+                reasoning=self.reasoning,
                 tool_calls=self.tool_calls,
             ),
             finish_reason=self.finish_reason or "stop",

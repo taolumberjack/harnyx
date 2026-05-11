@@ -13,20 +13,16 @@ from typing import Protocol, cast
 import bittensor as bt
 
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.clients import DESEARCH, PARALLEL, PLATFORM
+from harnyx_commons.clients import PLATFORM
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmProviderPort
-from harnyx_commons.llm.provider_factory import (
-    CachedLlmProviderRegistry,
-    build_cached_llm_provider_registry,
-    build_routed_llm_provider,
-)
+from harnyx_commons.llm.provider_factory import CachedLlmProviderRegistry
 from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER, parse_builtin_provider_name
 from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
-from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
+from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS
 from harnyx_commons.miner_task_scoring import (
     EvaluationScoringConfig,
     EvaluationScoringService,
@@ -34,23 +30,13 @@ from harnyx_commons.miner_task_scoring import (
 from harnyx_commons.sandbox.docker import DockerSandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
-from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationOutput
-from harnyx_commons.tools.parallel import ParallelClient
+from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import (
-    ALLOWED_TOOL_MODELS,
     RuntimeToolInvoker,
     build_miner_sandbox_tool_invoker,
-)
-from harnyx_commons.tools.search_models import (
-    FetchPageRequest,
-    FetchPageResponse,
-    SearchAiSearchRequest,
-    SearchAiSearchResponse,
-    SearchWebSearchRequest,
-    SearchWebSearchResponse,
 )
 from harnyx_commons.tools.token_semaphore import TokenSemaphore
 from harnyx_commons.tools.usage_tracker import UsageTracker
@@ -90,6 +76,7 @@ TOKEN_MAX_PARALLEL_CALLS = 2
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _BATCH_BLOCKING_LANE_NAME = "validator-batch-blocking"
 
+
 class _ProviderTrackingToolExecutor(ToolExecutor):
     def __init__(
         self,
@@ -124,7 +111,7 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
         )
         try:
             response = await super()._invoke_tool_output_async(request)
-        except ToolProviderError:
+        except ToolProviderError as exc:
             self._record_provider_call(request=request, provider_key=provider_key)
             if provider_key is not None:
                 provider, model = provider_key
@@ -132,6 +119,7 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
                     session_id=request.session_id,
                     provider=provider,
                     model=model,
+                    reason=_provider_failure_reason(exc),
                 )
             raise
         self._record_provider_call(request=request, provider_key=provider_key)
@@ -151,6 +139,12 @@ class _ProviderTrackingToolExecutor(ToolExecutor):
             provider=provider,
             model=model,
         )
+
+
+def _provider_failure_reason(exc: ToolProviderError) -> str:
+    source = exc.__cause__ or exc
+    reason = " ".join(str(source).split())
+    return reason or type(source).__name__
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,71 +319,22 @@ def _build_llm_clients(
     LlmProviderPort | None,
     ResolvedLlmRoute,
 ]:
-    search_client = _create_search_client(settings)
-    if settings.llm.tool_llm_provider == BEDROCK_PROVIDER:
-        raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
-    provider_registry = build_cached_llm_provider_registry(
+    invocation_clients = build_tool_invocation_clients(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
+        lazy_search=False,
+        require_search=True,
     )
-    _validate_validator_override_policy(settings)
     scoring_route = _resolve_scoring_judge_route(settings)
-    tool_llm_provider = _build_routed_tool_llm_provider(settings, provider_registry)
-    scoring_llm_provider = provider_registry.resolve(scoring_route.provider)
-    return search_client, provider_registry, tool_llm_provider, scoring_llm_provider, scoring_route
-
-
-def _build_local_eval_tooling_clients(
-    settings: Settings,
-) -> tuple[
-    WebSearchProviderPort | None,
-    CachedLlmProviderRegistry,
-    LlmProviderPort | None,
-    LlmProviderPort,
-    ResolvedLlmRoute,
-]:
-    if settings.llm.tool_llm_provider == BEDROCK_PROVIDER:
-        raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
-    provider_registry = build_cached_llm_provider_registry(
-        llm_settings=settings.llm,
-        bedrock_settings=settings.bedrock,
-        vertex_settings=settings.vertex,
+    scoring_llm_provider = invocation_clients.llm_provider_registry.resolve(scoring_route.provider)
+    return (
+        invocation_clients.search_client,
+        invocation_clients.llm_provider_registry,
+        invocation_clients.tool_llm_provider,
+        scoring_llm_provider,
+        scoring_route,
     )
-    _validate_validator_override_policy(settings)
-    scoring_route = _resolve_scoring_judge_route(settings)
-    search_client = (
-        _LazySearchProvider(lambda: _create_search_client(settings))
-        if settings.llm.search_provider is not None
-        else None
-    )
-    tool_llm_provider: LlmProviderPort | None
-    if settings.llm.tool_llm_provider is None:
-        tool_llm_provider = None
-    else:
-        tool_llm_provider = _LazyLlmProvider(lambda: _build_routed_tool_llm_provider(settings, provider_registry))
-    scoring_llm_provider = provider_registry.resolve(scoring_route.provider)
-    return search_client, provider_registry, tool_llm_provider, scoring_llm_provider, scoring_route
-
-
-def _build_routed_tool_llm_provider(
-    settings: Settings,
-    provider_registry: CachedLlmProviderRegistry,
-) -> LlmProviderPort:
-    return build_routed_llm_provider(
-        surface="tool",
-        default_provider=settings.llm.tool_llm_provider,
-        llm_settings=settings.llm,
-        allowed_providers={"chutes", "vertex"},
-        allow_custom_openai_compatible=True,
-        provider_registry=provider_registry,
-    )
-
-
-def _validate_validator_override_policy(settings: Settings) -> None:
-    for provider_name in settings.llm.llm_model_provider_overrides.get("tool", {}).values():
-        if provider_name == BEDROCK_PROVIDER:
-            raise ValueError("TOOL_LLM_PROVIDER='bedrock' is not supported")
 
 
 def _resolve_scoring_judge_route(settings: Settings) -> ResolvedLlmRoute:
@@ -437,68 +382,6 @@ def _build_tooling(
         llm_route_resolver=_build_tool_route_resolver(resolved),
     )
     return tool_invoker, tool_executor
-
-
-class _LazyLlmProvider(LlmProviderPort):
-    def __init__(self, factory: Callable[[], LlmProviderPort]) -> None:
-        self._factory = factory
-        self._provider: LlmProviderPort | None = None
-        self._lock = asyncio.Lock()
-
-    async def invoke(self, request: AbstractLlmRequest) -> LlmResponse:
-        provider = await self._get_provider()
-        return await provider.invoke(request)
-
-    async def aclose(self) -> None:
-        provider = self._provider
-        if provider is not None:
-            await provider.aclose()
-
-    async def _get_provider(self) -> LlmProviderPort:
-        provider = self._provider
-        if provider is not None:
-            return provider
-        async with self._lock:
-            provider = self._provider
-            if provider is None:
-                provider = self._factory()
-                self._provider = provider
-        return provider
-
-
-class _LazySearchProvider(WebSearchProviderPort):
-    def __init__(self, factory: Callable[[], WebSearchProviderPort]) -> None:
-        self._factory = factory
-        self._provider: WebSearchProviderPort | None = None
-        self._lock = asyncio.Lock()
-
-    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
-        provider = await self._get_provider()
-        return await provider.search_web(request)
-
-    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse:
-        provider = await self._get_provider()
-        return await provider.search_ai(request)
-
-    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse:
-        provider = await self._get_provider()
-        return await provider.fetch_page(request)
-
-    async def aclose(self) -> None:
-        provider = self._provider
-        if provider is not None:
-            await provider.aclose()
-
-    async def _get_provider(self) -> WebSearchProviderPort:
-        provider = self._provider
-        if provider is not None:
-            return provider
-        async with self._lock:
-            provider = self._provider
-            if provider is None:
-                provider = self._factory()
-                self._provider = provider
-        return provider
 
 
 def _build_services(
@@ -812,27 +695,6 @@ def _build_inbound_auth(
         on_refresh_succeeded=status_provider.mark_auth_ready if status_provider is not None else None,
         on_refresh_failed=status_provider.mark_auth_unavailable if status_provider is not None else None,
     )
-
-
-def _create_search_client(settings: Settings) -> WebSearchProviderPort:
-    provider = settings.llm.search_provider
-    if provider is None:
-        raise RuntimeError("SEARCH_PROVIDER must be configured")
-    if provider == "desearch":
-        return DeSearchClient(
-            base_url=DESEARCH.base_url,
-            api_key=settings.llm.desearch_api_key_value,
-            timeout=DESEARCH.timeout_seconds,
-            max_concurrent=settings.llm.desearch_max_concurrent,
-        )
-    if provider == "parallel":
-        return ParallelClient(
-            base_url=settings.llm.parallel_base_url,
-            api_key=settings.llm.parallel_api_key_value,
-            timeout=PARALLEL.timeout_seconds,
-            max_concurrent=settings.llm.parallel_max_concurrent,
-        )
-    raise ValueError(f"unsupported search provider: {provider}")
 
 
 def _create_scoring_service(

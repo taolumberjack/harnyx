@@ -121,7 +121,10 @@ def _build_provider(
         endpoint = endpoints.get(custom_endpoint_id)
         if endpoint is None:
             raise ValueError(f"custom OpenAI-compatible endpoint '{custom_endpoint_id}' is not configured")
-        return OpenAiCompatibleLlmProvider(endpoint=endpoint)
+        return LlmProviderAdapter(
+            provider_name=route_target,
+            delegate=OpenAiCompatibleLlmProvider(endpoint=endpoint),
+        )
 
     provider_name = parse_builtin_provider_name(route_target, component="shared")
     max_concurrent = _max_concurrent_for_provider(provider_name, llm_settings)

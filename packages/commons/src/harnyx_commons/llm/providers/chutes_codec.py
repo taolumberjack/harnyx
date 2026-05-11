@@ -13,6 +13,7 @@ from harnyx_commons.llm.providers.openai_stream import (
     OpenAiStreamState,
     OpenAiToolCall,
     _OpenAiStreamEvent,
+    normalize_openai_text_fragments,
 )
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
@@ -23,6 +24,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.llm.tool_models import tool_model_thinking_capability
 
 _CHUTES_CONTENT_PARTS_ADAPTER = TypeAdapter(list[object])
 _CHUTES_TOOL_CALLS_ADAPTER = TypeAdapter(list[object])
@@ -42,6 +44,7 @@ class _ChutesChatRequest(BaseModel):
     tool_choice: str | None = None
     include: list[str] | None = None
     response_format: dict[str, Any] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
 
     @classmethod
     def from_request(cls, request: AbstractLlmRequest) -> _ChutesChatRequest:
@@ -73,6 +76,7 @@ class _ChutesChatRequest(BaseModel):
                 else None
             ),
         )
+        payload = _apply_chutes_thinking(payload, request)
         if request.extra:
             payload = payload.model_copy(update=dict(request.extra))
         return payload.model_copy(update={"stream": True})
@@ -83,6 +87,28 @@ class _ChutesTextContentPart(BaseModel):
 
     type: str | None = None
     text: str | None = None
+
+
+def _apply_chutes_thinking(
+    payload: _ChutesChatRequest,
+    request: AbstractLlmRequest,
+) -> _ChutesChatRequest:
+    thinking = request.thinking
+    if thinking is None:
+        return payload
+    capability = tool_model_thinking_capability(request.model, provider_name="chutes")
+    if capability is None:
+        return payload
+    return _with_chat_template_kwargs(payload, capability.chat_template_kwargs(enabled=thinking.enabled))
+
+
+def _with_chat_template_kwargs(
+    payload: _ChutesChatRequest,
+    updates: dict[str, Any],
+) -> _ChutesChatRequest:
+    merged = dict(payload.chat_template_kwargs or {})
+    merged.update(updates)
+    return payload.model_copy(update={"chat_template_kwargs": merged})
 
 
 class _ChutesReasoningObject(BaseModel):
@@ -295,13 +321,33 @@ class _ChutesUsagePayload(BaseModel):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
     def to_usage(self) -> LlmUsage:
+        # Chutes streams OpenAI-style usage: reasoning tokens are a subset of
+        # completion tokens. Normalize completion to visible output tokens so
+        # pricing can charge output and reasoning exactly once while preserving
+        # reasoning_tokens for observability.
+        completion_tokens = _completion_tokens_excluding_reasoning(
+            completion_tokens=self.completion_tokens,
+            reasoning_tokens=self.reasoning_tokens,
+        )
         return LlmUsage(
             prompt_tokens=self.prompt_tokens,
-            completion_tokens=self.completion_tokens,
+            completion_tokens=completion_tokens,
             total_tokens=self.total_tokens,
+            reasoning_tokens=self.reasoning_tokens,
         )
+
+
+def _completion_tokens_excluding_reasoning(
+    *,
+    completion_tokens: int | None,
+    reasoning_tokens: int | None,
+) -> int | None:
+    if completion_tokens is None or reasoning_tokens is None:
+        return completion_tokens
+    return max(0, completion_tokens - reasoning_tokens)
 
 
 class _ChutesChatResponse(BaseModel):
@@ -421,11 +467,18 @@ class _ChutesReasoningStreamState(BaseModel):
     def merge_event(self, event: _OpenAiStreamEvent) -> None:
         for fallback_index, choice_payload in enumerate(event.choices):
             index = choice_payload.index if choice_payload.index is not None else fallback_index
-            message_payload = choice_payload.message_delta(reasoning_keys=("reasoning",))
+            message_payload = choice_payload.message_delta(reasoning_keys=("reasoning", "reasoning_content"))
             if message_payload is None:
                 continue
-            reasoning_payload = (message_payload.model_extra or {}).get("reasoning")
-            self.choice(index).merge(reasoning_payload)
+            extra = message_payload.model_extra or {}
+            reasoning_value = extra.get("reasoning")
+            self.choice(index).merge(reasoning_value)
+            appended_reasoning = set(_chutes_stream_reasoning_fragments(reasoning_value))
+            for reasoning_fragment in normalize_openai_text_fragments(extra.get("reasoning_content")):
+                if reasoning_fragment in appended_reasoning:
+                    continue
+                appended_reasoning.add(reasoning_fragment)
+                self.choice(index).merge(reasoning_fragment)
 
 
 def _chutes_stream_tool_calls(choice_state: OpenAiChoiceState) -> list[_ChutesToolCallPayload] | None:
@@ -455,6 +508,24 @@ def _normalize_stream_reasoning_text(value: object) -> str | None:
             return text
         case _:
             return None
+
+
+def _chutes_stream_reasoning_fragments(value: object) -> tuple[str, ...]:
+    match value:
+        case None:
+            return ()
+        case str() as text:
+            normalized = _normalize_stream_reasoning_text(text)
+            return (normalized,) if normalized is not None else ()
+        case _:
+            try:
+                reasoning = _ChutesReasoningObject.model_validate(value, strict=True)
+            except ValidationError:
+                return ()
+            if reasoning.thought_text_parts:
+                return tuple(part for part in reasoning.thought_text_parts if part)
+            fallback_text = reasoning.stream_fallback_text
+            return (fallback_text,) if fallback_text is not None else ()
 
 
 def _parse_chutes_response_payload(value: object) -> _ChutesChatResponse:

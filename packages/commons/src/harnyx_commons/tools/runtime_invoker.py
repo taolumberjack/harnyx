@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator, model_validator
 from pydantic import JsonValue as PydanticJsonValue
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
@@ -16,11 +16,8 @@ from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import (
-    ALLOWED_TOOL_MODELS,
     MODEL_PRICING,
     SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
-    ToolModelName,
-    parse_tool_model,
 )
 from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
 from harnyx_commons.llm.schema import (
@@ -31,8 +28,10 @@ from harnyx_commons.llm.schema import (
     LlmMessageToolCall,
     LlmRequest,
     LlmResponse,
+    LlmThinkingConfig,
     LlmTool,
 )
+from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, ToolModelName, parse_tool_model
 from harnyx_commons.tools.executor import ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.normalize import normalize_response
 from harnyx_commons.tools.ports import WebSearchProviderPort
@@ -45,6 +44,7 @@ from harnyx_commons.tools.types import TOOL_NAMES, SearchToolName, ToolName, is_
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
 
 MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(TOOL_NAMES))
+DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = 120.0
 
 
 class LlmToolMessage(BaseModel):
@@ -52,6 +52,36 @@ class LlmToolMessage(BaseModel):
 
     role: Literal["system", "user", "assistant", "tool"]
     content: str
+
+
+class LlmThinkingConfigPayload(BaseModel):
+    """Typed public thinking config for miner llm_chat tool calls."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: StrictBool
+    budget: StrictInt | None = None
+    effort: Literal["low", "medium", "high"] | None = None
+
+    @field_validator("budget")
+    @classmethod
+    def _validate_budget(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("thinking.budget must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_single_tuning_knob(self) -> LlmThinkingConfigPayload:
+        if self.budget is not None and self.effort is not None:
+            raise ValueError("thinking.budget and thinking.effort are mutually exclusive")
+        return self
+
+    def to_schema(self) -> LlmThinkingConfig:
+        return LlmThinkingConfig(
+            enabled=self.enabled,
+            budget=self.budget,
+            effort=self.effort,
+        )
 
 
 class LlmToolInvocation(BaseModel):
@@ -66,9 +96,9 @@ class LlmToolInvocation(BaseModel):
     tools: tuple[dict[str, PydanticJsonValue], ...] | None = None
     tool_choice: Literal["auto", "required"] | None = None
     include: tuple[str, ...] | None = None
-    reasoning_effort: str | None = None
+    thinking: LlmThinkingConfigPayload | None = None
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
 
 def build_miner_sandbox_tool_invoker(
@@ -320,9 +350,9 @@ class RuntimeToolInvoker(ToolInvoker):
             tools=tools,
             tool_choice=invocation.tool_choice,
             include=invocation.include,
-            reasoning_effort=invocation.reasoning_effort,
+            timeout_seconds=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS,
+            thinking=invocation.thinking.to_schema() if invocation.thinking is not None else None,
             use_case="tool_runtime_invoker",
-            extra=dict(invocation.model_extra) if invocation.model_extra else None,
         )
 
     @staticmethod
@@ -382,6 +412,8 @@ def _public_llm_message_payload(message: LlmChoiceMessage) -> JsonObject:
     }
     if message.tool_calls:
         payload["tool_calls"] = [_public_llm_tool_call_payload(call) for call in message.tool_calls]
+    if message.reasoning is not None:
+        payload["reasoning"] = message.reasoning
     return payload
 
 
@@ -404,8 +436,10 @@ def _public_llm_tool_call_payload(call: LlmMessageToolCall) -> JsonObject:
 
 __all__ = [
     "ALLOWED_TOOL_MODELS",
+    "DEFAULT_TOOL_LLM_TIMEOUT_SECONDS",
     "LlmToolInvocation",
     "LlmToolMessage",
+    "LlmThinkingConfigPayload",
     "RuntimeToolInvoker",
     "MINER_SANDBOX_TOOL_NAMES",
     "build_miner_sandbox_tool_invoker",

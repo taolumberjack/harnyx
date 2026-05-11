@@ -645,7 +645,15 @@ class EvaluationRunner:
                 final_attempt=final_attempt,
             )
 
-        self._consume_provider_failures(issued.session.session_id)
+        provider_failures = self._consume_provider_failures(issued.session.session_id)
+        provider_failure_decision = self._provider_batch_failure_decision(
+            artifact=artifact,
+            task=task,
+            provider_failures=provider_failures,
+            exception_type=None,
+        )
+        if provider_failure_decision is not None:
+            return provider_failure_decision
         return _submission_decision(
             self._record_success(
                 batch_id=batch_id,
@@ -933,23 +941,14 @@ class EvaluationRunner:
         final_attempt: bool,
     ) -> TaskAttemptDecision:
         if _is_provider_caused_terminal_failure(exc):
-            provider_batch_evidence = provider_batch_failure_evidence(provider_failures)
-            if provider_batch_evidence is not None:
-                return _validator_batch_failure_decision(
-                    ValidatorBatchFailedError(
-                        error_code=MinerTaskErrorCode.PROVIDER_BATCH_FAILURE,
-                        message=provider_batch_failure_message(provider_batch_evidence),
-                        failure_detail=ValidatorBatchFailureDetail(
-                            error_code=MinerTaskErrorCode.PROVIDER_BATCH_FAILURE,
-                            error_message=provider_batch_failure_message(provider_batch_evidence),
-                            occurred_at=self._clock(),
-                            artifact_id=artifact.artifact_id,
-                            task_id=task.task_id,
-                            uid=artifact.uid,
-                            exception_type=_exception_type_name(exc),
-                        ),
-                    )
-                )
+            provider_failure_decision = self._provider_batch_failure_decision(
+                artifact=artifact,
+                task=task,
+                provider_failures=provider_failures,
+                exception_type=_exception_type_name(exc),
+            )
+            if provider_failure_decision is not None:
+                return provider_failure_decision
 
         if isinstance(exc, LlmRetryExhaustedError):
             return _submission_decision(
@@ -1037,6 +1036,34 @@ class EvaluationRunner:
                     task_id=task.task_id,
                     uid=artifact.uid,
                     exception_type=_exception_type_name(exc),
+                ),
+            )
+        )
+
+    def _provider_batch_failure_decision(
+        self,
+        *,
+        artifact: ScriptArtifactSpec,
+        task: MinerTask,
+        provider_failures: tuple[ProviderFailureEvidence, ...],
+        exception_type: str | None,
+    ) -> TaskAttemptDecision | None:
+        provider_batch_evidence = provider_batch_failure_evidence(provider_failures)
+        if provider_batch_evidence is None:
+            return None
+        message = provider_batch_failure_message(provider_batch_evidence)
+        return _validator_batch_failure_decision(
+            ValidatorBatchFailedError(
+                error_code=MinerTaskErrorCode.PROVIDER_BATCH_FAILURE,
+                message=message,
+                failure_detail=ValidatorBatchFailureDetail(
+                    error_code=MinerTaskErrorCode.PROVIDER_BATCH_FAILURE,
+                    error_message=message,
+                    occurred_at=self._clock(),
+                    artifact_id=artifact.artifact_id,
+                    task_id=task.task_id,
+                    uid=artifact.uid,
+                    exception_type=exception_type,
                 ),
             )
         )

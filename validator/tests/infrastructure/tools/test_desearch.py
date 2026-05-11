@@ -160,7 +160,7 @@ async def test_desearch_client_ai_search_twitter_posts_posts_payload() -> None:
     assert response.completion == "hello"
 
 
-async def test_desearch_client_search_ai_preserves_retry_metadata() -> None:
+async def test_desearch_client_search_ai_clamps_count_and_preserves_retry_metadata() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path != "/desearch/ai/search":
             raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -169,7 +169,7 @@ async def test_desearch_client_search_ai_preserves_retry_metadata() -> None:
         assert payload["tools"] == ["web", "hackernews", "reddit", "wikipedia", "youtube", "arxiv"]
         assert payload["result_type"] == "LINKS_WITH_FINAL_SUMMARY"
         assert payload["system_message"] == ""
-        assert payload["count"] == 3
+        assert payload["count"] == 10
         return httpx.Response(
             200,
             json={
@@ -189,7 +189,7 @@ async def test_desearch_client_search_ai_preserves_retry_metadata() -> None:
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="harnyx subnet", count=3))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="harnyx subnet", count=10))
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -226,7 +226,7 @@ async def test_desearch_client_search_ai_accepts_summary_and_results_shape() -> 
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=10))
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -262,7 +262,7 @@ async def test_desearch_client_search_ai_accepts_sdk_search_results_shape() -> N
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=10))
 
     assert [item.model_dump(exclude_none=True) for item in response.data] == [
         {
@@ -288,7 +288,7 @@ async def test_desearch_client_search_ai_summary_only_shape_returns_empty_result
     )
     adapter = DeSearchClient(base_url="https://api.desearch.ai", api_key="key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=3))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="hamlet", count=10))
 
     assert response.data == []
     assert response.attempts == 1

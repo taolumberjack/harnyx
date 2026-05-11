@@ -6,13 +6,17 @@ from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.llm.pricing import (
     MODEL_PRICING,
     SEARCH_PRICING_PER_REFERENCEABLE_RESULT,
-    parse_tool_model,
     price_llm,
 )
 from harnyx_commons.llm.schema import LlmUsage
+from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, parse_tool_model
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker, build_miner_sandbox_tool_invoker
 
 pytestmark = pytest.mark.anyio("asyncio")
+
+
+def test_tool_model_pricing_covers_every_allowed_tool_model() -> None:
+    assert set(MODEL_PRICING) == set(ALLOWED_TOOL_MODELS)
 
 
 async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
@@ -66,10 +70,16 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert model_prices["Qwen/Qwen3-Next-80B-A3B-Instruct"]["reasoning_per_million"] == pytest.approx(
         MODEL_PRICING["Qwen/Qwen3-Next-80B-A3B-Instruct"].billable_reasoning_per_million
     )
-    assert "google/gemma-4-31B-it" in payload["allowed_tool_models"]
-    assert model_prices["google/gemma-4-31B-it"]["input_per_million"] == pytest.approx(0.13)
-    assert model_prices["google/gemma-4-31B-it"]["output_per_million"] == pytest.approx(0.38)
-    assert model_prices["google/gemma-4-31B-it"]["reasoning_per_million"] == pytest.approx(0.38)
+    assert "Qwen/Qwen3.6-27B-TEE" in payload["allowed_tool_models"]
+    assert model_prices["Qwen/Qwen3.6-27B-TEE"]["input_per_million"] == pytest.approx(0.50)
+    assert model_prices["Qwen/Qwen3.6-27B-TEE"]["output_per_million"] == pytest.approx(2.00)
+    assert model_prices["Qwen/Qwen3.6-27B-TEE"]["reasoning_per_million"] == pytest.approx(2.00)
+    assert "google/gemma-4-31B-it" not in payload["allowed_tool_models"]
+    assert "google/gemma-4-31B-it" not in model_prices
+    assert "google/gemma-4-31B-turbo-TEE" in payload["allowed_tool_models"]
+    assert model_prices["google/gemma-4-31B-turbo-TEE"]["input_per_million"] == pytest.approx(0.13)
+    assert model_prices["google/gemma-4-31B-turbo-TEE"]["output_per_million"] == pytest.approx(0.38)
+    assert model_prices["google/gemma-4-31B-turbo-TEE"]["reasoning_per_million"] == pytest.approx(0.38)
     for model in ("deepseek-ai/DeepSeek-V3.1-TEE", "deepseek-ai/DeepSeek-V3.2-TEE"):
         assert model in payload["allowed_tool_models"]
         assert MODEL_PRICING[model].reasoning_per_million == pytest.approx(0.0)
@@ -104,10 +114,16 @@ def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.1-TEE"), usage) == pytest.approx(2.27)
     assert price_llm(parse_tool_model("deepseek-ai/DeepSeek-V3.2-TEE"), usage) == pytest.approx(1.12)
     assert price_llm(parse_tool_model("zai-org/GLM-5-TEE"), usage) == pytest.approx(6.05)
-    assert price_llm(parse_tool_model("google/gemma-4-31B-it"), usage) == pytest.approx(0.89)
+    assert price_llm(parse_tool_model("Qwen/Qwen3.6-27B-TEE"), usage) == pytest.approx(4.50)
+    assert price_llm(parse_tool_model("google/gemma-4-31B-turbo-TEE"), usage) == pytest.approx(0.89)
 
 
 @pytest.mark.parametrize("model", ("openai/gpt-oss-20b-TEE", "openai/gpt-oss-120b-TEE"))
 def test_retired_openai_gpt_oss_tool_models_are_rejected(model: str) -> None:
     with pytest.raises(ValueError, match="not allowed for validator tools"):
         parse_tool_model(model)
+
+
+def test_old_gemma_cloud_run_tool_model_is_rejected() -> None:
+    with pytest.raises(ValueError, match="not allowed for validator tools"):
+        parse_tool_model("google/gemma-4-31B-it")

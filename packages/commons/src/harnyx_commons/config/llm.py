@@ -14,6 +14,7 @@ from harnyx_commons.llm.provider_types import LlmProviderName
 from harnyx_commons.llm.routing import LlmModelProviderOverrides, parse_llm_model_provider_overrides
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
+DEFAULT_SCORING_MAX_OUTPUT_TOKENS = 20480
 _ENDPOINT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -168,17 +169,19 @@ class LlmSettings(BaseSettings):
     openai_compatible_endpoints_json: str | None = Field(default=None, alias="LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON")
 
     # --- Timeouts ---
-    llm_timeout_seconds: float = Field(default=60.0, alias="PLATFORM_LLM_TIMEOUT_SECONDS")
+    llm_timeout_seconds: float = Field(default=300.0, alias="PLATFORM_LLM_TIMEOUT_SECONDS")
     generator_llm_timeout_seconds: float | None = Field(default=None, alias="GENERATOR_LLM_TIMEOUT_SECONDS")
     reference_llm_timeout_seconds: float | None = Field(default=None, alias="REFERENCE_LLM_TIMEOUT_SECONDS")
     benchmark_llm_timeout_seconds: float | None = Field(default=None, alias="BENCHMARK_LLM_TIMEOUT_SECONDS")
     digest_llm_timeout_seconds: float | None = Field(default=None, alias="DIGEST_LLM_TIMEOUT_SECONDS")
-    scoring_llm_timeout_seconds: float = Field(default=30.0, alias="SCORING_LLM_TIMEOUT_SECONDS")
+    scoring_llm_timeout_seconds: float = Field(default=300.0, alias="SCORING_LLM_TIMEOUT_SECONDS")
 
     # --- Scoring (validator) ---
     scoring_llm_provider: LlmProviderName = Field(default="chutes", alias="SCORING_LLM_PROVIDER")
     scoring_llm_temperature: float | None = Field(default=None, alias="SCORING_LLM_TEMPERATURE")
-    scoring_llm_max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, alias="SCORING_LLM_MAX_OUTPUT_TOKENS")
+    scoring_llm_max_output_tokens: int = Field(
+        default=DEFAULT_SCORING_MAX_OUTPUT_TOKENS, alias="SCORING_LLM_MAX_OUTPUT_TOKENS"
+    )
     scoring_llm_model_override: str | None = Field(default=None, alias="SCORING_LLM_MODEL_OVERRIDE")
 
     # --- Content review (platform-only) ---
@@ -266,6 +269,7 @@ def parse_openai_compatible_endpoints_json(raw: str | None) -> Mapping[str, Open
 __all__ = [
     "LlmSettings",
     "DEFAULT_MAX_OUTPUT_TOKENS",
+    "DEFAULT_SCORING_MAX_OUTPUT_TOKENS",
     "OpenAiCompatibleAuthConfig",
     "OpenAiCompatibleBearerTokenEnvAuthConfig",
     "OpenAiCompatibleEndpointConfig",

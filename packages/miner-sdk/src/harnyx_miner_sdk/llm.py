@@ -39,6 +39,28 @@ class LlmTool:
 
 
 @dataclass(frozen=True)
+class LlmThinkingConfig:
+    """Typed miner-facing thinking request config."""
+
+    enabled: bool
+    budget: int | None = None
+    effort: Literal["low", "medium", "high"] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("thinking.enabled must be a boolean")
+        if self.budget is not None:
+            if isinstance(self.budget, bool) or not isinstance(self.budget, int):
+                raise TypeError("thinking.budget must be an integer token count")
+            if self.budget < 1:
+                raise ValueError("thinking.budget must be positive")
+        if self.effort is not None and self.effort not in ("low", "medium", "high"):
+            raise ValueError("thinking.effort must be one of: low, medium, high")
+        if self.budget is not None and self.effort is not None:
+            raise ValueError("thinking.budget and thinking.effort are mutually exclusive")
+
+
+@dataclass(frozen=True)
 class ToolLlmRequest:
     """Miner-facing LLM invocation payload (provider selected by host)."""
 
@@ -48,6 +70,7 @@ class ToolLlmRequest:
     max_output_tokens: int | None
     tools: Sequence[LlmTool] | None = None
     tool_choice: Literal["auto", "required"] | None = None
+    thinking: LlmThinkingConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -316,6 +339,7 @@ __all__ = [
     "LlmInputToolResultPart",
     "LlmMessage",
     "LlmTool",
+    "LlmThinkingConfig",
     "ToolLlmRequest",
     "LlmMessageToolCall",
     "LlmMessageContentPart",

@@ -24,12 +24,12 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.tools import invocation_clients
+from harnyx_commons.tools.invocation_clients import build_web_search_provider
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import (
     _build_llm_clients,
-    _build_local_eval_tooling_clients,
     _create_scoring_service,
-    _create_search_client,
     close_runtime_resources,
 )
 from harnyx_validator.runtime.settings import Settings
@@ -77,20 +77,26 @@ class _FakeLlmRegistry:
         return provider
 
 
+def test_llm_settings_default_scoring_timeout_is_300_seconds() -> None:
+    assert LlmSettings().scoring_llm_timeout_seconds == pytest.approx(300.0)
+
+
 def _settings_with_gemma_tool_route() -> Settings:
     return Settings.model_construct(
         llm=LlmSettings.model_construct(
-            search_provider=None,
+            search_provider="parallel",
+            parallel_base_url="https://proxy.parallel.test",
+            parallel_api_key=SecretStr("parallel-key"),
             tool_llm_provider="chutes",
             scoring_llm_provider="chutes",
             chutes_api_key=SecretStr("test-key"),
             llm_model_provider_overrides_json=json.dumps(
-                {"tool": {"google/gemma-4-31B-it": "custom-openai-compatible:gemma4-cloud-run"}}
+                {"tool": {"google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo"}}
             ),
             openai_compatible_endpoints_json=json.dumps(
                 [
                     {
-                        "id": "gemma4-cloud-run",
+                        "id": "gemma4-cloud-run-turbo",
                         "base_url": "https://gemma.example.run.app/v1",
                         "auth": {"type": "none"},
                     }
@@ -110,7 +116,7 @@ def _settings_with_gemma_tool_route() -> Settings:
 def _gemma_tool_request() -> LlmRequest:
     return LlmRequest(
         provider="chutes",
-        model="google/gemma-4-31B-it",
+        model="google/gemma-4-31B-turbo-TEE",
         messages=(
             LlmMessage(
                 role="user",
@@ -122,35 +128,29 @@ def _gemma_tool_request() -> LlmRequest:
     )
 
 
-def test_create_search_client_requires_search_provider() -> None:
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            search_provider=None,
-        )
-    )
+def test_build_web_search_provider_requires_search_provider() -> None:
+    llm_settings = LlmSettings.model_construct(search_provider=None)
 
     with pytest.raises(RuntimeError, match="SEARCH_PROVIDER must be configured"):
-        _create_search_client(settings)
+        build_web_search_provider(llm_settings)
 
 
-def test_create_search_client_uses_configured_parallel_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_web_search_provider_uses_configured_parallel_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     class _FakeParallelClient:
         def __init__(self, **kwargs: object) -> None:
             captured.update(kwargs)
 
-    monkeypatch.setattr(bootstrap, "ParallelClient", _FakeParallelClient)
-    settings = Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            search_provider="parallel",
-            parallel_base_url="https://proxy.parallel.test",
-            parallel_api_key=SecretStr("parallel-key"),
-            parallel_max_concurrent=7,
-        )
+    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
+    llm_settings = LlmSettings.model_construct(
+        search_provider="parallel",
+        parallel_base_url="https://proxy.parallel.test",
+        parallel_api_key=SecretStr("parallel-key"),
+        parallel_max_concurrent=7,
     )
 
-    _create_search_client(settings)
+    build_web_search_provider(llm_settings)
 
     assert captured["base_url"] == "https://proxy.parallel.test"
     assert captured["api_key"] == "parallel-key"
@@ -188,11 +188,15 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
         assert vertex_settings is settings.vertex
         return _FakeRegistry()
 
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", fake_build_cached_llm_provider_registry)
+    monkeypatch.setattr(
+        invocation_clients,
+        "build_cached_llm_provider_registry",
+        fake_build_cached_llm_provider_registry,
+    )
 
     _, provider_registry, tool_provider, scoring_provider, scoring_route = _build_llm_clients(settings)
 
-    assert type(tool_provider).__name__ == "RoutedLlmProvider"
+    assert type(tool_provider).__name__ == "LazyLlmProvider"
     assert scoring_provider == "provider:vertex"
     assert type(provider_registry).__name__ == "_FakeRegistry"
     assert scoring_route == ResolvedLlmRoute(
@@ -203,7 +207,7 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
     assert calls == ["vertex"]
 
 
-def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> None:
+def test_build_llm_clients_requires_search_provider() -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
             search_provider=None,
@@ -220,25 +224,8 @@ def test_build_local_eval_tooling_clients_allows_missing_search_provider() -> No
         ),
     )
 
-    (
-        search_client,
-        provider_registry,
-        tool_provider,
-        scoring_provider,
-        scoring_route,
-    ) = _build_local_eval_tooling_clients(settings)
-
-    assert search_client is None
-    assert provider_registry is not None
-    assert tool_provider is not None
-    assert scoring_provider is not None
-    assert type(tool_provider).__name__ == "_LazyLlmProvider"
-    assert scoring_route == ResolvedLlmRoute(
-        surface="scoring",
-        provider="chutes",
-        model=bootstrap._SCORING_LLM_MODEL,
-    )
-
+    with pytest.raises(RuntimeError, match="SEARCH_PROVIDER must be configured"):
+        _build_llm_clients(settings)
 
 @pytest.mark.anyio("asyncio")
 async def test_build_llm_clients_routes_gemma_tool_model_to_custom_endpoint(
@@ -246,36 +233,16 @@ async def test_build_llm_clients_routes_gemma_tool_model_to_custom_endpoint(
 ) -> None:
     settings = _settings_with_gemma_tool_route()
     registry = _FakeLlmRegistry()
-    monkeypatch.setattr(bootstrap, "_create_search_client", lambda _: None)
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: registry)
+    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: registry)
 
     _, _, tool_provider, _, _ = _build_llm_clients(settings)
 
     assert tool_provider is not None
     await tool_provider.invoke(_gemma_tool_request())
 
-    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run"][0].provider == (
-        "custom-openai-compatible:gemma4-cloud-run"
+    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run-turbo"][0].provider == (
+        "custom-openai-compatible:gemma4-cloud-run-turbo"
     )
-
-
-@pytest.mark.anyio("asyncio")
-async def test_build_local_eval_tooling_clients_routes_gemma_tool_model_to_custom_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = _settings_with_gemma_tool_route()
-    registry = _FakeLlmRegistry()
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: registry)
-
-    _, _, tool_provider, _, _ = _build_local_eval_tooling_clients(settings)
-
-    assert tool_provider is not None
-    await tool_provider.invoke(_gemma_tool_request())
-
-    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run"][0].provider == (
-        "custom-openai-compatible:gemma4-cloud-run"
-    )
-
 
 def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
     monkeypatch: pytest.MonkeyPatch,
@@ -304,7 +271,7 @@ def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
         def resolve(self, name: str) -> str:
             return f"provider:{name}"
 
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
+    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
     _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
 
@@ -335,7 +302,7 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
         llm=LlmSettings.model_construct(
             scoring_llm_provider="chutes",
             scoring_llm_temperature=None,
-            scoring_llm_max_output_tokens=1024,
+            scoring_llm_max_output_tokens=20480,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),
@@ -395,7 +362,7 @@ def test_create_scoring_service_uses_effective_route_model_and_provider() -> Non
         llm=LlmSettings.model_construct(
             scoring_llm_provider="vertex",
             scoring_llm_temperature=None,
-            scoring_llm_max_output_tokens=1024,
+            scoring_llm_max_output_tokens=20480,
             scoring_llm_timeout_seconds=30.0,
             chutes_api_key=SecretStr("test-key"),
         ),
@@ -474,7 +441,7 @@ def test_build_llm_clients_allows_bedrock_scoring_route(
         def resolve(self, name: str) -> str:
             return f"provider:{name}"
 
-    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
+    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
     _, _, _, scoring_provider, scoring_route = _build_llm_clients(settings)
 

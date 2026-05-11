@@ -13,7 +13,11 @@ DEEPSEEK_TOOL_MODELS = (
     "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
 )
-CHUTES_TOOL_MODELS = DEEPSEEK_TOOL_MODELS + ("zai-org/GLM-5-TEE",)
+CHUTES_TOOL_MODELS = DEEPSEEK_TOOL_MODELS + (
+    "zai-org/GLM-5-TEE",
+    "Qwen/Qwen3.6-27B-TEE",
+    "google/gemma-4-31B-turbo-TEE",
+)
 
 
 def _provider_settings() -> tuple[str, float]:

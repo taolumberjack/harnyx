@@ -8,9 +8,10 @@ import httpx
 import pytest
 
 from harnyx_commons.config.llm import LlmSettings, parse_openai_compatible_endpoints_json
+from harnyx_commons.llm.adapter import LlmProviderAdapter
 from harnyx_commons.llm.providers import openai_compatible
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
-from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
+from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmThinkingConfig
 
 pytestmark = pytest.mark.anyio("asyncio")
 
@@ -40,6 +41,23 @@ def test_endpoint_config_rejects_raw_bearer_token_field() -> None:
 
     with pytest.raises(ValueError, match="extra_forbidden"):
         parse_openai_compatible_endpoints_json(raw)
+
+
+def test_openai_compatible_provider_defaults_client_timeout_to_300(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(openai_compatible.httpx, "AsyncClient", _FakeAsyncClient)
+
+    OpenAiCompatibleLlmProvider(endpoint=_endpoint(auth={"type": "none"}))
+
+    assert captured["timeout"] == pytest.approx(300.0)
 
 
 async def test_bearer_token_env_auth_adds_authorization_header(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,18 +171,195 @@ async def test_openai_compatible_provider_normalizes_streamed_chat_response() ->
     assert response.metadata["raw_response"]["id"] == "chatcmpl-1"
 
 
-def _endpoint(*, auth: dict[str, object]):
+async def test_openai_compatible_thinking_omitted_is_noop() -> None:
+    seen_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content.decode("utf-8")))
+        return _streaming_response()
+
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    try:
+        await provider.invoke(_request())
+    finally:
+        await provider.aclose()
+
+    assert "chat_template_kwargs" not in seen_payload
+
+
+@pytest.mark.parametrize("enabled", (True, False))
+async def test_openai_compatible_gemma_thinking_uses_enable_thinking_template_kwarg(enabled: bool) -> None:
+    seen_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content.decode("utf-8")))
+        return _streaming_response()
+
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    try:
+        await provider.invoke(_request(thinking=LlmThinkingConfig(enabled=enabled, effort="high")))
+    finally:
+        await provider.aclose()
+
+    assert seen_payload["chat_template_kwargs"] == {"enable_thinking": enabled}
+    assert "reasoning_effort" not in seen_payload
+
+
+@pytest.mark.parametrize("enabled", (True, False))
+async def test_openai_compatible_gemma_thinking_survives_custom_route_model_alias(enabled: bool) -> None:
+    route_target = "custom-openai-compatible:gemma4-cloud-run-turbo"
+    seen_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content.decode("utf-8")))
+        return _streaming_response()
+
+    provider = LlmProviderAdapter(
+        provider_name=route_target,
+        delegate=OpenAiCompatibleLlmProvider(
+            endpoint=_endpoint(endpoint_id="gemma4-cloud-run-turbo", auth={"type": "none"}),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        ),
+    )
+
+    try:
+        await provider.invoke(
+            _request(
+                provider=route_target,
+                thinking=LlmThinkingConfig(enabled=enabled),
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert seen_payload["model"] == "nvidia/Gemma-4-31B-IT-NVFP4"
+    assert seen_payload["chat_template_kwargs"] == {"enable_thinking": enabled}
+
+
+@pytest.mark.parametrize("enabled", (True, False))
+async def test_openai_compatible_qwen36_thinking_survives_custom_route_model_alias(enabled: bool) -> None:
+    route_target = "custom-openai-compatible:qwen36-cloud-run"
+    seen_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content.decode("utf-8")))
+        return _streaming_response()
+
+    provider = LlmProviderAdapter(
+        provider_name=route_target,
+        delegate=OpenAiCompatibleLlmProvider(
+            endpoint=_endpoint(endpoint_id="qwen36-cloud-run", auth={"type": "none"}),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        ),
+    )
+
+    try:
+        await provider.invoke(
+            _request(
+                provider=route_target,
+                model="Qwen/Qwen3.6-27B-TEE",
+                thinking=LlmThinkingConfig(enabled=enabled),
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert seen_payload["model"] == "Qwen/Qwen3.6-27B-FP8"
+    assert seen_payload["chat_template_kwargs"] == {"enable_thinking": enabled}
+
+
+async def test_openai_compatible_unsupported_thinking_capability_serializes_nothing() -> None:
+    seen_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content.decode("utf-8")))
+        return _streaming_response()
+
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    try:
+        await provider.invoke(
+            _request(
+                model="unsupported/model",
+                thinking=LlmThinkingConfig(enabled=True, budget=1024),
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert "chat_template_kwargs" not in seen_payload
+    assert "reasoning_effort" not in seen_payload
+
+
+async def test_openai_compatible_provider_preserves_streamed_reasoning_and_usage() -> None:
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: _streaming_reasoning_response())),
+    )
+
+    try:
+        response = await provider.invoke(_request())
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text == "ok"
+    assert response.choices[0].message.reasoning == "think trace"
+    assert response.usage.completion_tokens == 2
+    assert response.usage.reasoning_tokens == 4
+    assert response.metadata is not None
+    assert response.metadata["raw_response"]["choices"][0]["reasoning"] == "think trace"
+    assert response.metadata["raw_response"]["usage"]["completion_tokens"] == 6
+
+
+async def test_openai_compatible_provider_normalizes_nested_reasoning_usage() -> None:
+    provider = OpenAiCompatibleLlmProvider(
+        endpoint=_endpoint(auth={"type": "none"}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: _streaming_reasoning_details_response())),
+    )
+
+    try:
+        response = await provider.invoke(_request())
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text == "ok"
+    assert response.usage.completion_tokens == 2
+    assert response.usage.reasoning_tokens == 4
+    assert response.usage.total_tokens == 9
+
+
+def _endpoint(
+    *,
+    auth: dict[str, object],
+    endpoint_id: str = "local",
+):
     return LlmSettings(
         LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=json.dumps(
-            [{"id": "local", "base_url": "https://example.com/v1", "auth": auth}]
+            [{"id": endpoint_id, "base_url": "https://example.com/v1", "auth": auth}]
         )
-    ).openai_compatible_endpoints["local"]
+    ).openai_compatible_endpoints[endpoint_id]
 
 
-def _request() -> LlmRequest:
+def _request(
+    *,
+    provider: str = "custom-openai-compatible:local",
+    model: str = "google/gemma-4-31B-turbo-TEE",
+    thinking: LlmThinkingConfig | None = None,
+) -> LlmRequest:
     return LlmRequest(
-        provider="custom-openai-compatible:local",
-        model="google/gemma-4-31B-it",
+        provider=provider,
+        model=model,
         messages=(
             LlmMessage(
                 role="user",
@@ -173,6 +368,7 @@ def _request() -> LlmRequest:
         ),
         temperature=0.0,
         max_output_tokens=8,
+        thinking=thinking,
     )
 
 
@@ -182,6 +378,35 @@ def _streaming_response() -> httpx.Response:
             'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"ok"}}]}',
             'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
             '"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+            "data: [DONE]",
+            "",
+        )
+    )
+    return httpx.Response(200, content=payload.encode("utf-8"))
+
+
+def _streaming_reasoning_response() -> httpx.Response:
+    payload = "\n\n".join(
+        (
+            'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning":"think "}}]}',
+            'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"trace"}}]}',
+            'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"ok"}}]}',
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+            '"usage":{"prompt_tokens":3,"completion_tokens":6,"reasoning_tokens":4,"total_tokens":9}}',
+            "data: [DONE]",
+            "",
+        )
+    )
+    return httpx.Response(200, content=payload.encode("utf-8"))
+
+
+def _streaming_reasoning_details_response() -> httpx.Response:
+    payload = "\n\n".join(
+        (
+            'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"ok"}}]}',
+            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+            '"usage":{"prompt_tokens":3,"completion_tokens":6,'
+            '"completion_tokens_details":{"reasoning_tokens":4},"total_tokens":9}}',
             "data: [DONE]",
             "",
         )

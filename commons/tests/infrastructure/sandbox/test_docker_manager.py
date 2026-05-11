@@ -9,6 +9,7 @@ import pytest
 import harnyx_commons.sandbox.docker as docker_module
 from harnyx_commons.sandbox.docker import (
     DockerSandboxManager,
+    HttpSandboxClient,
     SandboxOptions,
     resolve_sandbox_host_container_url,
 )
@@ -46,6 +47,31 @@ class RecordingRunner:
 
 def subprocess_completed(args: list[str], stdout: str) -> CompletedProcess[str]:
     return CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
+
+
+def test_http_sandbox_client_default_timeout_exceeds_entrypoint_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeAsyncClient:
+        def __init__(self, *, base_url: str, timeout: float) -> None:
+            captured["base_url"] = base_url
+            captured["timeout"] = timeout
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(docker_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = HttpSandboxClient("http://sandbox")
+    try:
+        assert captured == {
+            "base_url": "http://sandbox",
+            "timeout": 310.0,
+        }
+    finally:
+        client.close()
 
 
 def test_docker_sandbox_manager_builds_commands(monkeypatch) -> None:

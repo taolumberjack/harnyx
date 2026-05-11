@@ -372,14 +372,18 @@ class ProviderEvidenceModel(BaseModel):
     model: str = Field(min_length=1)
     total_calls: int = Field(ge=0)
     failed_calls: int = Field(ge=0)
+    failure_reason: str | None = Field(default=None, min_length=1)
 
     def to_domain(self) -> ProviderFailureEvidence:
-        return {
+        evidence: ProviderFailureEvidence = {
             "provider": self.provider,
             "model": self.model,
             "total_calls": self.total_calls,
             "failed_calls": self.failed_calls,
         }
+        if self.failure_reason is not None:
+            evidence["failure_reason"] = self.failure_reason
+        return evidence
 
 
 class ProgressResponse(BaseModel):

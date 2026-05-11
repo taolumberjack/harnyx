@@ -277,7 +277,12 @@ def test_run_progress_restore_provider_evidence_is_monotonic_for_duplicate_repla
     )
     progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
     progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
-    progress.record_provider_failure(session_id=session_id, provider="openai", model="gpt-4o")
+    progress.record_provider_failure(
+        session_id=session_id,
+        provider="openai",
+        model="gpt-4o",
+        reason="rate limited",
+    )
     progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
     progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
     progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
@@ -319,8 +324,37 @@ def test_run_progress_restore_provider_evidence_is_monotonic_for_duplicate_repla
             "model": "gpt-4o",
             "total_calls": 2,
             "failed_calls": 1,
+            "failure_reason": "rate limited",
         },
     )
+
+
+def test_run_progress_includes_failure_reason_in_consumed_provider_failures() -> None:
+    progress = InMemoryRunProgress()
+    batch = _make_batch()
+    session_id = uuid4()
+
+    progress.register(batch)
+    progress.register_task_session(batch_id=batch.batch_id, session_id=session_id)
+    progress.record_provider_call(session_id=session_id, provider="desearch", model="search_web")
+    progress.record_provider_failure(
+        session_id=session_id,
+        provider="desearch",
+        model="search_web",
+        reason="http_402: subscription usage cap exceeded",
+    )
+
+    expected = (
+        {
+            "provider": "desearch",
+            "model": "search_web",
+            "total_calls": 1,
+            "failed_calls": 1,
+            "failure_reason": "http_402: subscription usage cap exceeded",
+        },
+    )
+    assert progress.consume_provider_failures(session_id) == expected
+    assert progress.provider_evidence(batch.batch_id) == expected
 
 
 def test_run_progress_rejected_restore_does_not_mutate_provider_evidence() -> None:
@@ -335,7 +369,12 @@ def test_run_progress_rejected_restore_does_not_mutate_provider_evidence() -> No
         session_id=session_id,
     )
     progress.record_provider_call(session_id=session_id, provider="openai", model="gpt-4o")
-    progress.record_provider_failure(session_id=session_id, provider="openai", model="gpt-4o")
+    progress.record_provider_failure(
+        session_id=session_id,
+        provider="openai",
+        model="gpt-4o",
+        reason="rate limited",
+    )
     before = progress.provider_evidence(batch.batch_id)
 
     with pytest.raises(RuntimeError, match="restored submission batch_id mismatch"):

@@ -6,6 +6,7 @@ import pytest
 
 from harnyx_commons.miner_task_benchmark import (
     BENCHMARK_SAMPLE_SIZE,
+    BenchmarkCorrectnessScoringConfig,
     BenchmarkItemOutcome,
     BenchmarkItemState,
     BenchmarkRunState,
@@ -19,6 +20,12 @@ from harnyx_commons.miner_task_benchmark import (
 class _SampleItem:
     def __init__(self, item_index: int) -> None:
         self.item_index = item_index
+
+
+def test_benchmark_correctness_scoring_config_default_timeout_is_300_seconds() -> None:
+    config = BenchmarkCorrectnessScoringConfig(provider="chutes", model="judge-model")
+
+    assert config.timeout_seconds == pytest.approx(300.0)
 
 
 def test_aggregate_benchmark_metrics_scores_terminal_items_only() -> None:

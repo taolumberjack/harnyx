@@ -82,13 +82,13 @@ async def test_parallel_client_search_ai_uses_objective() -> None:
     )
     adapter = ParallelClient(base_url="https://api.parallel.ai", api_key="parallel-key", client=client)
 
-    response = await adapter.search_ai(SearchAiSearchRequest(prompt="find beta", count=5))
+    response = await adapter.search_ai(SearchAiSearchRequest(prompt="find beta", count=10))
 
     assert response.data[0].url == "https://example.com/b"
     assert response.data[0].note == "beta summary"
     assert captured["json"] == {
         "objective": "find beta",
-        "max_results": 5,
+        "max_results": 10,
     }
 
 

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol, TypedDict
+from typing import NotRequired, Protocol, TypedDict
 from uuid import UUID
 
 from harnyx_commons.domain.miner_task import (
@@ -33,6 +33,7 @@ class ProviderFailureEvidence(TypedDict):
     model: str
     total_calls: int
     failed_calls: int
+    failure_reason: NotRequired[str]
 
 
 class TimeoutAttributionKind(StrEnum):
@@ -129,6 +130,14 @@ def provider_batch_failure_evidence(
 
 
 def provider_batch_failure_message(evidence: ProviderFailureEvidence) -> str:
+    reason = evidence.get("failure_reason")
+    if reason:
+        return (
+            "provider failure threshold reached "
+            f"(provider={evidence['provider']} model={evidence['model']} "
+            f"failed_calls={evidence['failed_calls']} total_calls={evidence['total_calls']} "
+            f"reason={reason})"
+        )
     return (
         "provider failure threshold reached "
         f"(provider={evidence['provider']} model={evidence['model']} "
