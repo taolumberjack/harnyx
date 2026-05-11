@@ -37,7 +37,7 @@ async def test_parallel_search_ai_live() -> None:
         response = await client.search_ai(
             SearchAiSearchRequest(
                 prompt="Find the official Python documentation homepage",
-                count=3,
+                count=10,
             )
         )
         assert isinstance(response.data, list)

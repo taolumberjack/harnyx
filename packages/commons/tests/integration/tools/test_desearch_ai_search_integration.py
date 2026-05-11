@@ -46,7 +46,7 @@ async def test_desearch_search_ai_live() -> None:
         response = await desearch.search_ai(
             SearchAiSearchRequest(
                 prompt="Find the official Python documentation homepage",
-                count=8,
+                count=10,
             )
         )
         assert isinstance(response.data, list)
