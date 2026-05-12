@@ -20,18 +20,35 @@ from harnyx_commons.miner_task_champion import (
 from harnyx_commons.miner_task_ranking import CascadeConfig, RankingCascade
 
 
-def test_selection_from_stored_champion_weights_reconstructs_legacy_empty_weights() -> None:
+def test_selection_from_stored_champion_weights_reads_single_champion_score() -> None:
     artifact_id = uuid4()
 
     selection = selection_from_stored_champion_weights(
         final_top=(7,),
+        weights={"7": 0.5},
         champion_artifact_id=artifact_id,
     )
 
     assert selection == ChampionSelection(
         champion_uid=7,
         weights={7: 1.0},
+        score=0.5,
         champion_artifact_id=artifact_id,
+    )
+
+
+def test_selection_from_stored_champion_weights_keeps_legacy_split_weights_at_full_score() -> None:
+    selection = selection_from_stored_champion_weights(
+        final_top=(7, 8),
+        weights={"7": 0.6, "8": 0.4},
+        champion_artifact_id=None,
+    )
+
+    assert selection == ChampionSelection(
+        champion_uid=7,
+        weights={7: 1.0},
+        score=1.0,
+        champion_artifact_id=None,
     )
 
 
@@ -114,5 +131,6 @@ def test_select_champion_returns_winner_take_all_selection() -> None:
     assert selection == ChampionSelection(
         champion_uid=8,
         weights={8: 1.0},
+        score=1.0,
         champion_artifact_id=challenger,
     )

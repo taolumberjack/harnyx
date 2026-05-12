@@ -70,7 +70,7 @@ Notes:
 **Validator flow + gating**
 - The platform sends miner-task batches to validators; validators run script x task combinations and report scored runs.
 - Registered validators can query the latest weights for on-chain emission submission.
-- Miner emission is benchmark-scaled: an eligible benchmark score controls the miner share, and any non-miner share is burned through owner `uid=0`.
+- Miner emission is capped at `20% * latest champion batch score`; owner `uid=0` receives the remainder.
 - The [live benchmark page](https://dashboard.harnyx.ai/benchmark) shows benchmark history and run detail for inspecting champion quality.
 
 **Roles**
@@ -108,11 +108,11 @@ Because of that:
 - challenger order matters
 - small score differences inside the tolerance band do not automatically replace the incumbent
 
-### How benchmark-scaled emission works
+### How capped miner emission works
 
-`GET /v1/weights` uses the newest champion result with an eligible benchmark score. Total miner weight is `benchmark_score * 0.10`; owner `uid=0` receives the remainder, which burns that share of miner emission.
+`GET /v1/weights` uses the latest champion weights. Total miner weight is capped at `0.20 * latest champion batch score`; owner `uid=0` receives the remainder, which burns that share of miner emission.
 
-If no eligible benchmark score exists for the newest usable champion result, miner emission is burned for that round. A benchmark score of `0.0` emits zero miner weight; a score of `1.0` emits at most 10% total miner weight.
+If no champion selection exists, miner emission is burned for that round.
 
 
 

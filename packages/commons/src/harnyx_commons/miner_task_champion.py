@@ -6,11 +6,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import product
+from math import isfinite
 from typing import Protocol, TypeVar
 from uuid import UUID
 
 from harnyx_commons.miner_task_emission import compose_champion_weights
 from harnyx_commons.miner_task_ranking import (
+    ArtifactAggregateBundle,
     ArtifactRankingRow,
     RankingCascade,
     aggregate_ranking_rows,
@@ -60,20 +62,28 @@ class ChampionRunInput:
 class ChampionSelection:
     champion_uid: int | None
     weights: dict[int, float]
+    score: float = 1.0
     champion_artifact_id: UUID | None = None
 
 
 def selection_from_stored_champion_weights(
     *,
     final_top: Sequence[int],
+    weights: Mapping[str, float],
     champion_artifact_id: UUID | None,
 ) -> ChampionSelection:
     champion_uid = int(final_top[0]) if final_top else None
     if champion_uid is None:
-        return ChampionSelection(champion_uid=None, weights={}, champion_artifact_id=champion_artifact_id)
+        return ChampionSelection(
+            champion_uid=None,
+            weights={},
+            score=0.0,
+            champion_artifact_id=champion_artifact_id,
+        )
     return ChampionSelection(
         champion_uid=champion_uid,
         weights=compose_champion_weights(champion_uid),
+        score=_stored_champion_score(champion_uid=champion_uid, weights=weights),
         champion_artifact_id=champion_artifact_id,
     )
 
@@ -156,12 +166,17 @@ def select_champion(
         aggregates=aggregates,
     )
     if champion_artifact_id is None:
-        return ChampionSelection(champion_uid=None, weights={}, champion_artifact_id=None)
+        return ChampionSelection(champion_uid=None, weights={}, score=0.0, champion_artifact_id=None)
 
     champion_uid = artifact_uid_map[champion_artifact_id]
     return ChampionSelection(
         champion_uid=champion_uid,
         weights=compose_champion_weights(champion_uid),
+        score=_champion_batch_score(
+            champion_artifact_id=champion_artifact_id,
+            task_count=len(task_ids),
+            aggregates=aggregates,
+        ),
         champion_artifact_id=champion_artifact_id,
     )
 
@@ -236,6 +251,32 @@ def _validated_incumbent(
             f"champion artifact={current_champion.artifact_id} script artifact={incumbent.artifact_id}"
         )
     return (incumbent,), {incumbent.artifact_id}
+
+
+def _champion_batch_score(
+    *,
+    champion_artifact_id: UUID,
+    task_count: int,
+    aggregates: ArtifactAggregateBundle,
+) -> float:
+    if task_count <= 0:
+        raise ValueError("batch contains no tasks")
+    score = float(aggregates.totals[champion_artifact_id]) / float(task_count)
+    if not isfinite(score) or score < 0.0 or score > 1.0:
+        raise ValueError("champion batch score must be between 0.0 and 1.0")
+    return score
+
+
+def _stored_champion_score(*, champion_uid: int, weights: Mapping[str, float]) -> float:
+    if len(weights) != 1:
+        return 1.0
+    raw_score = weights.get(str(champion_uid))
+    if raw_score is None:
+        return 1.0
+    score = float(raw_score)
+    if not isfinite(score) or score < 0.0 or score > 1.0:
+        raise ValueError("stored champion score must be between 0.0 and 1.0")
+    return score
 
 
 __all__ = [
