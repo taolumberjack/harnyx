@@ -795,7 +795,7 @@ def _local_runtime(
             token_registry=object(),
             receipt_log=object(),
             session_manager=object(),
-            token_semaphore=object(),
+            tool_concurrency_limiter=object(),
         ),
         _search_client=_FakeAsyncResource(),
         _llm_provider_registry=_FakeAsyncResource(),
@@ -828,7 +828,7 @@ def _minimal_local_eval_state() -> SimpleNamespace:
         receipt_log=object(),
         session_manager=object(),
         evaluation_records=object(),
-        token_semaphore=object(),
+        tool_concurrency_limiter=object(),
     )
 
 
@@ -1564,14 +1564,17 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
     sandbox_manager = _FakeSandboxManager()
     tool_host = _FakeToolHost()
     start_calls = 0
+    tool_concurrency_limiter = object()
+    captured_tool_concurrency_limiter: object | None = None
 
     async def _start_tool_host(
         *,
         tool_executor,
-        token_semaphore,
+        tool_concurrency_limiter,
     ) -> _FakeToolHost:
-        nonlocal start_calls
-        del tool_executor, token_semaphore
+        nonlocal captured_tool_concurrency_limiter, start_calls
+        del tool_executor
+        captured_tool_concurrency_limiter = tool_concurrency_limiter
         await asyncio.sleep(0.01)
         start_calls += 1
         return tool_host
@@ -1606,7 +1609,7 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
             token_registry=object(),
             receipt_log=object(),
             session_manager=object(),
-            token_semaphore=object(),
+            tool_concurrency_limiter=tool_concurrency_limiter,
         ),
         _search_client=_FakeAsyncResource(),
         _llm_provider_registry=_FakeAsyncResource(),
@@ -1638,6 +1641,7 @@ async def test_local_runtime_executes_target_and_champion_via_sandbox_and_reuses
     await runtime.aclose()
 
     assert start_calls == 1
+    assert captured_tool_concurrency_limiter is tool_concurrency_limiter
     assert tool_host.close_calls == 1
     assert len(sandbox_manager.started_options) == 2
     assert len(sandbox_manager.stopped_deployments) == 2
@@ -1934,7 +1938,7 @@ async def test_local_runtime_stops_started_sandbox_when_cancelled_during_startup
             token_registry=object(),
             receipt_log=object(),
             session_manager=object(),
-            token_semaphore=object(),
+            tool_concurrency_limiter=object(),
         ),
         _search_client=None,
         _llm_provider_registry=None,

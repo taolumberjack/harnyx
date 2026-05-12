@@ -39,7 +39,7 @@ async def test_start_local_tool_host_cleans_up_when_cancelled_during_startup(
     start_task = asyncio.create_task(
         local_tool_host.start_local_tool_host(
             tool_executor=cast(Any, object()),
-            token_semaphore=cast(Any, object()),
+            tool_concurrency_limiter=cast(Any, object()),
         )
     )
 

@@ -8,6 +8,8 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 from harnyx_commons.errors import ConcurrencyLimitError
+from harnyx_commons.tools.dto import ToolInvocationRequest
+from harnyx_commons.tools.types import LLM_TOOLS, ToolName
 
 
 @dataclass(slots=True)
@@ -115,4 +117,65 @@ class TokenSemaphore:
             future.set_result(None)
 
 
-__all__ = ["TokenSemaphore"]
+@dataclass(frozen=True, slots=True)
+class ToolConcurrencyLimits:
+    llm_max_parallel_calls: int
+    search_max_parallel_calls: int
+
+    def __post_init__(self) -> None:
+        if self.llm_max_parallel_calls <= 0:
+            raise ValueError("llm_max_parallel_calls must be positive")
+        if self.search_max_parallel_calls <= 0:
+            raise ValueError("search_max_parallel_calls must be positive")
+
+
+DEFAULT_TOOL_CONCURRENCY_LIMITS = ToolConcurrencyLimits(
+    llm_max_parallel_calls=2,
+    search_max_parallel_calls=5,
+)
+
+SEARCH_LANE_TOOLS: frozenset[ToolName] = frozenset(
+    (
+        "search_web",
+        "search_ai",
+        "fetch_page",
+        "tooling_info",
+        "test_tool",
+    )
+)
+
+
+class ToolConcurrencyLimiter:
+    """Per-token tool concurrency split by explicit tool lane."""
+
+    def __init__(self, limits: ToolConcurrencyLimits = DEFAULT_TOOL_CONCURRENCY_LIMITS) -> None:
+        self._llm = TokenSemaphore(max_parallel_calls=limits.llm_max_parallel_calls)
+        self._search = TokenSemaphore(max_parallel_calls=limits.search_max_parallel_calls)
+
+    def acquire(self, invocation: ToolInvocationRequest) -> None:
+        self._semaphore_for(invocation.tool).acquire(invocation.token)
+
+    async def acquire_async(self, invocation: ToolInvocationRequest) -> None:
+        await self._semaphore_for(invocation.tool).acquire_async(invocation.token)
+
+    def release(self, invocation: ToolInvocationRequest) -> None:
+        self._semaphore_for(invocation.tool).release(invocation.token)
+
+    def in_flight(self, invocation: ToolInvocationRequest) -> int:
+        return self._semaphore_for(invocation.tool).in_flight(invocation.token)
+
+    def _semaphore_for(self, tool: ToolName) -> TokenSemaphore:
+        if tool in LLM_TOOLS:
+            return self._llm
+        if tool in SEARCH_LANE_TOOLS:
+            return self._search
+        raise ValueError(f"tool {tool!r} has no concurrency lane")
+
+
+__all__ = [
+    "DEFAULT_TOOL_CONCURRENCY_LIMITS",
+    "SEARCH_LANE_TOOLS",
+    "TokenSemaphore",
+    "ToolConcurrencyLimiter",
+    "ToolConcurrencyLimits",
+]

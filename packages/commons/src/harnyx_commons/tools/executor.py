@@ -28,7 +28,7 @@ from harnyx_commons.llm.pricing import price_llm, price_search
 from harnyx_commons.llm.schema import LlmResponse
 from harnyx_commons.llm.tool_models import ToolModelName, parse_tool_model
 from harnyx_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
-from harnyx_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_commons.tools.types import LLM_TOOLS, SearchToolName, ToolName, is_citation_source, is_search_tool
 from harnyx_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
 
@@ -779,17 +779,16 @@ def _summarize_value(value: object, *, limit: int = 200) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-async def execute_tool_with_token_permit(
+async def execute_tool_with_concurrency_permit(
     executor: _ToolExecutionPort,
-    semaphore: TokenSemaphore,
+    limiter: ToolConcurrencyLimiter,
     invocation: ToolInvocationRequest,
 ) -> ToolInvocationResult:
-    token = invocation.token
-    await semaphore.acquire_async(token)
+    await limiter.acquire_async(invocation)
     try:
         return await executor.execute(invocation)
     finally:
-        semaphore.release(token)
+        limiter.release(invocation)
 
 
-__all__ = ["ToolExecutor", "ToolInvoker", "ToolCallUsage", "execute_tool_with_token_permit"]
+__all__ = ["ToolExecutor", "ToolInvoker", "ToolCallUsage", "execute_tool_with_concurrency_permit"]

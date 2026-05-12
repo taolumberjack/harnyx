@@ -585,7 +585,7 @@ class LocalEvaluationRuntime:
                     self._progress_reporter.log("starting ephemeral local tool host")
                 self._tool_host = await start_local_tool_host(
                     tool_executor=self.tool_executor,
-                    token_semaphore=self._state.token_semaphore,
+                    tool_concurrency_limiter=self._state.tool_concurrency_limiter,
                 )
                 if self._progress_reporter is not None:
                     self._progress_reporter.log(

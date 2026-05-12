@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from uvicorn import Config, Server
 
 from harnyx_commons.tools.executor import ToolExecutor
-from harnyx_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_routes
 
 _DEFAULT_HOST = "0.0.0.0"  # noqa: S104 - sandbox gateway must reach the host callback
@@ -46,14 +46,14 @@ class LocalToolHostHandle:
 async def start_local_tool_host(
     *,
     tool_executor: ToolExecutor,
-    token_semaphore: TokenSemaphore,
+    tool_concurrency_limiter: ToolConcurrencyLimiter,
     host: str = _DEFAULT_HOST,
     container_host: str = _DEFAULT_CONTAINER_HOST,
 ) -> LocalToolHostHandle:
     port = _find_free_port()
     deps = ToolRouteDeps(
         tool_executor=tool_executor,
-        token_semaphore=token_semaphore,
+        tool_concurrency_limiter=tool_concurrency_limiter,
     )
     app = FastAPI(title="Harnyx Local Tool Host", version="0.1.0")
     add_tool_routes(app, lambda: deps)

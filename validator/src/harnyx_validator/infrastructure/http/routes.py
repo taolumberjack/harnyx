@@ -28,10 +28,10 @@ from harnyx_commons.domain.session import Session
 from harnyx_commons.errors import ConcurrencyLimitError, ToolProviderError
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolInvocationRequest
-from harnyx_commons.tools.executor import ToolExecutor, execute_tool_with_token_permit
+from harnyx_commons.tools.executor import ToolExecutor, execute_tool_with_concurrency_permit
 from harnyx_commons.tools.http_models import ToolExecuteResponseDTO
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
-from harnyx_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_miner_sdk.tools.http_models import ToolExecuteRequestDTO
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.dto.evaluation import (
@@ -69,7 +69,7 @@ _STATUS_TIMESTAMP_HEADER = "X-Harnyx-Status-Ts"
 @dataclass(frozen=True)
 class ToolRouteDeps:
     tool_executor: ToolExecutor
-    token_semaphore: TokenSemaphore
+    tool_concurrency_limiter: ToolConcurrencyLimiter
 
 
 ControlRouteAuth = Callable[[str, str, bytes, str | None], Awaitable[str]]
@@ -137,9 +137,9 @@ def add_tool_routes(app: FastAPI, dependency_provider: Callable[[], ToolRouteDep
             kwargs=payload.kwargs,
         )
         try:
-            result = await execute_tool_with_token_permit(
+            result = await execute_tool_with_concurrency_permit(
                 deps.tool_executor,
-                deps.token_semaphore,
+                deps.tool_concurrency_limiter,
                 invocation,
             )
         except ToolProviderError as exc:
