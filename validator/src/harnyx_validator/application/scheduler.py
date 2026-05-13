@@ -20,6 +20,7 @@ from harnyx_commons.domain.miner_task import (
     MinerTaskErrorCode,
     is_delivery_disqualifying_validator_pair_error,
 )
+from harnyx_commons.miner_task_failure_policy import ValidatorModelLlmBaseline
 from harnyx_commons.sandbox.client import SandboxClient
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_commons.sandbox.options import SandboxOptions
@@ -72,7 +73,7 @@ class SchedulerConfig:
 class _CompletedArtifactResult:
     artifact_id: UUID
     submissions: tuple[MinerTaskRunSubmission, ...]
-    slowest_successful_tps: float | None
+    validator_model_llm_baseline: ValidatorModelLlmBaseline
     timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState]
     validator_batch_failure: ValidatorBatchFailedError | None = None
 
@@ -80,7 +81,9 @@ class _CompletedArtifactResult:
 @dataclass(slots=True)
 class _BatchArtifactDispatchState:
     submissions_by_artifact_index: list[tuple[MinerTaskRunSubmission, ...] | None]
-    slowest_successful_tps: float | None = None
+    validator_model_llm_baseline: ValidatorModelLlmBaseline = field(
+        default_factory=ValidatorModelLlmBaseline.empty
+    )
     timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState] = field(default_factory=dict)
     stop_dequeuing: bool = False
     published_batch_failure: ValidatorBatchFailedError | None = None
@@ -103,17 +106,6 @@ def _count_submission_outcomes(
             continue
         failure_count += 1
     return success_count, failure_count
-
-
-def _merge_slowest_successful_tps(
-    current: float | None,
-    candidate: float | None,
-) -> float | None:
-    if candidate is None:
-        return current
-    if current is None:
-        return candidate
-    return min(current, candidate)
 
 
 def _has_primary_artifact_outcome(
@@ -339,16 +331,15 @@ class EvaluationScheduler:
                 tasks=tasks,
                 recorded_pairs=recorded_pairs,
                 blocking_executor=blocking_executor,
-                completed_artifact_baseline=lambda: dispatch.slowest_successful_tps,
+                completed_artifact_baseline=lambda: dispatch.validator_model_llm_baseline,
                 timeout_retry_state_snapshot=timeout_retry_state_snapshot,
                 stop_dequeuing=lambda: self._stop_artifact_dequeue(dispatch),
             )
 
             async with dispatch.merge_lock:
                 dispatch.submissions_by_artifact_index[artifact_index - 1] = artifact_result.submissions
-                dispatch.slowest_successful_tps = _merge_slowest_successful_tps(
-                    dispatch.slowest_successful_tps,
-                    artifact_result.slowest_successful_tps,
+                dispatch.validator_model_llm_baseline = dispatch.validator_model_llm_baseline.merge(
+                    artifact_result.validator_model_llm_baseline,
                 )
                 dispatch.timeout_retry_state_by_pair.update(artifact_result.timeout_retry_state_by_pair)
                 if artifact_result.validator_batch_failure is not None:
@@ -365,8 +356,8 @@ class EvaluationScheduler:
         artifact: ScriptArtifactSpec,
         tasks: tuple[MinerTask, ...],
         orchestrator: TaskRunOrchestrator,
-        successful_baseline_tps: float | None,
-        completed_artifact_baseline: Callable[[], float | None] | None = None,
+        validator_model_llm_baseline: ValidatorModelLlmBaseline,
+        completed_artifact_baseline: Callable[[], ValidatorModelLlmBaseline] | None = None,
         timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState],
     ) -> ArtifactEvaluationOutcome:
         artifact_result = ArtifactEvaluationOutcome(
@@ -376,7 +367,7 @@ class EvaluationScheduler:
                 pair_key: state.prior_observations
                 for pair_key, state in timeout_retry_state_by_pair.items()
             },
-            slowest_successful_tps=successful_baseline_tps,
+            validator_model_llm_baseline=validator_model_llm_baseline,
         )
         current_timeout_states = dict(timeout_retry_state_by_pair)
         while artifact_result.unresolved_tasks:
@@ -385,7 +376,7 @@ class EvaluationScheduler:
                 artifact=artifact,
                 tasks=artifact_result.unresolved_tasks,
                 orchestrator=orchestrator,
-                successful_baseline_tps=artifact_result.slowest_successful_tps,
+                validator_model_llm_baseline=artifact_result.validator_model_llm_baseline,
                 completed_artifact_baseline=completed_artifact_baseline,
                 timeout_observations_by_pair={
                     pair_key: state.prior_observations
@@ -404,7 +395,7 @@ class EvaluationScheduler:
                 pair_key: state.prior_observations
                 for pair_key, state in current_timeout_states.items()
             },
-            slowest_successful_tps=artifact_result.slowest_successful_tps,
+            validator_model_llm_baseline=artifact_result.validator_model_llm_baseline,
         )
 
     async def _run_single_artifact(
@@ -417,7 +408,7 @@ class EvaluationScheduler:
         tasks: tuple[MinerTask, ...],
         recorded_pairs: frozenset[tuple[UUID, UUID]],
         blocking_executor: Executor,
-        completed_artifact_baseline: Callable[[], float | None],
+        completed_artifact_baseline: Callable[[], ValidatorModelLlmBaseline],
         timeout_retry_state_snapshot: dict[tuple[UUID, UUID], TimeoutRetryState],
         stop_dequeuing: Callable[[], None] | None = None,
     ) -> _CompletedArtifactResult:
@@ -428,7 +419,7 @@ class EvaluationScheduler:
             return _CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=(),
-                slowest_successful_tps=None,
+                validator_model_llm_baseline=completed_artifact_baseline(),
                 timeout_retry_state_by_pair=timeout_retry_state_snapshot,
             )
 
@@ -483,7 +474,7 @@ class EvaluationScheduler:
                 return _CompletedArtifactResult(
                     artifact_id=artifact.artifact_id,
                     submissions=(),
-                    slowest_successful_tps=completed_artifact_baseline(),
+                    validator_model_llm_baseline=completed_artifact_baseline(),
                     timeout_retry_state_by_pair=timeout_retry_state_snapshot,
                     validator_batch_failure=self._conclusive_batch_failure_from_artifact_error(
                         artifact=artifact,
@@ -549,7 +540,7 @@ class EvaluationScheduler:
             return _CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=artifact_submissions,
-                slowest_successful_tps=None,
+                validator_model_llm_baseline=completed_artifact_baseline(),
                 timeout_retry_state_by_pair=timeout_retry_state_snapshot,
             )
 
@@ -564,7 +555,7 @@ class EvaluationScheduler:
                 artifact=artifact,
                 tasks=remaining_tasks,
                 orchestrator=orchestrator,
-                successful_baseline_tps=completed_artifact_baseline(),
+                validator_model_llm_baseline=completed_artifact_baseline(),
                 completed_artifact_baseline=completed_artifact_baseline,
                 timeout_retry_state_by_pair=timeout_retry_state_snapshot,
             )
@@ -592,7 +583,7 @@ class EvaluationScheduler:
             return _CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=artifact_submissions,
-                slowest_successful_tps=completed_artifact_baseline(),
+                validator_model_llm_baseline=completed_artifact_baseline(),
                 timeout_retry_state_by_pair=timeout_retry_state_snapshot,
                 validator_batch_failure=ValidatorBatchFailedError(
                     error_code=exc.error_code,
@@ -692,7 +683,7 @@ class EvaluationScheduler:
         return _CompletedArtifactResult(
             artifact_id=artifact.artifact_id,
             submissions=artifact_submissions,
-            slowest_successful_tps=artifact_result.slowest_successful_tps,
+            validator_model_llm_baseline=artifact_result.validator_model_llm_baseline,
             timeout_retry_state_by_pair={
                 pair_key: TimeoutRetryState(prior_observations=observations)
                 for pair_key, observations in artifact_result.timeout_observations_by_pair.items()

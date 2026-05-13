@@ -5,12 +5,14 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from harnyx_commons.domain.miner_task import EvaluationError, MinerTaskErrorCode
+from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome, ToolExecutionFacts
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.miner_task_failure_policy import (
     ProviderFailureEvidence,
     SuccessfulLlmSample,
     TimeoutAttributionKind,
     TimeoutObservationEvidence,
+    ValidatorModelLlmBaseline,
     classify_timeout_attribution,
     delivery_exclusion_from_completed_pair_results,
     is_provider_caused_terminal_failure,
@@ -18,7 +20,11 @@ from harnyx_commons.miner_task_failure_policy import (
     is_timeout_sandbox_invocation,
     provider_batch_failure_evidence,
     provider_batch_failure_message,
+    successful_llm_samples,
 )
+
+TEST_MODEL = "google/gemma-4-31B-turbo-TEE"
+OTHER_MODEL = "Qwen/Qwen3.6-27B-TEE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +150,7 @@ def test_delivery_exclusion_ignores_miner_owned_pair_failures() -> None:
 
 def test_timeout_attribution_marks_fast_llm_sample_as_miner_owned() -> None:
     observation = TimeoutObservationEvidence(
-        successful_llm_samples=(SuccessfulLlmSample(elapsed_ms=1000.0, total_tokens=100, llm_tps=100.0),),
+        successful_llm_samples=(_llm_sample(model=TEST_MODEL, llm_tps=100.0),),
         session_summary=ToolUsageSummary(),
         session_elapsed_ms=60000.0,
     )
@@ -152,8 +158,67 @@ def test_timeout_attribution_marks_fast_llm_sample_as_miner_owned() -> None:
     assert (
         classify_timeout_attribution(
             observation=observation,
-            successful_baseline_tps=100.0,
+            validator_model_llm_baseline=_baseline(TEST_MODEL, 100.0),
             prior_timeout_observations=(),
+        )
+        is TimeoutAttributionKind.MINER_OWNED
+    )
+
+
+def test_timeout_attribution_slow_completed_sample_blocks_fast_sample_before_exhaustion() -> None:
+    observation = TimeoutObservationEvidence(
+        successful_llm_samples=(
+            _llm_sample(model=TEST_MODEL, llm_tps=100.0),
+            _llm_sample(model=TEST_MODEL, llm_tps=40.0),
+        ),
+        session_summary=ToolUsageSummary(),
+        session_elapsed_ms=60000.0,
+    )
+
+    assert (
+        classify_timeout_attribution(
+            observation=observation,
+            validator_model_llm_baseline=_baseline(TEST_MODEL, 100.0),
+            prior_timeout_observations=(),
+        )
+        is None
+    )
+
+
+def test_timeout_attribution_prior_slow_sample_blocks_current_fast_sample_at_exhaustion() -> None:
+    prior_observation = TimeoutObservationEvidence(
+        successful_llm_samples=(_llm_sample(model=TEST_MODEL, llm_tps=40.0),),
+        session_summary=ToolUsageSummary(),
+        session_elapsed_ms=60000.0,
+    )
+    current_observation = TimeoutObservationEvidence(
+        successful_llm_samples=(_llm_sample(model=TEST_MODEL, llm_tps=100.0),),
+        session_summary=ToolUsageSummary(),
+        session_elapsed_ms=60000.0,
+    )
+
+    assert (
+        classify_timeout_attribution(
+            observation=current_observation,
+            validator_model_llm_baseline=_baseline(TEST_MODEL, 100.0),
+            prior_timeout_observations=(prior_observation, prior_observation),
+        )
+        is TimeoutAttributionKind.NOT_MINER_OWNED
+    )
+
+
+def test_timeout_attribution_uses_model_specific_validator_baseline() -> None:
+    observation = TimeoutObservationEvidence(
+        successful_llm_samples=(_llm_sample(model=TEST_MODEL, llm_tps=40.0),),
+        session_summary=ToolUsageSummary(),
+        session_elapsed_ms=60000.0,
+    )
+
+    assert (
+        classify_timeout_attribution(
+            observation=observation,
+            validator_model_llm_baseline=_baseline(OTHER_MODEL, 100.0),
+            prior_timeout_observations=(observation, observation),
         )
         is TimeoutAttributionKind.MINER_OWNED
     )
@@ -161,7 +226,7 @@ def test_timeout_attribution_marks_fast_llm_sample_as_miner_owned() -> None:
 
 def test_timeout_attribution_waits_until_observations_are_exhausted_without_baseline() -> None:
     observation = TimeoutObservationEvidence(
-        successful_llm_samples=(),
+        successful_llm_samples=(_llm_sample(model=TEST_MODEL, llm_tps=100.0),),
         session_summary=ToolUsageSummary(),
         session_elapsed_ms=60000.0,
     )
@@ -169,7 +234,7 @@ def test_timeout_attribution_waits_until_observations_are_exhausted_without_base
     assert (
         classify_timeout_attribution(
             observation=observation,
-            successful_baseline_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             prior_timeout_observations=(observation,),
         )
         is None
@@ -177,11 +242,37 @@ def test_timeout_attribution_waits_until_observations_are_exhausted_without_base
     assert (
         classify_timeout_attribution(
             observation=observation,
-            successful_baseline_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             prior_timeout_observations=(observation, observation),
         )
         is TimeoutAttributionKind.MINER_OWNED
     )
+
+
+def test_successful_llm_samples_include_model_identity() -> None:
+    session_id = uuid4()
+    receipt = ToolCall(
+        receipt_id="receipt-1",
+        session_id=session_id,
+        uid=1,
+        tool="llm_chat",
+        issued_at=datetime(2026, 5, 13, tzinfo=UTC),
+        outcome=ToolCallOutcome.OK,
+        details=ToolCallDetails(
+            request_hash="request-hash",
+            request_payload={
+                "args": [],
+                "kwargs": {"model": TEST_MODEL},
+            },
+            response_hash="response-hash",
+            response_payload={"usage": {"total_tokens": 100}},
+            execution=ToolExecutionFacts(elapsed_ms=1000.0),
+        ),
+    )
+
+    samples = successful_llm_samples((receipt,))
+
+    assert samples == (SuccessfulLlmSample(model=TEST_MODEL, elapsed_ms=1000.0, total_tokens=100, llm_tps=100.0),)
 
 
 def test_sandbox_failure_shape_classifiers_expose_validator_attribution_policy() -> None:
@@ -192,6 +283,19 @@ def test_sandbox_failure_shape_classifiers_expose_validator_attribution_policy()
         detail_exception="ToolInvocationError",
         detail_error="tool invocation failed with 400: tool execution failed",
     )
+
+
+def _llm_sample(*, model: str, llm_tps: float) -> SuccessfulLlmSample:
+    return SuccessfulLlmSample(
+        model=model,
+        elapsed_ms=1000.0,
+        total_tokens=int(llm_tps),
+        llm_tps=llm_tps,
+    )
+
+
+def _baseline(model: str, slowest_tps: float) -> ValidatorModelLlmBaseline:
+    return ValidatorModelLlmBaseline(slowest_tps_by_model={model: slowest_tps})
 
 
 def _submission(

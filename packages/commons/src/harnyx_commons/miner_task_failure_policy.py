@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -15,6 +15,8 @@ from harnyx_commons.domain.miner_task import (
 )
 from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
+from harnyx_commons.json_types import JsonValue
+from harnyx_commons.llm.tool_models import ToolModelName, parse_tool_model
 
 PROVIDER_BATCH_MIN_TOTAL_CALLS = 10
 PROVIDER_BATCH_MIN_FAILURE_RATE = 0.95
@@ -43,9 +45,42 @@ class TimeoutAttributionKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SuccessfulLlmSample:
+    model: ToolModelName
     elapsed_ms: float
     total_tokens: int
     llm_tps: float
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatorModelLlmBaseline:
+    slowest_tps_by_model: Mapping[ToolModelName, float]
+
+    @classmethod
+    def empty(cls) -> ValidatorModelLlmBaseline:
+        return cls(slowest_tps_by_model={})
+
+    @classmethod
+    def from_samples(cls, samples: Sequence[SuccessfulLlmSample]) -> ValidatorModelLlmBaseline:
+        slowest_by_model: dict[ToolModelName, float] = {}
+        for sample in samples:
+            current = slowest_by_model.get(sample.model)
+            if current is None or sample.llm_tps < current:
+                slowest_by_model[sample.model] = sample.llm_tps
+        return cls(slowest_tps_by_model=slowest_by_model)
+
+    def threshold_for(self, model: ToolModelName) -> float | None:
+        baseline_tps = self.slowest_tps_by_model.get(model)
+        if baseline_tps is None:
+            return None
+        return baseline_tps / TIMEOUT_TPS_SLOWDOWN_FACTOR
+
+    def merge(self, other: ValidatorModelLlmBaseline) -> ValidatorModelLlmBaseline:
+        merged = dict(self.slowest_tps_by_model)
+        for model, tps in other.slowest_tps_by_model.items():
+            current = merged.get(model)
+            if current is None or tps < current:
+                merged[model] = tps
+        return ValidatorModelLlmBaseline(slowest_tps_by_model=merged)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +213,9 @@ def successful_llm_samples(receipts: Sequence[ToolCall]) -> tuple[SuccessfulLlmS
     for receipt in receipts:
         if not receipt.is_successful() or receipt.tool != "llm_chat":
             continue
+        model = _receipt_llm_model(receipt)
+        if model is None:
+            continue
         execution = receipt.details.execution
         if execution is None or execution.elapsed_ms is None or execution.elapsed_ms <= 0:
             continue
@@ -186,6 +224,7 @@ def successful_llm_samples(receipts: Sequence[ToolCall]) -> tuple[SuccessfulLlmS
             continue
         samples.append(
             SuccessfulLlmSample(
+                model=model,
                 elapsed_ms=execution.elapsed_ms,
                 total_tokens=total_tokens,
                 llm_tps=total_tokens / (execution.elapsed_ms / 1000.0),
@@ -197,32 +236,45 @@ def successful_llm_samples(receipts: Sequence[ToolCall]) -> tuple[SuccessfulLlmS
 def classify_timeout_attribution(
     *,
     observation: TimeoutObservationEvidence,
-    successful_baseline_tps: float | None,
+    validator_model_llm_baseline: ValidatorModelLlmBaseline,
     prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
 ) -> TimeoutAttributionKind | None:
-    comparable_samples = observation.successful_llm_samples
-    exhausted = len(prior_timeout_observations) + 1 >= TIMEOUT_REVIEW_MAX_OBSERVATIONS
-    threshold_tps = (
-        None
-        if successful_baseline_tps is None
-        else successful_baseline_tps / TIMEOUT_TPS_SLOWDOWN_FACTOR
+    comparable_samples = tuple(
+        sample
+        for timeout_observation in (*prior_timeout_observations, observation)
+        for sample in timeout_observation.successful_llm_samples
+        if validator_model_llm_baseline.threshold_for(sample.model) is not None
     )
-    if threshold_tps is None:
-        return TimeoutAttributionKind.MINER_OWNED if exhausted else None
-    if any(sample.llm_tps >= threshold_tps for sample in comparable_samples):
+    exhausted = len(prior_timeout_observations) + 1 >= TIMEOUT_REVIEW_MAX_OBSERVATIONS
+    if any(_is_slow_llm_sample(sample, validator_model_llm_baseline) for sample in comparable_samples):
+        return TimeoutAttributionKind.NOT_MINER_OWNED if exhausted else None
+    if any(_is_fast_llm_sample(sample, validator_model_llm_baseline) for sample in comparable_samples):
         return TimeoutAttributionKind.MINER_OWNED
-    if not exhausted:
-        return None
-    if comparable_samples and all(sample.llm_tps < threshold_tps for sample in comparable_samples):
-        return TimeoutAttributionKind.NOT_MINER_OWNED
-    return TimeoutAttributionKind.MINER_OWNED
+    return TimeoutAttributionKind.MINER_OWNED if exhausted else None
 
 
-def slowest_successful_llm_tps(receipts: Sequence[ToolCall]) -> float | None:
-    samples = successful_llm_samples(receipts)
-    if not samples:
-        return None
-    return min(sample.llm_tps for sample in samples)
+def validator_model_llm_baseline(receipts: Sequence[ToolCall]) -> ValidatorModelLlmBaseline:
+    return ValidatorModelLlmBaseline.from_samples(successful_llm_samples(receipts))
+
+
+def _is_slow_llm_sample(
+    sample: SuccessfulLlmSample,
+    baseline: ValidatorModelLlmBaseline,
+) -> bool:
+    threshold_tps = baseline.threshold_for(sample.model)
+    if threshold_tps is None:
+        return False
+    return sample.llm_tps < threshold_tps
+
+
+def _is_fast_llm_sample(
+    sample: SuccessfulLlmSample,
+    baseline: ValidatorModelLlmBaseline,
+) -> bool:
+    threshold_tps = baseline.threshold_for(sample.model)
+    if threshold_tps is None:
+        return False
+    return sample.llm_tps >= threshold_tps
 
 
 def _receipt_total_tokens(receipt: ToolCall) -> int | None:
@@ -236,6 +288,37 @@ def _receipt_total_tokens(receipt: ToolCall) -> int | None:
     if not isinstance(total_tokens, int):
         return None
     return total_tokens
+
+
+def _receipt_llm_model(receipt: ToolCall) -> ToolModelName | None:
+    request_payload = receipt.details.request_payload
+    raw_model = _raw_model_from_request_payload(request_payload)
+    if raw_model is None:
+        return None
+    return parse_tool_model(raw_model)
+
+
+def _raw_model_from_request_payload(payload: JsonValue | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    direct_model = payload.get("model")
+    if isinstance(direct_model, str):
+        return direct_model
+
+    kwargs = payload.get("kwargs")
+    if isinstance(kwargs, dict):
+        kwargs_model = kwargs.get("model")
+        if isinstance(kwargs_model, str):
+            return kwargs_model
+
+    args = payload.get("args")
+    if isinstance(args, list) and args:
+        first_arg = args[0]
+        if isinstance(first_arg, dict):
+            arg_model = first_arg.get("model")
+            if isinstance(arg_model, str):
+                return arg_model
+    return None
 
 
 __all__ = [
@@ -256,6 +339,7 @@ __all__ = [
     "SuccessfulLlmSample",
     "TimeoutAttributionKind",
     "TimeoutObservationEvidence",
+    "ValidatorModelLlmBaseline",
     "ValidatorDeliveryExclusion",
     "classify_timeout_attribution",
     "delivery_exclusion_from_completed_pair_results",
@@ -264,6 +348,6 @@ __all__ = [
     "is_timeout_sandbox_invocation",
     "provider_batch_failure_evidence",
     "provider_batch_failure_message",
-    "slowest_successful_llm_tps",
     "successful_llm_samples",
+    "validator_model_llm_baseline",
 ]
