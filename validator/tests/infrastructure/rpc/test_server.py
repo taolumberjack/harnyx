@@ -421,6 +421,31 @@ def test_execute_tool_endpoint_invalid_llm_payload_does_not_record_provider_call
     assert provider.progress_tracker.provider_evidence(provider.batch_id) == ()
 
 
+def test_execute_tool_endpoint_rejects_non_string_llm_model_without_provider_call() -> None:
+    provider = TrackingDependencyProvider()
+    app = create_test_app(provider)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "llm_chat",
+            "args": [],
+            "kwargs": {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": 123,
+            },
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == ()
+
+
 def test_execute_tool_endpoint_records_provider_call_on_live_llm_success() -> None:
     provider = TrackingDependencyProvider(llm_provider=_SuccessfulLlmProvider())
     app = create_test_app(provider)

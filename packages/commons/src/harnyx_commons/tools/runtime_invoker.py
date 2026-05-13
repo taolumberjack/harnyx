@@ -32,6 +32,7 @@ from harnyx_commons.llm.schema import (
     LlmTool,
 )
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, ToolModelName, parse_tool_model
+from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.executor import ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.normalize import normalize_response
 from harnyx_commons.tools.ports import WebSearchProviderPort
@@ -246,7 +247,7 @@ class RuntimeToolInvoker(ToolInvoker):
     ) -> JsonObject:
         if self._web_search is None:
             raise LookupError("search client is not configured")
-        payload = self._payload_from_args_kwargs(args, kwargs)
+        payload = tool_payload_from_args_kwargs(args, kwargs)
         if tool_name == "search_web":
             request_model_web = SearchWebSearchRequest.model_validate(payload)
             response_web = await self._web_search.search_web(request_model_web)
@@ -300,7 +301,7 @@ class RuntimeToolInvoker(ToolInvoker):
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
     ) -> LlmToolInvocation:
-        payload = dict(self._payload_from_args_kwargs(args, kwargs))
+        payload = tool_payload_from_args_kwargs(args, kwargs)
         invocation = LlmToolInvocation.model_validate(payload)
         self._assert_allowed_model(invocation.model)
         return invocation
@@ -354,24 +355,6 @@ class RuntimeToolInvoker(ToolInvoker):
             thinking=invocation.thinking.to_schema() if invocation.thinking is not None else None,
             use_case="tool_runtime_invoker",
         )
-
-    @staticmethod
-    def _payload_from_args_kwargs(
-        args: Sequence[JsonValue],
-        kwargs: Mapping[str, JsonValue],
-    ) -> dict[str, JsonValue]:
-        if kwargs:
-            return dict(kwargs)
-        if args:
-            first = args[0]
-            if isinstance(first, dict):
-                for key in first:
-                    if not isinstance(key, str):
-                        raise TypeError("expected JSON object with string keys")
-                return dict(first)
-            raise TypeError("expected JSON object payload as first positional argument")
-        return {}
-
 
 def _optional_mapping(value: object | None, *, label: str) -> Mapping[str, object] | None:
     if value is None:

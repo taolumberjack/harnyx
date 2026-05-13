@@ -36,6 +36,9 @@ from harnyx_validator.runtime.bootstrap import (
 )
 from harnyx_validator.runtime.settings import Settings
 
+DEFAULT_LLM_MODEL = "deepseek-ai/DeepSeek-V3.2-TEE"
+OTHER_LLM_MODEL = "zai-org/GLM-5-TEE"
+
 
 class _FakeLlmProvider:
     def __init__(self) -> None:
@@ -290,8 +293,18 @@ def test_build_state_uses_separate_tool_concurrency_lanes() -> None:
     session_id = uuid4()
     token = "token"  # noqa: S105
     llm_invocations = [
-        ToolInvocationRequest(session_id=session_id, token=token, tool="llm_chat"),
-        ToolInvocationRequest(session_id=session_id, token=token, tool="llm_chat"),
+        ToolInvocationRequest(
+            session_id=session_id,
+            token=token,
+            tool="llm_chat",
+            kwargs={"model": DEFAULT_LLM_MODEL},
+        ),
+        ToolInvocationRequest(
+            session_id=session_id,
+            token=token,
+            tool="llm_chat",
+            kwargs={"model": DEFAULT_LLM_MODEL},
+        ),
     ]
     search_invocations = [
         ToolInvocationRequest(session_id=session_id, token=token, tool="search_web"),
@@ -305,8 +318,20 @@ def test_build_state_uses_separate_tool_concurrency_lanes() -> None:
         state.tool_concurrency_limiter.acquire(invocation)
     with pytest.raises(ConcurrencyLimitError):
         state.tool_concurrency_limiter.acquire(
-            ToolInvocationRequest(session_id=session_id, token=token, tool="llm_chat")
+            ToolInvocationRequest(
+                session_id=session_id,
+                token=token,
+                tool="llm_chat",
+                kwargs={"model": DEFAULT_LLM_MODEL},
+            )
         )
+    other_model_invocation = ToolInvocationRequest(
+        session_id=session_id,
+        token=token,
+        tool="llm_chat",
+        kwargs={"model": OTHER_LLM_MODEL},
+    )
+    state.tool_concurrency_limiter.acquire(other_model_invocation)
 
     for invocation in search_invocations:
         state.tool_concurrency_limiter.acquire(invocation)
@@ -317,6 +342,7 @@ def test_build_state_uses_separate_tool_concurrency_lanes() -> None:
 
     for invocation in llm_invocations:
         state.tool_concurrency_limiter.release(invocation)
+    state.tool_concurrency_limiter.release(other_model_invocation)
     for invocation in search_invocations:
         state.tool_concurrency_limiter.release(invocation)
 

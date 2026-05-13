@@ -286,6 +286,63 @@ async def test_runtime_invoker_routes_llm_chat(model: str) -> None:
     assert recorded.timeout_seconds == pytest.approx(120.0)
 
 
+async def test_runtime_invoker_routes_llm_chat_from_first_positional_payload() -> None:
+    stub_chutes = StubChutesProvider()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=stub_chutes,
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+    model = ALLOWED_TOOL_MODELS[0]
+
+    invocation_output = await _invoke(
+        invoker,
+        "llm_chat",
+        args=(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": model,
+                "temperature": 0.2,
+            },
+        ),
+        kwargs={},
+    )
+
+    assert isinstance(invocation_output, ToolInvocationOutput)
+    recorded = stub_chutes.calls[0]
+    assert recorded.model == model
+    assert recorded.temperature == 0.2
+
+
+async def test_runtime_invoker_prefers_kwargs_over_first_positional_payload() -> None:
+    stub_chutes = StubChutesProvider()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=stub_chutes,
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+    model = ALLOWED_TOOL_MODELS[0]
+
+    invocation_output = await _invoke(
+        invoker,
+        "llm_chat",
+        args=(
+            {
+                "messages": [{"role": "user", "content": "from args"}],
+                "model": "unauthorized/model",
+            },
+        ),
+        kwargs={"messages": [{"role": "user", "content": "from kwargs"}], "model": model},
+    )
+
+    assert isinstance(invocation_output, ToolInvocationOutput)
+    recorded = stub_chutes.calls[0]
+    assert recorded.model == model
+    assert recorded.messages[0].content[0].text == "from kwargs"
+
+
 async def test_runtime_invoker_does_not_expose_internal_provider_metadata_for_llm_chat() -> None:
     stub_provider = StubChutesProvider()
     invoker = RuntimeToolInvoker(

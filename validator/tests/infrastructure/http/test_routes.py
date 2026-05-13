@@ -31,15 +31,18 @@ from harnyx_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 DEMO_SESSION_TOKEN = uuid4().hex
+DEFAULT_LLM_MODEL = "deepseek-ai/DeepSeek-V3.2-TEE"
+OTHER_LLM_MODEL = "zai-org/GLM-5-TEE"
 
 
 def _invocation(tool: ToolName = "search_web") -> ToolInvocationRequest:
+    kwargs = {"model": DEFAULT_LLM_MODEL} if tool == "llm_chat" else {}
     return ToolInvocationRequest(
         session_id=uuid4(),
         token=DEMO_SESSION_TOKEN,
         tool=tool,
         args=(),
-        kwargs={},
+        kwargs=kwargs,
     )
 
 
@@ -371,7 +374,7 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
     assert session_snapshot.usage.total_cost_usd == pytest.approx(0.0)
 
 
-def test_execute_tool_endpoint_waits_for_third_llm_call_then_succeeds() -> None:
+def test_execute_tool_endpoint_waits_for_third_same_model_llm_call_then_succeeds() -> None:
     provider = DemoDependencyProvider()
     provider.dependencies = ToolRouteDeps(
         tool_executor=cast(ToolExecutor, _StaticToolExecutor()),
@@ -388,9 +391,46 @@ def test_execute_tool_endpoint_waits_for_third_llm_call_then_succeeds() -> None:
             app=app,
             provider=provider,
             tool="llm_chat",
+            model=DEFAULT_LLM_MODEL,
             expected_acquire_calls=3,
             unblock_invocation=unblock_invocation,
         )
+    finally:
+        for invocation in held:
+            provider.tool_concurrency_limiter.release(invocation)
+
+    assert response.status_code == 200
+    assert provider.tool_concurrency_limiter.in_flight(_invocation("llm_chat")) == 0
+
+
+def test_execute_tool_endpoint_does_not_wait_for_different_llm_model() -> None:
+    provider = DemoDependencyProvider()
+    provider.dependencies = ToolRouteDeps(
+        tool_executor=cast(ToolExecutor, _StaticToolExecutor()),
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
+    )
+    app = create_test_app(provider)
+    held = [_invocation("llm_chat"), _invocation("llm_chat")]
+    for invocation in held:
+        provider.tool_concurrency_limiter.acquire(invocation)
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/tools/execute",
+                json={
+                    "tool": "llm_chat",
+                    "args": [],
+                    "kwargs": {
+                        "model": OTHER_LLM_MODEL,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                },
+                headers={
+                    "x-platform-token": DEMO_SESSION_TOKEN,
+                    SESSION_ID_HEADER: str(provider.session.session_id),
+                },
+            )
     finally:
         for invocation in held:
             provider.tool_concurrency_limiter.release(invocation)
@@ -434,6 +474,7 @@ def _issue_waiting_tool_request(
     app: FastAPI,
     provider: DemoDependencyProvider,
     tool: ToolName,
+    model: str = DEFAULT_LLM_MODEL,
     expected_acquire_calls: int,
     unblock_invocation: ToolInvocationRequest,
 ) -> Response:
@@ -443,12 +484,17 @@ def _issue_waiting_tool_request(
     def issue_request() -> None:
         try:
             with TestClient(app) as client:
+                kwargs = (
+                    {"model": model, "messages": [{"role": "user", "content": "hi"}]}
+                    if tool == "llm_chat"
+                    else {"query": "demo"}
+                )
                 response_box["response"] = client.post(
                     "/v1/tools/execute",
                     json={
                         "tool": tool,
-                        "args": ["demo"],
-                        "kwargs": {"query": "demo"},
+                        "args": [],
+                        "kwargs": kwargs,
                     },
                     headers={
                         "x-platform-token": DEMO_SESSION_TOKEN,
