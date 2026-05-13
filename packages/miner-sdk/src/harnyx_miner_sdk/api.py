@@ -15,11 +15,14 @@ from harnyx_miner_sdk.tools.http_models import (
     ToolUsageDTO,
 )
 from harnyx_miner_sdk.tools.search_models import (
+    FetchPageRequest,
     FetchPageResponse,
     SearchAiSearchRequest,
     SearchAiSearchResponse,
+    SearchWebSearchRequest,
     SearchWebSearchResponse,
 )
+from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
 
 TResponse = TypeVar("TResponse")
 
@@ -56,18 +59,17 @@ class TestToolResponse(BaseModel):
         return "" if value is None else str(value)
 
 
-class _SearchWebInvocationPayload(BaseModel):
+class _ToolingInfoInvocationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    search_queries: tuple[str, ...]
-    num: int | None = None
+    timeout: ToolInvocationTimeout | None = None
 
-    @field_validator("search_queries", mode="before")
-    @classmethod
-    def _normalize_search_queries(cls, value: object) -> object:
-        if isinstance(value, str):
-            return (value,)
-        return value
+
+class _TestToolInvocationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+    timeout: ToolInvocationTimeout | None = None
 
 
 class _LlmChatThinkingPayload(BaseModel):
@@ -96,6 +98,7 @@ class _LlmChatInvocationPayload(BaseModel):
 
     model: str
     messages: list[dict[str, Any]]
+    timeout: ToolInvocationTimeout | None = None
     temperature: float | None = None
     max_output_tokens: int | None = None
     max_tokens: int | None = None
@@ -115,10 +118,19 @@ def _require_response_mapping(response_payload: object, *, label: str) -> Mappin
     return cast(Mapping[str, Any], response_payload)
 
 
-async def test_tool(message: str) -> ToolCallResponse[TestToolResponse]:
+async def test_tool(
+    message: str,
+    *,
+    timeout: float | None = None,
+) -> ToolCallResponse[TestToolResponse]:
     """Invoke the validator-hosted test tool."""
 
-    raw_response = await _current_tool_invoker().invoke("test_tool", args=(message,), kwargs={})
+    kwargs: dict[str, Any] = {}
+    if timeout is not None:
+        payload = _TestToolInvocationPayload.model_validate({"message": message, "timeout": timeout})
+        message = payload.message
+        kwargs["timeout"] = payload.timeout
+    raw_response = await _current_tool_invoker().invoke("test_tool", args=(message,), kwargs=kwargs)
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="test_tool response payload must be a mapping")
     response = TestToolResponse.model_validate(response_payload)
@@ -133,10 +145,17 @@ async def test_tool(message: str) -> ToolCallResponse[TestToolResponse]:
     )
 
 
-async def tooling_info() -> ToolCallResponse[dict[str, Any]]:
+async def tooling_info(
+    *,
+    timeout: float | None = None,
+) -> ToolCallResponse[dict[str, Any]]:
     """Fetch tool pricing and current session budget metadata."""
 
-    raw_response = await _current_tool_invoker().invoke("tooling_info", args=(), kwargs={})
+    payload = _ToolingInfoInvocationPayload.model_validate({"timeout": timeout}).model_dump(
+        exclude_none=True,
+        mode="json",
+    )
+    raw_response = await _current_tool_invoker().invoke("tooling_info", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="tooling_info response payload must be a mapping")
     response = dict(response_payload)
@@ -154,13 +173,16 @@ async def tooling_info() -> ToolCallResponse[dict[str, Any]]:
 async def search_web(
     search_queries: str | Sequence[str],
     /,
+    *,
+    timeout: float | None = None,
     **kwargs: Any,
 ) -> ToolCallResponse[SearchWebSearchResponse]:
     """Execute the validator-hosted search tool and return its response payload."""
 
-    payload = _SearchWebInvocationPayload.model_validate(
-        {"search_queries": search_queries, **kwargs}
-    ).model_dump(exclude_none=True, mode="json")
+    raw_payload = {"search_queries": search_queries, **kwargs}
+    if timeout is not None:
+        raw_payload["timeout"] = timeout
+    payload = SearchWebSearchRequest.model_validate(raw_payload).model_dump(exclude_none=True, mode="json")
     raw_response = await _current_tool_invoker().invoke("search_web", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="search_web response payload must be a mapping")
@@ -176,12 +198,19 @@ async def search_web(
     )
 
 
-async def search_ai(prompt: str, /, **kwargs: Any) -> ToolCallResponse[SearchAiSearchResponse]:
+async def search_ai(
+    prompt: str,
+    /,
+    *,
+    timeout: float | None = None,
+    **kwargs: Any,
+) -> ToolCallResponse[SearchAiSearchResponse]:
     """Execute the validator-hosted AI search tool and return its response payload."""
 
-    payload = SearchAiSearchRequest.model_validate(
-        {"prompt": prompt, **kwargs}
-    ).model_dump(exclude_none=True, mode="json")
+    raw_payload = {"prompt": prompt, **kwargs}
+    if timeout is not None:
+        raw_payload["timeout"] = timeout
+    payload = SearchAiSearchRequest.model_validate(raw_payload).model_dump(exclude_none=True, mode="json")
     raw_response = await _current_tool_invoker().invoke("search_ai", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="search_ai response payload must be a mapping")
@@ -197,11 +226,19 @@ async def search_ai(prompt: str, /, **kwargs: Any) -> ToolCallResponse[SearchAiS
     )
 
 
-async def fetch_page(url: str, /, **kwargs: Any) -> ToolCallResponse[FetchPageResponse]:
+async def fetch_page(
+    url: str,
+    /,
+    *,
+    timeout: float | None = None,
+    **kwargs: Any,
+) -> ToolCallResponse[FetchPageResponse]:
     """Execute the validator-hosted page fetch tool and return its response payload."""
 
-    payload = {"url": url}
-    payload.update(kwargs)
+    raw_payload = {"url": url, **kwargs}
+    if timeout is not None:
+        raw_payload["timeout"] = timeout
+    payload = FetchPageRequest.model_validate(raw_payload).model_dump(exclude_none=True, mode="json")
     raw_response = await _current_tool_invoker().invoke("fetch_page", args=(), kwargs=payload)
     dto = _parse_execute_response(raw_response)
     response_payload = _require_response_mapping(dto.response, label="fetch_page response payload must be a mapping")
@@ -222,6 +259,7 @@ async def llm_chat(
     messages: Sequence[Mapping[str, Any]],
     model: str,
     thinking: Mapping[str, Any] | LlmThinkingConfig | None = None,
+    timeout: float | None = None,
     **params: Any,
 ) -> LlmChatResult:
     """Invoke the validator-hosted LLM chat tool and return its response payload."""
@@ -229,6 +267,8 @@ async def llm_chat(
     payload_raw = {"model": model, "messages": [dict(message) for message in messages]}
     if thinking is not None:
         payload_raw["thinking"] = asdict(thinking) if isinstance(thinking, LlmThinkingConfig) else thinking
+    if timeout is not None:
+        payload_raw["timeout"] = timeout
     if "provider" in params:
         params = {k: v for k, v in params.items() if k != "provider"}
     if params:

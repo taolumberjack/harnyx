@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
+from harnyx_miner_sdk.tools.types import ToolInvocationTimeout
+
 
 class SearchWebSearchRequest(BaseModel):
     """Query parameters for the `search_web` tool."""
@@ -14,6 +16,14 @@ class SearchWebSearchRequest(BaseModel):
 
     search_queries: tuple[str, ...] = Field(min_length=1)
     num: int | None = None
+    timeout: ToolInvocationTimeout | None = None
+
+    @field_validator("search_queries", mode="before")
+    @classmethod
+    def _normalize_search_queries(cls, value: object) -> object:
+        if isinstance(value, str):
+            return (value,)
+        return value
 
     @field_validator("search_queries")
     @classmethod
@@ -24,7 +34,7 @@ class SearchWebSearchRequest(BaseModel):
         return normalized
 
     def to_query_params(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        return self.model_dump(exclude_none=True, exclude={"timeout"})
 
 
 class SearchWebResult(BaseModel):
@@ -167,6 +177,7 @@ class SearchAiSearchRequest(BaseModel):
 
     prompt: str = Field(min_length=1)
     count: int = Field(default=10, ge=10, le=200)
+    timeout: ToolInvocationTimeout | None = None
 
 
 class SearchAiResult(BaseModel):
@@ -191,6 +202,7 @@ class FetchPageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str = Field(min_length=1)
+    timeout: ToolInvocationTimeout | None = None
 
 
 class FetchPageResult(BaseModel):
@@ -210,6 +222,7 @@ class FetchPageResponse(BaseModel):
 
 
 __all__ = [
+    "ToolInvocationTimeout",
     "SearchWebSearchRequest",
     "SearchWebSearchResponse",
     "SearchWebResult",

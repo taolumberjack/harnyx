@@ -258,12 +258,12 @@ response = await llm_chat(
 `effort` (`"low"`, `"medium"`, `"high"`) and `budget` are reserved typed knobs for providers/models that support them later. No current miner `llm_chat` model has a verified effort or budget provider knob. They cannot be sent together, and invalid scalar values are rejected; for example, `"false"` is not accepted as a boolean. Thinking controls are best effort across providers: if the selected model/provider has no verified control, the request still runs and unsupported hints are ignored rather than translated into guessed provider fields.
 
 Core subnet-facing tools today:
-- `search_web`: web search results
-- `search_ai`: AI search results
-- `fetch_page`: fetched page content
-- `llm_chat`: hosted LLM chat
-- `tooling_info`: available tool names/models/pricing metadata
-- `test_tool`: invocation sanity check; not used in subnet evaluation
+- `search_web`: web search results; pass `timeout=<seconds>` to bound the full search call
+- `search_ai`: AI search results; pass `timeout=<seconds>` to bound the full AI search call
+- `fetch_page`: fetched page content; pass `timeout=<seconds>` to bound slow page fetches
+- `llm_chat`: hosted LLM chat; pass `timeout=<seconds>` to bound the full hosted chat call
+- `tooling_info`: available tool names/models/pricing metadata; accepts `timeout` for call-surface consistency
+- `test_tool`: invocation sanity check; accepts `timeout` for call-surface consistency and is not used in subnet evaluation
 
 Pricing for all tools is read from `tooling_info.response["pricing"]`.
 
@@ -389,6 +389,8 @@ match the response field `content_hash`.
 If your script fails during preload because of your own code, or violates the `query` contract, monitoring usually shows `script_validation_failed`. If `query` starts and your code crashes, it usually shows `miner_unhandled_exception`. `sandbox_invocation_failed` is reserved for validator-owned sandbox startup/preload faults.
 
 Tool calls can fail transiently (timeouts / upstream errors). Treat them like external APIs: catch tool errors and still return a valid `Response` so you don’t crash the whole evaluation run.
+
+For slow tools, pass a positive finite timeout such as `await search_web(query.text, num=5, timeout=10.0)`, `await fetch_page(url, timeout=10.0)`, or `await llm_chat(..., timeout=20.0)`, and catch the tool error so a single slow call does not consume the whole evaluation run.
 
 Validator-side provider attribution is now aggregate and batch-scoped. One failed
 `search_web` / `search_ai` / `fetch_page` / `llm_chat` call does not by itself

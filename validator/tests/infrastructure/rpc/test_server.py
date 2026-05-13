@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
@@ -25,6 +27,14 @@ from harnyx_commons.protocol_headers import SESSION_ID_HEADER
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.runtime_invoker import RuntimeToolInvoker
+from harnyx_commons.tools.search_models import (
+    FetchPageRequest,
+    FetchPageResponse,
+    SearchAiSearchRequest,
+    SearchAiSearchResponse,
+    SearchWebSearchRequest,
+    SearchWebSearchResponse,
+)
 from harnyx_commons.tools.token_semaphore import (
     DEFAULT_TOOL_CONCURRENCY_LIMITS,
     ToolConcurrencyLimiter,
@@ -170,8 +180,46 @@ class _RetryExhaustedLlmProvider:
         raise LlmRetryExhaustedError("provider timed out")
 
 
+class _SlowLlmProvider(_SuccessfulLlmProvider):
+    async def invoke(self, request):
+        await asyncio.sleep(1.0)
+        return await super().invoke(request)
+
+
+class _ProviderTimeoutLlmProvider:
+    async def invoke(self, request):
+        raise TimeoutError("provider timed out")
+
+
+class _SlowFetchPageProvider:
+    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse:
+        await asyncio.sleep(1.0)
+        return FetchPageResponse(data=[{"url": request.url, "content": "page text"}])
+
+
+class _SlowSearchProvider(_SlowFetchPageProvider):
+    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
+        await asyncio.sleep(1.0)
+        return SearchWebSearchResponse(data=[])
+
+    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse:
+        await asyncio.sleep(1.0)
+        return SearchAiSearchResponse(data=[])
+
+
+class _ProviderTimeoutSearchProvider:
+    async def search_web(self, request: SearchWebSearchRequest) -> SearchWebSearchResponse:
+        raise TimeoutError("provider timed out")
+
+    async def search_ai(self, request: SearchAiSearchRequest) -> SearchAiSearchResponse:
+        raise TimeoutError("provider timed out")
+
+    async def fetch_page(self, request: FetchPageRequest) -> FetchPageResponse:
+        raise TimeoutError("provider timed out")
+
+
 class TrackingDependencyProvider:
-    def __init__(self, *, llm_provider=None, llm_provider_name: str = "openai") -> None:
+    def __init__(self, *, llm_provider=None, llm_provider_name: str = "openai", web_search_client=None) -> None:
         self.session_registry = FakeSessionRegistry()
         self.receipt_log = FakeReceiptLog()
         self.tokens = InMemoryTokenRegistry()
@@ -199,6 +247,7 @@ class TrackingDependencyProvider:
         usage_tracker = UsageTracker()
         tool_invoker = RuntimeToolInvoker(
             FakeReceiptLog(),
+            web_search_client=web_search_client,
             llm_provider=llm_provider or _NoopLlmProvider(),
             llm_provider_name="openai",
             allowed_models=ALLOWED_TOOL_MODELS,
@@ -573,6 +622,132 @@ def test_execute_tool_endpoint_records_provider_failure_reason_from_cause() -> N
         {
             "provider": "openai",
             "model": ALLOWED_TOOL_MODELS[0],
+            "total_calls": 1,
+            "failed_calls": 1,
+            "failure_reason": "provider timed out",
+        },
+    )
+
+
+def test_execute_tool_endpoint_does_not_record_provider_failure_for_fetch_page_timeout() -> None:
+    provider = TrackingDependencyProvider(web_search_client=_SlowFetchPageProvider())
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": "fetch_page",
+            "args": [],
+            "kwargs": {"url": "https://example.com", "timeout": 0.01},
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "tool execution failed"}
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == ()
+    assert provider.progress_tracker.consume_provider_failures(provider.session.session_id) == ()
+
+
+@pytest.mark.parametrize(
+    ("tool", "kwargs"),
+    [
+        ("search_web", {"search_queries": ["harnyx"], "timeout": 0.01}),
+        ("search_ai", {"prompt": "harnyx", "count": 10, "timeout": 0.01}),
+        (
+            "llm_chat",
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+                "timeout": 0.01,
+            },
+        ),
+    ],
+)
+def test_execute_tool_endpoint_does_not_record_provider_failure_for_tool_timeout(
+    tool: ToolName,
+    kwargs: dict[str, object],
+) -> None:
+    provider = TrackingDependencyProvider(
+        web_search_client=_SlowSearchProvider(),
+        llm_provider=_SlowLlmProvider(),
+    )
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": tool,
+            "args": [],
+            "kwargs": kwargs,
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "tool execution failed"}
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == ()
+    assert provider.progress_tracker.consume_provider_failures(provider.session.session_id) == ()
+
+
+@pytest.mark.parametrize(
+    ("tool", "kwargs", "expected_provider", "expected_model"),
+    [
+        ("search_web", {"search_queries": ["harnyx"], "timeout": 5}, "desearch", "search_web"),
+        ("search_ai", {"prompt": "harnyx", "count": 10, "timeout": 5}, "desearch", "search_ai"),
+        ("fetch_page", {"url": "https://example.com", "timeout": 5}, "desearch", "fetch_page"),
+        (
+            "llm_chat",
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": ALLOWED_TOOL_MODELS[0],
+                "timeout": 5,
+            },
+            "openai",
+            ALLOWED_TOOL_MODELS[0],
+        ),
+    ],
+)
+def test_execute_tool_endpoint_records_provider_failure_for_provider_timeout(
+    tool: ToolName,
+    kwargs: dict[str, object],
+    expected_provider: str,
+    expected_model: str,
+) -> None:
+    provider = TrackingDependencyProvider(
+        web_search_client=_ProviderTimeoutSearchProvider(),
+        llm_provider=_ProviderTimeoutLlmProvider(),
+    )
+    app = create_test_app(provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/tools/execute",
+        json={
+            "tool": tool,
+            "args": [],
+            "kwargs": kwargs,
+        },
+        headers={
+            "x-platform-token": DEMO_SESSION_TOKEN,
+            SESSION_ID_HEADER: str(provider.session.session_id),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "tool execution failed"}
+    assert provider.progress_tracker.provider_evidence(provider.batch_id) == (
+        {
+            "provider": expected_provider,
+            "model": expected_model,
             "total_calls": 1,
             "failed_calls": 1,
             "failure_reason": "provider timed out",
