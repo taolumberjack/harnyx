@@ -38,7 +38,7 @@ from harnyx_commons.tools.runtime_invoker import (
     RuntimeToolInvoker,
     build_miner_sandbox_tool_invoker,
 )
-from harnyx_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_commons.tools.token_semaphore import DEFAULT_TOOL_CONCURRENCY_LIMITS, ToolConcurrencyLimiter
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
@@ -72,7 +72,6 @@ logger = logging.getLogger("harnyx_validator.runtime")
 
 _SCORING_LLM_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
-TOKEN_MAX_PARALLEL_CALLS = 2
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _BATCH_BLOCKING_LANE_NAME = "validator-batch-blocking"
 
@@ -168,7 +167,7 @@ class RuntimeContext:
     scoring_llm_provider: LlmProviderPort | None
     tool_invoker: RuntimeToolInvoker
     tool_executor: ToolExecutor
-    token_semaphore: TokenSemaphore
+    tool_concurrency_limiter: ToolConcurrencyLimiter
     subtensor_client: SubtensorClientPort
     scoring_service: EvaluationScoringService
     weight_submission_service: WeightSubmissionService
@@ -199,7 +198,7 @@ class InMemoryState:
     progress_tracker: InMemoryRunProgress
     batch_inbox: InMemoryBatchInbox
     usage_tracker: UsageTracker
-    token_semaphore: TokenSemaphore
+    tool_concurrency_limiter: ToolConcurrencyLimiter
     session_manager: SessionManager
 
 
@@ -265,7 +264,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         scoring_llm_provider=scoring_llm_provider,
         tool_invoker=tool_invoker,
         tool_executor=tool_executor,
-        token_semaphore=state.token_semaphore,
+        tool_concurrency_limiter=state.tool_concurrency_limiter,
         subtensor_client=subtensor_client,
         scoring_service=scoring_service,
         weight_submission_service=weight_submission_service,
@@ -288,7 +287,7 @@ def _build_state() -> InMemoryState:
     evaluation_records = InMemoryEvaluationRecordStore()
     progress_tracker = InMemoryRunProgress()
     batch_inbox = InMemoryBatchInbox()
-    token_semaphore = TokenSemaphore(max_parallel_calls=TOKEN_MAX_PARALLEL_CALLS)
+    tool_concurrency_limiter = ToolConcurrencyLimiter(DEFAULT_TOOL_CONCURRENCY_LIMITS)
     usage_tracker = UsageTracker()
     session_manager = SessionManager(session_registry, token_registry)
     return InMemoryState(
@@ -299,7 +298,7 @@ def _build_state() -> InMemoryState:
         progress_tracker=progress_tracker,
         batch_inbox=batch_inbox,
         usage_tracker=usage_tracker,
-        token_semaphore=token_semaphore,
+        tool_concurrency_limiter=tool_concurrency_limiter,
         session_manager=session_manager,
     )
 
@@ -443,7 +442,7 @@ def _build_http_dependencies(
     inbound_auth = _build_inbound_auth(resolved, status_provider=status_provider)
     tool_route_provider = _make_dependency_provider(
         tool_executor,
-        state.token_semaphore,
+        state.tool_concurrency_limiter,
     )
     accept_batch = AcceptEvaluationBatch(state.batch_inbox, status_provider, state.progress_tracker)
     control_provider = _make_control_provider(
@@ -559,12 +558,12 @@ def _model_name_from_request(request: ToolInvocationRequest) -> str | None:
 
 def _make_dependency_provider(
     tool_executor: ToolExecutor,
-    token_semaphore: TokenSemaphore,
+    tool_concurrency_limiter: ToolConcurrencyLimiter,
 ) -> Callable[[], ToolRouteDeps]:
     def provider() -> ToolRouteDeps:
         return ToolRouteDeps(
             tool_executor=tool_executor,
-            token_semaphore=token_semaphore,
+            tool_concurrency_limiter=tool_concurrency_limiter,
         )
 
     return provider

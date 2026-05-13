@@ -27,8 +27,13 @@ from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import price_llm, price_search
 from harnyx_commons.llm.schema import LlmResponse
 from harnyx_commons.llm.tool_models import ToolModelName, parse_tool_model
-from harnyx_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
-from harnyx_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_commons.tools.dto import (
+    ToolBudgetSnapshot,
+    ToolInvocationRequest,
+    ToolInvocationResult,
+    tool_payload_for_invocation,
+)
+from harnyx_commons.tools.token_semaphore import ToolConcurrencyLimiter
 from harnyx_commons.tools.types import LLM_TOOLS, SearchToolName, ToolName, is_citation_source, is_search_tool
 from harnyx_commons.tools.usage_tracker import ToolCallUsage, UsageTracker
 
@@ -617,7 +622,7 @@ def _extract_llm_usage(
 
     parsed_payload = _parse_llm_usage_payload(payload)
     provider = "chutes"
-    model = _extract_llm_model(request.kwargs)
+    model = _extract_llm_model(tool_payload_for_invocation(request))
 
     usage_obj = parsed_payload.llm_response.usage
     if usage_obj is None:
@@ -671,13 +676,13 @@ class _LlmUsagePayload:
     llm_response: LlmResponse
 
 def _extract_llm_model(
-    request_kwargs: Mapping[str, JsonValue],
+    request_payload: Mapping[str, JsonValue],
 ) -> ToolModelName:
-    request_model = request_kwargs.get("model")
+    request_model = request_payload.get("model")
     if isinstance(request_model, str) and request_model.strip():
         return parse_tool_model(request_model)
 
-    raise ValueError("llm tool request must include a 'model' kwarg")
+    raise ValueError("llm tool request must include a 'model' payload value")
 
 
 def _parse_llm_usage_payload(payload: object) -> _LlmUsagePayload:
@@ -779,17 +784,16 @@ def _summarize_value(value: object, *, limit: int = 200) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-async def execute_tool_with_token_permit(
+async def execute_tool_with_concurrency_permit(
     executor: _ToolExecutionPort,
-    semaphore: TokenSemaphore,
+    limiter: ToolConcurrencyLimiter,
     invocation: ToolInvocationRequest,
 ) -> ToolInvocationResult:
-    token = invocation.token
-    await semaphore.acquire_async(token)
+    await limiter.acquire_async(invocation)
     try:
         return await executor.execute(invocation)
     finally:
-        semaphore.release(token)
+        limiter.release(invocation)
 
 
-__all__ = ["ToolExecutor", "ToolInvoker", "ToolCallUsage", "execute_tool_with_token_permit"]
+__all__ = ["ToolExecutor", "ToolInvoker", "ToolCallUsage", "execute_tool_with_concurrency_permit"]

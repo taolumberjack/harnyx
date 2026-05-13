@@ -51,6 +51,27 @@ class ToolInvocationRequest:
     kwargs: Mapping[str, JsonValue] = field(default_factory=dict)
 
 
+def tool_payload_from_args_kwargs(
+    args: Sequence[JsonValue],
+    kwargs: Mapping[str, JsonValue],
+) -> dict[str, JsonValue]:
+    if kwargs:
+        return dict(kwargs)
+    if args:
+        first = args[0]
+        if not isinstance(first, dict):
+            raise TypeError("expected JSON object payload as first positional argument")
+        for key in first:
+            if not isinstance(key, str):
+                raise TypeError("expected JSON object with string keys")
+        return dict(first)
+    return {}
+
+
+def tool_payload_for_invocation(request: ToolInvocationRequest) -> dict[str, JsonValue]:
+    return tool_payload_from_args_kwargs(request.args, request.kwargs)
+
+
 @dataclass(frozen=True)
 class ToolInvocationResult:
     """Result of a tool invocation."""
@@ -65,4 +86,6 @@ __all__ = [
     "ToolBudgetSnapshot",
     "ToolInvocationRequest",
     "ToolInvocationResult",
+    "tool_payload_for_invocation",
+    "tool_payload_from_args_kwargs",
 ]

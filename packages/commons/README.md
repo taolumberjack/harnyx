@@ -4,7 +4,7 @@ Shared utilities and transparent incentive-mechanism logic for the Harnyx Subnet
 
 This package provides:
 
-- **Miner incentive rules** — miner-task dataset/reference generation, validator scoring, failure attribution, ranking aggregation, champion selection, benchmark scoring, and benchmark-scaled emission math
+- **Miner incentive rules** — miner-task dataset/reference generation, validator scoring, failure attribution, ranking aggregation, champion selection, benchmark scoring, and capped miner emission math
 - **Sandbox runner** — Docker container lifecycle management for validators (start/stop sandbox containers, HTTP client for calling sandbox entrypoints)
 - **Tool infrastructure** — LLM and search tool adapters, cost tracking, budget validation
 - **Observability** — logging and tracing utilities

@@ -1,129 +1,50 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from uuid import uuid4
-
 import pytest
 
 from harnyx_commons.miner_task_emission import (
-    BenchmarkEmissionCandidate,
-    BenchmarkScoredChampionSelection,
-    ChampionWeightEvent,
-    apply_benchmark_scaled_emission,
+    apply_miner_emission_cap,
     owner_fallback_weights,
-    select_benchmark_scored_champion,
 )
 
 
-def test_apply_benchmark_scaled_emission_caps_miner_share_at_ten_percent() -> None:
-    weights = apply_benchmark_scaled_emission(
-        BenchmarkScoredChampionSelection(
-            champion_uid=7,
-            weights={7: 0.6, 8: 0.4},
-            benchmark_score=0.5,
-        )
-    )
+def test_apply_miner_emission_cap_scales_miner_share_by_batch_score() -> None:
+    weights = apply_miner_emission_cap({7: 0.6, 8: 0.4}, batch_score=0.5)
 
     assert weights == {
-        0: pytest.approx(0.95),
-        7: pytest.approx(0.03),
-        8: pytest.approx(0.02),
+        0: pytest.approx(0.90),
+        7: pytest.approx(0.06),
+        8: pytest.approx(0.04),
+    }
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_apply_miner_emission_cap_ignores_owner_weight_in_base_vector() -> None:
+    weights = apply_miner_emission_cap({0: 0.8, 7: 0.6, 8: 0.4}, batch_score=1.0)
+
+    assert weights == {
+        0: pytest.approx(0.80),
+        7: pytest.approx(0.12),
+        8: pytest.approx(0.08),
     }
 
 
-def test_apply_benchmark_scaled_emission_rejects_invalid_scores() -> None:
-    selection = BenchmarkScoredChampionSelection(champion_uid=7, weights={7: 1.0}, benchmark_score=1.1)
+@pytest.mark.parametrize("weights", [{}, {0: 1.0}])
+def test_apply_miner_emission_cap_rejects_empty_miner_weights(weights: dict[int, float]) -> None:
+    with pytest.raises(ValueError, match="miner weights are empty"):
+        apply_miner_emission_cap(weights, batch_score=1.0)
 
-    with pytest.raises(ValueError, match="benchmark score must be between 0.0 and 1.0"):
-        apply_benchmark_scaled_emission(selection)
+
+def test_apply_miner_emission_cap_rejects_non_positive_miner_total() -> None:
+    with pytest.raises(ValueError, match="miner weights must have positive miner total"):
+        apply_miner_emission_cap({7: 0.0, 8: 0.0}, batch_score=1.0)
+
+
+@pytest.mark.parametrize("batch_score", [-0.1, 1.1, float("nan")])
+def test_apply_miner_emission_cap_rejects_invalid_batch_score(batch_score: float) -> None:
+    with pytest.raises(ValueError, match="miner task batch score must be between 0.0 and 1.0"):
+        apply_miner_emission_cap({7: 1.0}, batch_score=batch_score)
 
 
 def test_owner_fallback_weights_assigns_all_emission_to_owner() -> None:
     assert owner_fallback_weights() == {0: 1.0}
-
-
-def test_select_benchmark_scored_champion_skips_newer_unscored_event() -> None:
-    now = datetime(2026, 4, 28, tzinfo=UTC)
-    old_batch_id = uuid4()
-    new_batch_id = uuid4()
-    old_artifact_id = uuid4()
-    new_artifact_id = uuid4()
-
-    selection = select_benchmark_scored_champion(
-        weight_events=(
-            ChampionWeightEvent(
-                batch_id=old_batch_id,
-                computed_at=now,
-                sequence_id=1,
-                champion_uid=7,
-                weights={7: 1.0},
-                champion_artifact_id=old_artifact_id,
-            ),
-            ChampionWeightEvent(
-                batch_id=new_batch_id,
-                computed_at=now + timedelta(minutes=1),
-                sequence_id=2,
-                champion_uid=8,
-                weights={8: 1.0},
-                champion_artifact_id=new_artifact_id,
-            ),
-        ),
-        benchmark_candidates=(
-            BenchmarkEmissionCandidate(
-                source_batch_id=old_batch_id,
-                run_id=uuid4(),
-                created_at=now,
-                state="completed",
-                champion_uid=7,
-                champion_artifact_id=old_artifact_id,
-                mean_total_score=0.25,
-            ),
-        ),
-    )
-
-    assert selection == BenchmarkScoredChampionSelection(
-        champion_uid=7,
-        weights={7: 1.0},
-        benchmark_score=0.25,
-        champion_artifact_id=old_artifact_id,
-    )
-
-
-def test_select_benchmark_scored_champion_stops_when_latest_event_clears_champion() -> None:
-    now = datetime(2026, 4, 28, tzinfo=UTC)
-    batch_id = uuid4()
-    artifact_id = uuid4()
-
-    selection = select_benchmark_scored_champion(
-        weight_events=(
-            ChampionWeightEvent(
-                batch_id=batch_id,
-                computed_at=now,
-                sequence_id=1,
-                champion_uid=7,
-                weights={7: 1.0},
-                champion_artifact_id=artifact_id,
-            ),
-            ChampionWeightEvent(
-                batch_id=uuid4(),
-                computed_at=now + timedelta(minutes=1),
-                sequence_id=2,
-                champion_uid=None,
-                weights={},
-                champion_artifact_id=None,
-            ),
-        ),
-        benchmark_candidates=(
-            BenchmarkEmissionCandidate(
-                source_batch_id=batch_id,
-                run_id=uuid4(),
-                created_at=now,
-                state="completed",
-                champion_uid=7,
-                champion_artifact_id=artifact_id,
-                mean_total_score=1.0,
-            ),
-        ),
-    )
-
-    assert selection is None

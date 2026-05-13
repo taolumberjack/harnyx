@@ -718,6 +718,78 @@ async def test_execute_tool_records_llm_tokens_for_llm_chat(model: str) -> None:
     )
 
 
+async def test_execute_tool_records_llm_tokens_for_first_positional_llm_chat_payload() -> None:
+    model = "zai-org/GLM-5-TEE"
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    usage = LlmUsage(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        reasoning_tokens=7,
+    )
+
+    class UsageToolInvoker(ToolInvoker):
+        async def invoke(
+            self,
+            tool_name: str,
+            *,
+            args: tuple[object, ...],
+            kwargs: dict[str, object],
+        ) -> dict[str, object]:
+            response = LlmResponse(
+                id="offline-chutes",
+                choices=(
+                    LlmChoice(
+                        index=0,
+                        message=LlmChoiceMessage(
+                            role="assistant",
+                            content=(LlmMessageContentPart(type="text", text="ok"),),
+                        ),
+                    ),
+                ),
+                usage=usage,
+            )
+            return response.to_payload()
+
+    session_registry = FakeSessionRegistry()
+    session_registry.create(session)
+    receipt_log = FakeReceiptLog()
+    usage_tracker = UsageTracker()
+    token_registry = InMemoryTokenRegistry()
+    token_registry.register(session.session_id, token)
+
+    executor = ToolExecutor(
+        session_registry=session_registry,
+        receipt_log=receipt_log,
+        usage_tracker=usage_tracker,
+        tool_invoker=UsageToolInvoker(),
+        token_registry=token_registry,
+        clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+    )
+
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="llm_chat",
+        args=({"model": model, "messages": [{"role": "user", "content": "ping"}]},),
+        kwargs={},
+    )
+
+    result = await executor.execute(request)
+
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.llm_tokens_last_call == 15
+    usage_totals = stored_session.usage.llm_usage_totals["chutes"][model]
+    assert usage_totals.total_tokens == 15
+    assert usage_totals.call_count == 1
+    assert result.response_payload["usage"]["total_tokens"] == 15
+    assert stored_session.usage.total_cost_usd == pytest.approx(
+        price_llm(parse_tool_model(model), usage)
+    )
+
+
 async def test_execute_tool_counts_reasoning_tokens_in_missing_total_fallback() -> None:
     session = make_session(budget_usd=1.0)
     token = generate_token()

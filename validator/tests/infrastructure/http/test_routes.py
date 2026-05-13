@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import UTC, datetime
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -11,18 +12,38 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
+from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallOutcome, ToolResultPolicy
 from harnyx_commons.errors import ToolProviderError
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.protocol_headers import SESSION_ID_HEADER
+from harnyx_commons.tools.dto import ToolBudgetSnapshot, ToolInvocationRequest, ToolInvocationResult
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.runtime_invoker import build_miner_sandbox_tool_invoker
-from harnyx_commons.tools.token_semaphore import TokenSemaphore
+from harnyx_commons.tools.token_semaphore import (
+    DEFAULT_TOOL_CONCURRENCY_LIMITS,
+    ToolConcurrencyLimiter,
+    ToolConcurrencyLimits,
+)
+from harnyx_commons.tools.types import ToolName
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_validator.infrastructure.http.routes import ToolRouteDeps, add_tool_routes
 from validator.tests.fixtures.fakes import FakeReceiptLog, FakeSessionRegistry
 
 DEMO_SESSION_TOKEN = uuid4().hex
+DEFAULT_LLM_MODEL = "deepseek-ai/DeepSeek-V3.2-TEE"
+OTHER_LLM_MODEL = "zai-org/GLM-5-TEE"
+
+
+def _invocation(tool: ToolName = "search_web") -> ToolInvocationRequest:
+    kwargs = {"model": DEFAULT_LLM_MODEL} if tool == "llm_chat" else {}
+    return ToolInvocationRequest(
+        session_id=uuid4(),
+        token=DEMO_SESSION_TOKEN,
+        tool=tool,
+        args=(),
+        kwargs=kwargs,
+    )
 
 
 def create_test_app(dependency_provider: DemoDependencyProvider) -> FastAPI:
@@ -55,23 +76,23 @@ class RecordingToolInvoker:
         }
 
 
-class RecordingTokenSemaphore(TokenSemaphore):
-    def __init__(self, max_parallel_calls: int) -> None:
-        super().__init__(max_parallel_calls)
-        self.acquire_calls: list[str] = []
-        self.release_calls: list[str] = []
+class RecordingToolConcurrencyLimiter(ToolConcurrencyLimiter):
+    def __init__(self, limits: ToolConcurrencyLimits = DEFAULT_TOOL_CONCURRENCY_LIMITS) -> None:
+        super().__init__(limits)
+        self.acquire_calls: list[tuple[str, ToolName]] = []
+        self.release_calls: list[tuple[str, ToolName]] = []
 
-    def acquire(self, token: str) -> None:
-        self.acquire_calls.append(token)
-        super().acquire(token)
+    def acquire(self, invocation: ToolInvocationRequest) -> None:
+        self.acquire_calls.append((invocation.token, invocation.tool))
+        super().acquire(invocation)
 
-    async def acquire_async(self, token: str) -> None:
-        self.acquire_calls.append(token)
-        await super().acquire_async(token)
+    async def acquire_async(self, invocation: ToolInvocationRequest) -> None:
+        self.acquire_calls.append((invocation.token, invocation.tool))
+        await super().acquire_async(invocation)
 
-    def release(self, token: str) -> None:
-        self.release_calls.append(token)
-        super().release(token)
+    def release(self, invocation: ToolInvocationRequest) -> None:
+        self.release_calls.append((invocation.token, invocation.tool))
+        super().release(invocation)
 
 
 class DemoDependencyProvider:
@@ -105,11 +126,11 @@ class DemoDependencyProvider:
             clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
         )
         self.invoker = tool_invoker
-        self.token_semaphore = RecordingTokenSemaphore(max_parallel_calls=1)
+        self.tool_concurrency_limiter = RecordingToolConcurrencyLimiter()
 
         self.dependencies = ToolRouteDeps(
             tool_executor=self.tool_executor,
-            token_semaphore=self.token_semaphore,
+            tool_concurrency_limiter=self.tool_concurrency_limiter,
         )
 
     def __call__(self) -> ToolRouteDeps:
@@ -143,10 +164,10 @@ class ToolingInfoDependencyProvider:
             token_registry=self.tokens,
             clock=lambda: datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
         )
-        self.token_semaphore = RecordingTokenSemaphore(max_parallel_calls=1)
+        self.tool_concurrency_limiter = RecordingToolConcurrencyLimiter()
         self.dependencies = ToolRouteDeps(
             tool_executor=self.tool_executor,
-            token_semaphore=self.token_semaphore,
+            tool_concurrency_limiter=self.tool_concurrency_limiter,
         )
 
     def __call__(self) -> ToolRouteDeps:
@@ -182,9 +203,10 @@ def test_execute_tool_endpoint_records_receipt() -> None:
     session_snapshot = provider.session_registry.get(provider.session.session_id)
     assert session_snapshot is not None
     assert session_snapshot.usage.total_cost_usd == pytest.approx(0.0001)
-    assert provider.token_semaphore.acquire_calls == [DEMO_SESSION_TOKEN]
-    assert provider.token_semaphore.release_calls == [DEMO_SESSION_TOKEN]
-    assert provider.token_semaphore.in_flight(DEMO_SESSION_TOKEN) == 0
+    invocation = _invocation("search_web")
+    assert provider.tool_concurrency_limiter.acquire_calls == [(DEMO_SESSION_TOKEN, "search_web")]
+    assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
+    assert provider.tool_concurrency_limiter.in_flight(invocation) == 0
 
 
 def test_execute_tool_endpoint_accepts_neutral_headers() -> None:
@@ -206,15 +228,15 @@ def test_execute_tool_endpoint_accepts_neutral_headers() -> None:
     )
 
     assert response.status_code == 200
-    assert provider.token_semaphore.acquire_calls == [DEMO_SESSION_TOKEN]
-    assert provider.token_semaphore.release_calls == [DEMO_SESSION_TOKEN]
+    assert provider.tool_concurrency_limiter.acquire_calls == [(DEMO_SESSION_TOKEN, "search_web")]
+    assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
 
 
 def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     provider = DemoDependencyProvider()
     provider.dependencies = ToolRouteDeps(
         tool_executor=_FailingToolExecutor(),
-        token_semaphore=provider.token_semaphore,
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
     )
     app = create_test_app(provider)
     client = TestClient(app)
@@ -233,15 +255,16 @@ def test_execute_tool_endpoint_releases_semaphore_on_failure() -> None:
     )
 
     assert response.status_code == 400
-    assert provider.token_semaphore.release_calls == [DEMO_SESSION_TOKEN]
-    assert provider.token_semaphore.in_flight(DEMO_SESSION_TOKEN) == 0
+    invocation = _invocation("search_web")
+    assert provider.tool_concurrency_limiter.release_calls == [(DEMO_SESSION_TOKEN, "search_web")]
+    assert provider.tool_concurrency_limiter.in_flight(invocation) == 0
 
 
 def test_execute_tool_endpoint_returns_generic_detail_for_provider_failure() -> None:
     provider = DemoDependencyProvider()
     provider.dependencies = ToolRouteDeps(
         tool_executor=_ProviderFailingToolExecutor(),
-        token_semaphore=provider.token_semaphore,
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
     )
     app = create_test_app(provider)
     client = TestClient(app)
@@ -270,7 +293,7 @@ def test_execute_tool_endpoint_unexpected_internal_error_uses_generic_500_body()
     provider = DemoDependencyProvider()
     provider.dependencies = ToolRouteDeps(
         tool_executor=_UnexpectedFailingToolExecutor(),
-        token_semaphore=provider.token_semaphore,
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
     )
     app = create_test_app(provider)
     client = TestClient(app, raise_server_exceptions=False)
@@ -351,21 +374,127 @@ def test_execute_tool_endpoint_supports_tooling_info() -> None:
     assert session_snapshot.usage.total_cost_usd == pytest.approx(0.0)
 
 
-def test_execute_tool_endpoint_waits_for_same_token_permit_then_succeeds() -> None:
+def test_execute_tool_endpoint_waits_for_third_same_model_llm_call_then_succeeds() -> None:
+    provider = DemoDependencyProvider()
+    provider.dependencies = ToolRouteDeps(
+        tool_executor=cast(ToolExecutor, _StaticToolExecutor()),
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
+    )
+    app = create_test_app(provider)
+    held = [_invocation("llm_chat"), _invocation("llm_chat")]
+    for invocation in held:
+        provider.tool_concurrency_limiter.acquire(invocation)
+
+    try:
+        unblock_invocation = held.pop()
+        response = _issue_waiting_tool_request(
+            app=app,
+            provider=provider,
+            tool="llm_chat",
+            model=DEFAULT_LLM_MODEL,
+            expected_acquire_calls=3,
+            unblock_invocation=unblock_invocation,
+        )
+    finally:
+        for invocation in held:
+            provider.tool_concurrency_limiter.release(invocation)
+
+    assert response.status_code == 200
+    assert provider.tool_concurrency_limiter.in_flight(_invocation("llm_chat")) == 0
+
+
+def test_execute_tool_endpoint_does_not_wait_for_different_llm_model() -> None:
+    provider = DemoDependencyProvider()
+    provider.dependencies = ToolRouteDeps(
+        tool_executor=cast(ToolExecutor, _StaticToolExecutor()),
+        tool_concurrency_limiter=provider.tool_concurrency_limiter,
+    )
+    app = create_test_app(provider)
+    held = [_invocation("llm_chat"), _invocation("llm_chat")]
+    for invocation in held:
+        provider.tool_concurrency_limiter.acquire(invocation)
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/tools/execute",
+                json={
+                    "tool": "llm_chat",
+                    "args": [],
+                    "kwargs": {
+                        "model": OTHER_LLM_MODEL,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                },
+                headers={
+                    "x-platform-token": DEMO_SESSION_TOKEN,
+                    SESSION_ID_HEADER: str(provider.session.session_id),
+                },
+            )
+    finally:
+        for invocation in held:
+            provider.tool_concurrency_limiter.release(invocation)
+
+    assert response.status_code == 200
+    assert provider.tool_concurrency_limiter.in_flight(_invocation("llm_chat")) == 0
+
+
+def test_execute_tool_endpoint_waits_for_sixth_non_llm_call_then_succeeds() -> None:
     provider = DemoDependencyProvider()
     app = create_test_app(provider)
+    held = [
+        _invocation("search_web"),
+        _invocation("search_ai"),
+        _invocation("fetch_page"),
+        _invocation("tooling_info"),
+        _invocation("test_tool"),
+    ]
+    for invocation in held:
+        provider.tool_concurrency_limiter.acquire(invocation)
+
+    try:
+        unblock_invocation = held.pop()
+        response = _issue_waiting_tool_request(
+            app=app,
+            provider=provider,
+            tool="search_web",
+            expected_acquire_calls=6,
+            unblock_invocation=unblock_invocation,
+        )
+    finally:
+        for invocation in held:
+            provider.tool_concurrency_limiter.release(invocation)
+
+    assert response.status_code == 200
+    assert provider.tool_concurrency_limiter.in_flight(_invocation("search_web")) == 0
+
+
+def _issue_waiting_tool_request(
+    *,
+    app: FastAPI,
+    provider: DemoDependencyProvider,
+    tool: ToolName,
+    model: str = DEFAULT_LLM_MODEL,
+    expected_acquire_calls: int,
+    unblock_invocation: ToolInvocationRequest,
+) -> Response:
     response_box: dict[str, Response | Exception] = {}
     done = threading.Event()
 
     def issue_request() -> None:
         try:
             with TestClient(app) as client:
+                kwargs = (
+                    {"model": model, "messages": [{"role": "user", "content": "hi"}]}
+                    if tool == "llm_chat"
+                    else {"query": "demo"}
+                )
                 response_box["response"] = client.post(
                     "/v1/tools/execute",
                     json={
-                        "tool": "search_web",
-                        "args": ["demo"],
-                        "kwargs": {"query": "demo"},
+                        "tool": tool,
+                        "args": [],
+                        "kwargs": kwargs,
                     },
                     headers={
                         "x-platform-token": DEMO_SESSION_TOKEN,
@@ -377,29 +506,54 @@ def test_execute_tool_endpoint_waits_for_same_token_permit_then_succeeds() -> No
         finally:
             done.set()
 
-    provider.token_semaphore.acquire(DEMO_SESSION_TOKEN)
     request_thread = threading.Thread(target=issue_request)
     request_thread.start()
-    try:
-        deadline = time.monotonic() + 1.0
-        while len(provider.token_semaphore.acquire_calls) < 2 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert provider.token_semaphore.acquire_calls == [DEMO_SESSION_TOKEN, DEMO_SESSION_TOKEN]
-        assert not done.is_set()
-    finally:
-        provider.token_semaphore.release(DEMO_SESSION_TOKEN)
+    deadline = time.monotonic() + 1.0
+    while len(provider.tool_concurrency_limiter.acquire_calls) < expected_acquire_calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(provider.tool_concurrency_limiter.acquire_calls) == expected_acquire_calls
+    assert not done.is_set()
+
+    provider.tool_concurrency_limiter.release(unblock_invocation)
     request_thread.join(timeout=1.0)
 
     assert not request_thread.is_alive()
     assert "error" not in response_box
     response = response_box["response"]
     assert isinstance(response, Response)
-    assert response.status_code == 200
+    return response
 
 
 class _FailingToolExecutor:
     async def execute(self, _: object) -> object:
         raise RuntimeError("expected failure")
+
+
+class _StaticToolExecutor:
+    async def execute(self, invocation: ToolInvocationRequest) -> ToolInvocationResult:
+        return ToolInvocationResult(
+            receipt=ToolCall(
+                receipt_id="receipt-1",
+                session_id=invocation.session_id,
+                uid=7,
+                tool=invocation.tool,
+                issued_at=datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+                outcome=ToolCallOutcome.OK,
+                details=ToolCallDetails(
+                    request_hash="request-hash",
+                    response_hash="response-hash",
+                    response_payload={"ok": True},
+                    result_policy=ToolResultPolicy.LOG_ONLY,
+                ),
+            ),
+            response_payload={"ok": True},
+            budget=ToolBudgetSnapshot(
+                session_budget_usd=1.0,
+                session_hard_limit_usd=1.0,
+                session_used_budget_usd=0.0,
+                session_remaining_budget_usd=1.0,
+            ),
+        )
 
 
 class _ProviderFailingToolExecutor:

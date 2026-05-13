@@ -23,6 +23,10 @@ class ConcurrencyLimitError(RuntimeError):
     """Raised when a token exceeds its permitted parallel call allowance."""
 
 
+class ToolInvocationTimeoutError(RuntimeError):
+    """Raised when a caller-selected tool invocation deadline expires."""
+
+
 class ToolProviderError(RuntimeError):
     """Raised when a tool's backing provider fails after retry exhaustion."""
 
@@ -33,5 +37,6 @@ __all__ = [
     "BudgetExceededError",
     "SessionBudgetExhaustedError",
     "ConcurrencyLimitError",
+    "ToolInvocationTimeoutError",
     "ToolProviderError",
 ]

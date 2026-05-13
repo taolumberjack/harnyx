@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, field_validator, model_validator
 from pydantic import JsonValue as PydanticJsonValue
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
-from harnyx_commons.errors import ToolProviderError
+from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
 from harnyx_commons.llm.pricing import (
     MODEL_PRICING,
@@ -32,6 +34,7 @@ from harnyx_commons.llm.schema import (
     LlmTool,
 )
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, ToolModelName, parse_tool_model
+from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.executor import ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.normalize import normalize_response
 from harnyx_commons.tools.ports import WebSearchProviderPort
@@ -40,11 +43,29 @@ from harnyx_commons.tools.search_models import (
     SearchAiSearchRequest,
     SearchWebSearchRequest,
 )
-from harnyx_commons.tools.types import TOOL_NAMES, SearchToolName, ToolName, is_search_tool
+from harnyx_commons.tools.types import TOOL_NAMES, SearchToolName, ToolInvocationTimeout, ToolName, is_search_tool
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
 
 MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(TOOL_NAMES))
 DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = 120.0
+TInvocationResult = TypeVar("TInvocationResult")
+
+
+class _ToolingInfoInvocation(BaseModel):
+    """Request payload for tooling_info tool calls."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    timeout: ToolInvocationTimeout | None = None
+
+
+class _TestToolInvocation(BaseModel):
+    """Request payload for test_tool calls."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = ""
+    timeout: ToolInvocationTimeout | None = None
 
 
 class LlmToolMessage(BaseModel):
@@ -89,6 +110,7 @@ class LlmToolInvocation(BaseModel):
 
     model: str
     messages: tuple[LlmToolMessage, ...]
+    timeout: ToolInvocationTimeout | None = None
     temperature: float | None = None
     max_output_tokens: int | None = None
     max_tokens: int | None = None
@@ -166,13 +188,16 @@ class RuntimeToolInvoker(ToolInvoker):
         message: str = ""
         if args:
             message = str(args[0])
+        payload = dict(kwargs)
         if "message" in kwargs:
-            message = str(kwargs["message"])
+            message = str(payload.pop("message"))
 
-        self._logger.info("test_tool message: %s", message)
+        invocation = _TestToolInvocation.model_validate({"message": message, **payload})
+
+        self._logger.info("test_tool message: %s", invocation.message)
         return {
             "status": "ok",
-            "echo": message,
+            "echo": invocation.message,
         }
 
     def _invoke_tooling_info(
@@ -182,8 +207,7 @@ class RuntimeToolInvoker(ToolInvoker):
     ) -> JsonObject:
         if args:
             raise ValueError("tooling_info does not accept positional arguments")
-        if kwargs:
-            raise ValueError("tooling_info does not accept keyword arguments")
+        _ToolingInfoInvocation.model_validate(dict(kwargs))
 
         visible_tool_names = set(self._advertised_tool_names)
         pricing: dict[str, JsonValue] = {}
@@ -244,22 +268,35 @@ class RuntimeToolInvoker(ToolInvoker):
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
     ) -> JsonObject:
-        if self._web_search is None:
+        web_search = self._web_search
+        if web_search is None:
             raise LookupError("search client is not configured")
-        payload = self._payload_from_args_kwargs(args, kwargs)
+        payload = tool_payload_from_args_kwargs(args, kwargs)
         if tool_name == "search_web":
             request_model_web = SearchWebSearchRequest.model_validate(payload)
-            response_web = await self._web_search.search_web(request_model_web)
+            response_web = await _invoke_with_optional_timeout(
+                "search_web",
+                request_model_web.timeout,
+                lambda: web_search.search_web(request_model_web),
+            )
             as_mapping = response_web.model_dump(exclude_none=True, mode="json")
             return cast(JsonObject, as_mapping)
         elif tool_name == "search_ai":
             request_ai = SearchAiSearchRequest.model_validate(payload)
-            response = await self._web_search.search_ai(request_ai)
+            response = await _invoke_with_optional_timeout(
+                "search_ai",
+                request_ai.timeout,
+                lambda: web_search.search_ai(request_ai),
+            )
             as_mapping = response.model_dump(exclude_none=True, mode="json")
             return cast(JsonObject, as_mapping)
         elif tool_name == "fetch_page":
             request_page = FetchPageRequest.model_validate(payload)
-            response_page = await self._web_search.fetch_page(request_page)
+            response_page = await _invoke_with_optional_timeout(
+                "fetch_page",
+                request_page.timeout,
+                lambda: web_search.fetch_page(request_page),
+            )
             as_mapping = response_page.model_dump(exclude_none=True, mode="json")
             return cast(JsonObject, as_mapping)
         raise LookupError(f"search tool '{tool_name}' is not supported")
@@ -269,7 +306,8 @@ class RuntimeToolInvoker(ToolInvoker):
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
     ) -> ToolInvocationOutput:
-        if self._llm_provider is None:
+        llm_provider = self._llm_provider
+        if llm_provider is None:
             raise LookupError("llm provider is not configured")
 
         invocation = self._parse_invocation(args, kwargs)
@@ -286,7 +324,11 @@ class RuntimeToolInvoker(ToolInvoker):
 
         try:
             started_at = time.perf_counter()
-            llm_response = await self._llm_provider.invoke(request)
+            llm_response = await _invoke_with_optional_timeout(
+                "llm_chat",
+                invocation.timeout,
+                lambda: llm_provider.invoke(request),
+            )
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         except LlmRetryExhaustedError as exc:
             raise ToolProviderError("tool provider failed") from exc
@@ -300,7 +342,7 @@ class RuntimeToolInvoker(ToolInvoker):
         args: Sequence[JsonValue],
         kwargs: Mapping[str, JsonValue],
     ) -> LlmToolInvocation:
-        payload = dict(self._payload_from_args_kwargs(args, kwargs))
+        payload = tool_payload_from_args_kwargs(args, kwargs)
         invocation = LlmToolInvocation.model_validate(payload)
         self._assert_allowed_model(invocation.model)
         return invocation
@@ -355,22 +397,48 @@ class RuntimeToolInvoker(ToolInvoker):
             use_case="tool_runtime_invoker",
         )
 
-    @staticmethod
-    def _payload_from_args_kwargs(
-        args: Sequence[JsonValue],
-        kwargs: Mapping[str, JsonValue],
-    ) -> dict[str, JsonValue]:
-        if kwargs:
-            return dict(kwargs)
-        if args:
-            first = args[0]
-            if isinstance(first, dict):
-                for key in first:
-                    if not isinstance(key, str):
-                        raise TypeError("expected JSON object with string keys")
-                return dict(first)
-            raise TypeError("expected JSON object payload as first positional argument")
-        return {}
+
+async def _invoke_with_optional_timeout(
+    tool_name: str,
+    timeout: float | None,
+    operation: Callable[[], Awaitable[TInvocationResult]],
+) -> TInvocationResult:
+    if timeout is None:
+        return await _invoke_provider_operation(operation)
+
+    task = asyncio.ensure_future(operation())
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+    except asyncio.CancelledError:
+        await _cancel_provider_task(task)
+        raise
+    if task in done:
+        return _task_result(task)
+
+    await _cancel_provider_task(task)
+    raise ToolInvocationTimeoutError(f"{tool_name} timed out after {timeout:g} seconds")
+
+
+async def _invoke_provider_operation(
+    operation: Callable[[], Awaitable[TInvocationResult]],
+) -> TInvocationResult:
+    try:
+        return await operation()
+    except TimeoutError as exc:
+        raise ToolProviderError("tool provider failed") from exc
+
+
+def _task_result(task: asyncio.Task[TInvocationResult]) -> TInvocationResult:
+    try:
+        return task.result()
+    except TimeoutError as exc:
+        raise ToolProviderError("tool provider failed") from exc
+
+
+async def _cancel_provider_task(task: asyncio.Task[TInvocationResult]) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError, Exception):
+        await task
 
 
 def _optional_mapping(value: object | None, *, label: str) -> Mapping[str, object] | None:

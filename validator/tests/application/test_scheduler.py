@@ -28,6 +28,8 @@ from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails, ToolCallO
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
+from harnyx_commons.llm.tool_models import parse_tool_model
+from harnyx_commons.miner_task_failure_policy import ValidatorModelLlmBaseline
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
@@ -169,6 +171,10 @@ def _sandbox_invocation_error(
     )
 
 
+def _llm_baseline(tps: float, *, model: str = "google/gemma-4-31B-turbo-TEE") -> ValidatorModelLlmBaseline:
+    return ValidatorModelLlmBaseline(slowest_tps_by_model={parse_tool_model(model): tps})
+
+
 def _llm_receipt(*, session_id: UUID, uid: int, total_tokens: int, elapsed_ms: float) -> ToolCall:
     return ToolCall(
         receipt_id=uuid4().hex,
@@ -179,6 +185,10 @@ def _llm_receipt(*, session_id: UUID, uid: int, total_tokens: int, elapsed_ms: f
         outcome=ToolCallOutcome.OK,
         details=ToolCallDetails(
             request_hash="req",
+            request_payload={
+                "args": [],
+                "kwargs": {"model": "google/gemma-4-31B-turbo-TEE"},
+            },
             response_hash="res",
             response_payload={"usage": {"total_tokens": total_tokens}},
             execution=ToolExecutionFacts(elapsed_ms=elapsed_ms),
@@ -411,14 +421,14 @@ async def test_scheduler_flattens_runs_in_requested_artifact_order_when_completi
             return scheduler_module._CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=(first_submission,),
-                slowest_successful_tps=None,
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
                 timeout_retry_state_by_pair={},
             )
         second_finished.set()
         return scheduler_module._CompletedArtifactResult(
             artifact_id=artifact.artifact_id,
             submissions=(second_submission,),
-            slowest_successful_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             timeout_retry_state_by_pair={},
         )
 
@@ -488,7 +498,7 @@ async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_
             return scheduler_module._CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=(first_submission,),
-                slowest_successful_tps=None,
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
                 timeout_retry_state_by_pair={},
             )
         if artifact.artifact_id == second_artifact.artifact_id:
@@ -496,14 +506,14 @@ async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_
             return scheduler_module._CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
                 submissions=(second_submission,),
-                slowest_successful_tps=None,
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
                 timeout_retry_state_by_pair={},
             )
         third_artifact_started.set()
         return scheduler_module._CompletedArtifactResult(
             artifact_id=artifact.artifact_id,
             submissions=(third_submission,),
-            slowest_successful_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             timeout_retry_state_by_pair={},
         )
 
@@ -606,7 +616,7 @@ async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure
                     submissions=(successful_submission,),
                     unresolved_tasks=(),
                     timeout_observations_by_pair={},
-                    slowest_successful_tps=40.0,
+                    validator_model_llm_baseline=_llm_baseline(40.0),
                 )
 
         scheduler._runner = _FailureRaceRunner()  # type: ignore[assignment]
@@ -672,7 +682,7 @@ async def test_scheduler_shares_live_completed_artifact_baseline_with_concurrent
         artifact=second_artifact,
         task=task,
     )
-    seen_completed_baselines: list[float | None] = []
+    seen_completed_baselines: list[ValidatorModelLlmBaseline] = []
 
     class _LiveBaselineRunner:
         async def evaluate_artifact_with_state(
@@ -687,16 +697,16 @@ async def test_scheduler_shares_live_completed_artifact_baseline_with_concurrent
                     submissions=(first_submission,),
                     unresolved_tasks=(),
                     timeout_observations_by_pair={},
-                    slowest_successful_tps=40.0,
+                    validator_model_llm_baseline=_llm_baseline(40.0),
                 )
-            while completed_artifact_baseline() is None:
+            while not completed_artifact_baseline().slowest_tps_by_model:
                 await asyncio.sleep(0)
             seen_completed_baselines.append(completed_artifact_baseline())
             return ArtifactEvaluationOutcome(
                 submissions=(second_submission,),
                 unresolved_tasks=(),
                 timeout_observations_by_pair={},
-                slowest_successful_tps=40.0,
+                validator_model_llm_baseline=_llm_baseline(40.0),
             )
 
     scheduler._runner = _LiveBaselineRunner()  # type: ignore[assignment]
@@ -706,7 +716,7 @@ async def test_scheduler_shares_live_completed_artifact_baseline_with_concurrent
         requested_artifacts=(first_artifact, second_artifact),
     )
 
-    assert seen_completed_baselines == [40.0]
+    assert seen_completed_baselines == [_llm_baseline(40.0)]
     assert result.runs == (first_submission, second_submission)
 
 
@@ -839,7 +849,7 @@ async def test_scheduler_logs_teardown_failure_timing_summary(
             submissions=(successful_submission,),
             unresolved_tasks=(),
             timeout_observations_by_pair={},
-            slowest_successful_tps=40.0,
+            validator_model_llm_baseline=_llm_baseline(40.0),
         )
 
     monkeypatch.setattr(scheduler, "_evaluate_artifact_with_timeout_state", evaluate_successfully)
@@ -2037,7 +2047,7 @@ async def test_retry_round_preserves_earlier_completed_runs_when_later_round_abo
                     submissions=(first_submission,),
                     unresolved_tasks=(later_task,),
                     timeout_observations_by_pair={},
-                    slowest_successful_tps=None,
+                    validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
                 )
             raise ValidatorBatchFailedError(
                 error_code=MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
@@ -2062,7 +2072,7 @@ async def test_retry_round_preserves_earlier_completed_runs_when_later_round_abo
             artifact=artifact,
             tasks=(earlier_task, later_task),
             orchestrator=cast(scheduler_module.TaskRunOrchestrator, object()),
-            successful_baseline_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             timeout_retry_state_by_pair={},
         )
 
@@ -2122,13 +2132,13 @@ async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
                     submissions=(earlier_failure,),
                     unresolved_tasks=(later_task,),
                     timeout_observations_by_pair={},
-                    slowest_successful_tps=None,
+                    validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
                 )
             return ArtifactEvaluationOutcome(
                 submissions=(earlier_failure,),
                 unresolved_tasks=(),
                 timeout_observations_by_pair={},
-                slowest_successful_tps=None,
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             )
 
     scheduler._runner = _RetryWaveRunner()  # type: ignore[assignment]
@@ -2138,7 +2148,7 @@ async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
         artifact=artifact,
         tasks=(earlier_task, later_task),
         orchestrator=cast(scheduler_module.TaskRunOrchestrator, object()),
-        successful_baseline_tps=None,
+        validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
         timeout_retry_state_by_pair={},
     )
 
@@ -2200,17 +2210,17 @@ async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_
 
     class _FailureOutcomeRunner:
         def __init__(self) -> None:
-            self.seen_baselines: list[float | None] = []
+            self.seen_baselines: list[ValidatorModelLlmBaseline] = []
             self.seen_artifacts: list[UUID] = []
 
         async def evaluate_artifact_with_state(
             self,
             *,
             artifact: ScriptArtifactSpec,
-            successful_baseline_tps: float | None,
+            validator_model_llm_baseline: ValidatorModelLlmBaseline,
             **_kwargs,
         ) -> ArtifactEvaluationOutcome:
-            self.seen_baselines.append(successful_baseline_tps)
+            self.seen_baselines.append(validator_model_llm_baseline)
             self.seen_artifacts.append(artifact.artifact_id)
             if artifact.artifact_id == first_artifact.artifact_id:
                 raise ValidatorBatchFailedError(
@@ -2231,7 +2241,7 @@ async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_
                 submissions=(later_submission,),
                 unresolved_tasks=(),
                 timeout_observations_by_pair={},
-                slowest_successful_tps=40.0,
+                validator_model_llm_baseline=_llm_baseline(40.0),
             )
 
     runner = _FailureOutcomeRunner()
@@ -2244,7 +2254,7 @@ async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_
         )
 
     exc = exc_info.value
-    assert runner.seen_baselines == [None]
+    assert runner.seen_baselines == [ValidatorModelLlmBaseline.empty()]
     assert runner.seen_artifacts == [first_artifact.artifact_id]
     assert exc.completed_submissions == (successful_submission, failed_submission)
     assert exc.remaining_tasks == ()
@@ -2295,7 +2305,7 @@ async def test_scheduler_validator_batch_failure_keeps_single_owner_for_complete
                     submissions=(earlier_submission,),
                     unresolved_tasks=(later_task,),
                     timeout_observations_by_pair={},
-                    slowest_successful_tps=40.0,
+                    validator_model_llm_baseline=_llm_baseline(40.0),
                 )
             raise ValidatorBatchFailedError(
                 error_code=MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
@@ -2320,7 +2330,7 @@ async def test_scheduler_validator_batch_failure_keeps_single_owner_for_complete
             artifact=artifact,
             tasks=(earlier_task, later_task),
             orchestrator=cast(scheduler_module.TaskRunOrchestrator, object()),
-            successful_baseline_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             timeout_retry_state_by_pair={},
         )
 

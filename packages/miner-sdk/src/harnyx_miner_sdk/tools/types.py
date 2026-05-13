@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Literal, TypeGuard, cast
+from typing import Annotated, Literal, TypeGuard, cast
+
+from pydantic import Field, StrictFloat
+
+ToolInvocationTimeout = Annotated[StrictFloat, Field(gt=0, allow_inf_nan=False)]
 
 ToolName = Literal[
     "search_web",
@@ -45,6 +49,7 @@ def is_citation_source(name: str) -> bool:
 
 
 __all__ = [
+    "ToolInvocationTimeout",
     "ToolName",
     "SearchToolName",
     "LlmToolName",

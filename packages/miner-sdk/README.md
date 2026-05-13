@@ -135,11 +135,14 @@ Use the citation only when that result actually supports a material claim in you
 ## Tool helpers
 
 These helpers call validator-hosted tools when running inside the sandbox:
-- `search_web(query, **kwargs)`
-- `search_x(query, **kwargs)`
-- `search_ai(query, **kwargs)`
-- `llm_chat(messages=[...], model="...", temperature=0.0, thinking={"enabled": True})`
-- `tooling_info()`
+- `search_web(query, timeout=..., **kwargs)`
+- `search_ai(query, timeout=..., **kwargs)`
+- `fetch_page(url, timeout=...)`
+- `llm_chat(messages=[...], model="...", timeout=..., temperature=0.0, thinking={"enabled": True})`
+- `tooling_info(timeout=...)`
+- `test_tool(message, timeout=...)`
+
+Every hosted tool helper accepts an optional positive finite `timeout` in seconds. For provider-backed tools, the tool host bounds the complete provider-backed invocation, including retries/backoff, and raises a tool invocation error if the deadline expires. `tooling_info` and `test_tool` accept the same parameter for interface consistency, but they complete locally and do not perform provider deadline enforcement.
 
 `llm_chat` accepts a typed `thinking` option:
 

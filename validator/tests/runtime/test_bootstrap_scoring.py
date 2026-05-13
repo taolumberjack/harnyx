@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
@@ -25,6 +26,7 @@ from harnyx_commons.llm.schema import (
     LlmUsage,
 )
 from harnyx_commons.tools import invocation_clients
+from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.invocation_clients import build_web_search_provider
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import (
@@ -33,6 +35,9 @@ from harnyx_validator.runtime.bootstrap import (
     close_runtime_resources,
 )
 from harnyx_validator.runtime.settings import Settings
+
+DEFAULT_LLM_MODEL = "deepseek-ai/DeepSeek-V3.2-TEE"
+OTHER_LLM_MODEL = "zai-org/GLM-5-TEE"
 
 
 class _FakeLlmProvider:
@@ -283,16 +288,63 @@ def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
     )
 
 
-def test_build_state_activates_two_parallel_tool_calls_per_token() -> None:
+def test_build_state_uses_separate_tool_concurrency_lanes() -> None:
     state = bootstrap._build_state()
+    session_id = uuid4()
+    token = "token"  # noqa: S105
+    llm_invocations = [
+        ToolInvocationRequest(
+            session_id=session_id,
+            token=token,
+            tool="llm_chat",
+            kwargs={"model": DEFAULT_LLM_MODEL},
+        ),
+        ToolInvocationRequest(
+            session_id=session_id,
+            token=token,
+            tool="llm_chat",
+            kwargs={"model": DEFAULT_LLM_MODEL},
+        ),
+    ]
+    search_invocations = [
+        ToolInvocationRequest(session_id=session_id, token=token, tool="search_web"),
+        ToolInvocationRequest(session_id=session_id, token=token, tool="search_ai"),
+        ToolInvocationRequest(session_id=session_id, token=token, tool="fetch_page"),
+        ToolInvocationRequest(session_id=session_id, token=token, tool="tooling_info"),
+        ToolInvocationRequest(session_id=session_id, token=token, tool="test_tool"),
+    ]
 
-    state.token_semaphore.acquire("token")
-    state.token_semaphore.acquire("token")
+    for invocation in llm_invocations:
+        state.tool_concurrency_limiter.acquire(invocation)
     with pytest.raises(ConcurrencyLimitError):
-        state.token_semaphore.acquire("token")
+        state.tool_concurrency_limiter.acquire(
+            ToolInvocationRequest(
+                session_id=session_id,
+                token=token,
+                tool="llm_chat",
+                kwargs={"model": DEFAULT_LLM_MODEL},
+            )
+        )
+    other_model_invocation = ToolInvocationRequest(
+        session_id=session_id,
+        token=token,
+        tool="llm_chat",
+        kwargs={"model": OTHER_LLM_MODEL},
+    )
+    state.tool_concurrency_limiter.acquire(other_model_invocation)
 
-    state.token_semaphore.release("token")
-    state.token_semaphore.release("token")
+    for invocation in search_invocations:
+        state.tool_concurrency_limiter.acquire(invocation)
+    with pytest.raises(ConcurrencyLimitError):
+        state.tool_concurrency_limiter.acquire(
+            ToolInvocationRequest(session_id=session_id, token=token, tool="search_web")
+        )
+
+    for invocation in llm_invocations:
+        state.tool_concurrency_limiter.release(invocation)
+    state.tool_concurrency_limiter.release(other_model_invocation)
+    for invocation in search_invocations:
+        state.tool_concurrency_limiter.release(invocation)
 
 
 def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() -> None:

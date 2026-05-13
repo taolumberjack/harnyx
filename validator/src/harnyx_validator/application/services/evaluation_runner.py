@@ -37,14 +37,15 @@ from harnyx_commons.miner_task_failure_policy import (
     ProviderFailureEvidence,
     TimeoutAttributionKind,
     TimeoutObservationEvidence,
+    ValidatorModelLlmBaseline,
     classify_timeout_attribution,
     is_provider_caused_terminal_failure,
     is_script_validation_sandbox_invocation,
     is_timeout_sandbox_invocation,
     provider_batch_failure_evidence,
     provider_batch_failure_message,
-    slowest_successful_llm_tps,
     successful_llm_samples,
+    validator_model_llm_baseline,
 )
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunRequest,
@@ -68,7 +69,7 @@ if TYPE_CHECKING:
 
 Clock = Callable[[], datetime]
 SubmissionFactory = Callable[[MinerTask, SessionIssued], Awaitable[MinerTaskRunSubmission]]
-CompletedArtifactBaseline = Callable[[], float | None]
+CompletedArtifactBaseline = Callable[[], ValidatorModelLlmBaseline]
 
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
@@ -129,7 +130,9 @@ class TaskAttemptDecision:
     retry_exc: Exception | None = None
     timeout_exc: SandboxInvocationError | None = None
     timeout_observation: TimeoutObservationEvidence | None = None
-    successful_baseline_tps: float | None = None
+    validator_model_llm_baseline: ValidatorModelLlmBaseline = field(
+        default_factory=ValidatorModelLlmBaseline.empty
+    )
     validator_failure: ValidatorBatchFailedError | None = None
 
 
@@ -202,7 +205,9 @@ class _ArtifactDispatchState:
     timeout_observations_by_pair: dict[tuple[UUID, UUID], tuple[TimeoutObservationEvidence, ...]] = field(
         default_factory=dict
     )
-    slowest_successful_tps: float | None = None
+    validator_model_llm_baseline: ValidatorModelLlmBaseline = field(
+        default_factory=ValidatorModelLlmBaseline.empty
+    )
     validator_failure: ValidatorBatchFailedError | None = None
     unexpected_failure: Exception | None = None
 
@@ -220,7 +225,9 @@ class ArtifactEvaluationOutcome:
     submissions: tuple[MinerTaskRunSubmission, ...]
     unresolved_tasks: tuple[MinerTask, ...]
     timeout_observations_by_pair: dict[tuple[UUID, UUID], tuple[TimeoutObservationEvidence, ...]]
-    slowest_successful_tps: float | None = None
+    validator_model_llm_baseline: ValidatorModelLlmBaseline = field(
+        default_factory=ValidatorModelLlmBaseline.empty
+    )
     artifact_failure: ArtifactFailure | None = None
 
 
@@ -261,7 +268,7 @@ class EvaluationRunner:
             submissions=(),
             unresolved_tasks=tuple(tasks),
             timeout_observations_by_pair={},
-            slowest_successful_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
         )
         while outcome.unresolved_tasks:
             outcome = await self.evaluate_artifact_with_state(
@@ -269,7 +276,7 @@ class EvaluationRunner:
                 artifact=artifact,
                 tasks=outcome.unresolved_tasks,
                 orchestrator=orchestrator,
-                successful_baseline_tps=outcome.slowest_successful_tps,
+                validator_model_llm_baseline=outcome.validator_model_llm_baseline,
                 timeout_observations_by_pair=outcome.timeout_observations_by_pair,
                 earlier_submissions=outcome.submissions,
             )
@@ -282,7 +289,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         tasks: Sequence[MinerTask],
         orchestrator: TaskRunOrchestrator,
-        successful_baseline_tps: float | None,
+        validator_model_llm_baseline: ValidatorModelLlmBaseline,
         completed_artifact_baseline: CompletedArtifactBaseline | None = None,
         timeout_observations_by_pair: dict[tuple[UUID, UUID], tuple[TimeoutObservationEvidence, ...]],
         earlier_submissions: tuple[MinerTaskRunSubmission, ...] = (),
@@ -293,13 +300,13 @@ class EvaluationRunner:
                 submissions=earlier_submissions,
                 unresolved_tasks=(),
                 timeout_observations_by_pair=dict(timeout_observations_by_pair),
-                slowest_successful_tps=successful_baseline_tps,
+                validator_model_llm_baseline=validator_model_llm_baseline,
             )
 
         dispatch = _ArtifactDispatchState(
             submissions_by_index=[None] * len(indexed_tasks),
             timeout_observations_by_pair=dict(timeout_observations_by_pair),
-            slowest_successful_tps=successful_baseline_tps,
+            validator_model_llm_baseline=validator_model_llm_baseline,
         )
         pending_tasks: asyncio.Queue[tuple[int, MinerTask]] = asyncio.Queue()
         for indexed_task in indexed_tasks:
@@ -356,7 +363,7 @@ class EvaluationRunner:
             submissions=all_completed_submissions,
             unresolved_tasks=unresolved_tasks,
             timeout_observations_by_pair=dispatch.timeout_observations_by_pair,
-            slowest_successful_tps=dispatch.slowest_successful_tps,
+            validator_model_llm_baseline=dispatch.validator_model_llm_baseline,
         )
 
     async def _run_artifact_worker(
@@ -384,16 +391,15 @@ class EvaluationRunner:
                     artifact=artifact,
                     task=task,
                     orchestrator=orchestrator,
-                    successful_baseline_tps=dispatch.slowest_successful_tps,
+                    validator_model_llm_baseline=dispatch.validator_model_llm_baseline,
                     completed_artifact_baseline=completed_artifact_baseline,
                     prior_timeout_observations=dispatch.timeout_observations_by_pair.get(pair_key, ()),
                 )
                 if decision.kind is AttemptControlKind.SUBMISSION:
                     submission = _require_submission(decision)
                     dispatch.submissions_by_index[task_index] = submission
-                    dispatch.slowest_successful_tps = _merge_slowest_successful_tps(
-                        dispatch.slowest_successful_tps,
-                        decision.successful_baseline_tps,
+                    dispatch.validator_model_llm_baseline = dispatch.validator_model_llm_baseline.merge(
+                        decision.validator_model_llm_baseline,
                     )
                     dispatch.timeout_observations_by_pair.pop(pair_key, None)
                     error_code = _submission_error_code_or_none(submission)
@@ -467,7 +473,7 @@ class EvaluationRunner:
         artifact: ScriptArtifactSpec,
         task: MinerTask,
         orchestrator: TaskRunOrchestrator,
-        successful_baseline_tps: float | None,
+        validator_model_llm_baseline: ValidatorModelLlmBaseline,
         completed_artifact_baseline: CompletedArtifactBaseline | None = None,
         prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
     ) -> TaskAttemptDecision:
@@ -498,9 +504,10 @@ class EvaluationRunner:
                     return decision
 
                 if decision.kind is AttemptControlKind.REVIEW_TIMEOUT:
-                    current_successful_baseline_tps = _merge_slowest_successful_tps(
-                        successful_baseline_tps,
-                        None if completed_artifact_baseline is None else completed_artifact_baseline(),
+                    current_validator_model_llm_baseline = validator_model_llm_baseline.merge(
+                        ValidatorModelLlmBaseline.empty()
+                        if completed_artifact_baseline is None
+                        else completed_artifact_baseline()
                     )
                     try:
                         timeout_resolution = self._resolve_timeout_attempt(
@@ -509,7 +516,7 @@ class EvaluationRunner:
                             task=task,
                             session_id=issued.session.session_id,
                             exc=_require_timeout_exc(decision),
-                            successful_baseline_tps=current_successful_baseline_tps,
+                            validator_model_llm_baseline=current_validator_model_llm_baseline,
                             prior_timeout_observations=prior_timeout_observations,
                         )
                     except ValidatorBatchFailedError as exc:
@@ -660,7 +667,7 @@ class EvaluationRunner:
                 session_id=issued.session.session_id,
                 outcome=outcome,
             ),
-            successful_baseline_tps=slowest_successful_llm_tps(outcome.tool_receipts),
+            validator_model_llm_baseline=validator_model_llm_baseline(outcome.tool_receipts),
         )
 
     async def record_failure_for_artifact(
@@ -866,7 +873,7 @@ class EvaluationRunner:
         task: MinerTask,
         session_id: UUID,
         exc: SandboxInvocationError,
-        successful_baseline_tps: float | None,
+        validator_model_llm_baseline: ValidatorModelLlmBaseline,
         prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
     ) -> TaskAttemptDecision:
         envelope = self._sessions.inspect(session_id)
@@ -876,7 +883,7 @@ class EvaluationRunner:
         )
         timeout_attribution = classify_timeout_attribution(
             observation=observation,
-            successful_baseline_tps=successful_baseline_tps,
+            validator_model_llm_baseline=validator_model_llm_baseline,
             prior_timeout_observations=prior_timeout_observations,
         )
         if timeout_attribution is None:
@@ -1172,12 +1179,16 @@ def _is_provider_caused_terminal_failure(exc: Exception) -> bool:
 def _submission_decision(
     submission: MinerTaskRunSubmission,
     *,
-    successful_baseline_tps: float | None = None,
+    validator_model_llm_baseline: ValidatorModelLlmBaseline | None = None,
 ) -> TaskAttemptDecision:
     return TaskAttemptDecision(
         kind=AttemptControlKind.SUBMISSION,
         submission=submission,
-        successful_baseline_tps=successful_baseline_tps,
+        validator_model_llm_baseline=(
+            ValidatorModelLlmBaseline.empty()
+            if validator_model_llm_baseline is None
+            else validator_model_llm_baseline
+        ),
     )
 
 
@@ -1254,17 +1265,6 @@ def _exception_type_name(exc: Exception | None) -> str | None:
     if exc is None:
         return None
     return type(exc).__name__
-
-
-def _merge_slowest_successful_tps(
-    current: float | None,
-    candidate: float | None,
-) -> float | None:
-    if candidate is None:
-        return current
-    if current is None:
-        return candidate
-    return min(current, candidate)
 
 
 def _submission_error_code(submission: MinerTaskRunSubmission) -> MinerTaskErrorCode:

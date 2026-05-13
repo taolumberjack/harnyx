@@ -35,6 +35,7 @@ from harnyx_commons.llm.pricing import price_llm
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.schema import LlmUsage
 from harnyx_commons.llm.tool_models import parse_tool_model
+from harnyx_commons.miner_task_failure_policy import ValidatorModelLlmBaseline
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunRequest,
     MinerTaskRunSubmission,
@@ -110,6 +111,7 @@ def _record_receipt(
     outcome: ToolCallOutcome = ToolCallOutcome.OK,
     response_payload: dict[str, object] | None = None,
     execution: ToolExecutionFacts | None = None,
+    request_payload: dict[str, object] | None = None,
 ) -> None:
     receipt_log.record(
         ToolCall(
@@ -121,6 +123,7 @@ def _record_receipt(
             outcome=outcome,
             details=ToolCallDetails(
                 request_hash=f"{receipt_id}-req",
+                request_payload=request_payload,
                 response_hash=f"{receipt_id}-res",
                 cost_usd=cost_usd,
                 response_payload=response_payload,
@@ -136,6 +139,10 @@ def _timeout_observation() -> TimeoutObservationEvidence:
         session_summary=ToolUsageSummary.zero(),
         session_elapsed_ms=1000.0,
     )
+
+
+def _llm_baseline(tps: float, *, model: str = "google/gemma-4-31B-turbo-TEE") -> ValidatorModelLlmBaseline:
+    return ValidatorModelLlmBaseline(slowest_tps_by_model={parse_tool_model(model): tps})
 
 
 def _search_usage(receipt_log: FakeReceiptLog, session_id) -> ToolUsageSummary:
@@ -518,6 +525,7 @@ class _AlwaysMinerTimeoutOrchestrator:
                 issued_at=datetime(2025, 10, 17, 12, self.calls, tzinfo=UTC),
                 cost_usd=0.0,
                 tool="llm_chat",
+                request_payload={"args": [], "kwargs": {"model": "google/gemma-4-31B-turbo-TEE"}},
                 response_payload={"usage": {"total_tokens": self._total_tokens}},
                 execution=ToolExecutionFacts(elapsed_ms=self._elapsed_ms),
             )
@@ -585,6 +593,7 @@ class _MinerTimeoutWithNonQualifyingReceiptsOrchestrator:
             cost_usd=0.0,
             tool="llm_chat",
             outcome=ToolCallOutcome.PROVIDER_ERROR,
+            request_payload={"args": [], "kwargs": {"model": "google/gemma-4-31B-turbo-TEE"}},
             response_payload={"usage": {"total_tokens": 500}},
             execution=ToolExecutionFacts(elapsed_ms=500.0),
         )
@@ -1062,7 +1071,7 @@ async def test_evaluation_runner_miner_timeout_without_successful_baseline_stays
         artifact=artifact,
         tasks=(task,),
         orchestrator=cast(TaskRunOrchestrator, orchestrator),
-        successful_baseline_tps=None,
+        validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
         timeout_observations_by_pair={},
     )
 
@@ -1158,7 +1167,7 @@ async def test_evaluation_runner_records_miner_timeout_miner_owned_within_thresh
         artifact=artifact,
         tasks=(task,),
         orchestrator=cast(TaskRunOrchestrator, orchestrator),
-        successful_baseline_tps=60.0,
+        validator_model_llm_baseline=_llm_baseline(60.0),
         timeout_observations_by_pair={},
     )
 
@@ -1209,7 +1218,7 @@ async def test_evaluation_runner_treats_http_client_timeoutexception_as_sandbox_
         artifact=artifact,
         tasks=(task,),
         orchestrator=cast(TaskRunOrchestrator, orchestrator),
-        successful_baseline_tps=60.0,
+        validator_model_llm_baseline=_llm_baseline(60.0),
         timeout_observations_by_pair={},
     )
 
@@ -1260,7 +1269,7 @@ async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaus
             artifact=artifact,
             tasks=(task,),
             orchestrator=cast(TaskRunOrchestrator, orchestrator),
-            successful_baseline_tps=60.0,
+            validator_model_llm_baseline=_llm_baseline(60.0),
             timeout_observations_by_pair={
                 (artifact.artifact_id, task.task_id): (_timeout_observation(), _timeout_observation())
             },
@@ -1303,11 +1312,11 @@ async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_befor
         content_hash="artifact-hash",
         size_bytes=128,
     )
-    completed_artifact_baseline: list[float | None] = [None]
-    seen_baselines: list[float | None] = []
+    completed_artifact_baseline = [ValidatorModelLlmBaseline.empty()]
+    seen_baselines: list[ValidatorModelLlmBaseline] = []
 
     async def evaluate_task_attempt(**_kwargs):
-        completed_artifact_baseline[0] = 40.0
+        completed_artifact_baseline[0] = _llm_baseline(40.0)
         return evaluation_runner_module._review_timeout_decision(
             _sandbox_invocation_error(
                 "sandbox entrypoint request timed out",
@@ -1318,7 +1327,7 @@ async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_befor
         )
 
     def resolve_timeout_attempt(**kwargs):
-        seen_baselines.append(kwargs["successful_baseline_tps"])
+        seen_baselines.append(kwargs["validator_model_llm_baseline"])
         return evaluation_runner_module._timeout_unresolved_decision(_timeout_observation())
 
     runner._evaluate_task_attempt = evaluate_task_attempt  # type: ignore[method-assign]
@@ -1329,13 +1338,13 @@ async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_befor
         artifact=artifact,
         task=task,
         orchestrator=cast(TaskRunOrchestrator, object()),
-        successful_baseline_tps=75.0,
+        validator_model_llm_baseline=_llm_baseline(75.0),
         completed_artifact_baseline=lambda: completed_artifact_baseline[0],
         prior_timeout_observations=(),
     )
 
     assert decision.kind is evaluation_runner_module.AttemptControlKind.TIMEOUT_UNRESOLVED
-    assert seen_baselines == [40.0]
+    assert seen_baselines == [_llm_baseline(40.0)]
 
 
 async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_timeout() -> None:
@@ -1380,7 +1389,7 @@ async def test_evaluation_runner_does_not_treat_non_504_timeouterror_as_sandbox_
             artifact=artifact,
             tasks=(task,),
             orchestrator=cast(TaskRunOrchestrator, orchestrator),
-            successful_baseline_tps=60.0,
+            validator_model_llm_baseline=_llm_baseline(60.0),
             timeout_observations_by_pair={},
         )
 
@@ -1431,7 +1440,7 @@ async def test_evaluation_runner_defaults_miner_timeout_to_owned_without_compara
         artifact=artifact,
         tasks=(task,),
         orchestrator=cast(TaskRunOrchestrator, orchestrator),
-        successful_baseline_tps=60.0,
+        validator_model_llm_baseline=_llm_baseline(60.0),
         timeout_observations_by_pair={
             (artifact.artifact_id, task.task_id): (_timeout_observation(), _timeout_observation())
         },
@@ -1481,7 +1490,7 @@ async def test_evaluation_runner_uses_only_successful_current_session_llm_receip
         artifact=artifact,
         tasks=(task,),
         orchestrator=cast(TaskRunOrchestrator, orchestrator),
-        successful_baseline_tps=60.0,
+        validator_model_llm_baseline=_llm_baseline(60.0),
         timeout_observations_by_pair={
             (artifact.artifact_id, task.task_id): (_timeout_observation(), _timeout_observation())
         },
@@ -1756,7 +1765,7 @@ async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batc
                     elapsed_ms=4000.0,
                 ),
             ),
-            successful_baseline_tps=100.0,
+            validator_model_llm_baseline=_llm_baseline(100.0),
             timeout_observations_by_pair={
                 (artifact.artifact_id, task.task_id): (_timeout_observation(), _timeout_observation())
             },
@@ -2246,7 +2255,7 @@ async def test_evaluate_artifact_with_state_preserves_sandbox_infrastructure_fai
             artifact=artifact,
             tasks=(task,),
             orchestrator=orchestrator,
-            successful_baseline_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             timeout_observations_by_pair={},
         )
 
@@ -2634,7 +2643,7 @@ async def test_evaluation_runner_preserves_earlier_completed_runs_when_later_rou
                 submissions=(first_submission,),
                 unresolved_tasks=(later_task,),
                 timeout_observations_by_pair={},
-                slowest_successful_tps=None,
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             )
         raise ValidatorBatchFailedError(
             error_code=MinerTaskErrorCode.SANDBOX_INVOCATION_FAILED,
@@ -2716,7 +2725,7 @@ async def test_evaluate_artifact_with_state_preserves_earlier_submissions_for_co
             artifact=artifact,
             tasks=(task,),
             orchestrator=cast(TaskRunOrchestrator, _AlwaysSandboxFailureOrchestrator()),
-            successful_baseline_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             timeout_observations_by_pair={},
             earlier_submissions=(earlier_submission,),
         )
@@ -2798,7 +2807,7 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_va
             artifact=artifact,
             tasks=(completed_task, pending_task),
             orchestrator=cast(TaskRunOrchestrator, object()),
-            successful_baseline_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             timeout_observations_by_pair={},
         )
 
@@ -2863,7 +2872,7 @@ async def test_evaluate_artifact_with_state_preserves_partial_submissions_for_un
             artifact=artifact,
             tasks=(completed_task, pending_task),
             orchestrator=cast(TaskRunOrchestrator, object()),
-            successful_baseline_tps=None,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
             timeout_observations_by_pair={},
         )
 
