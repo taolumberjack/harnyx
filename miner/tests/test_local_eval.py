@@ -532,6 +532,12 @@ class _FakeAsyncResource:
         self.closed = True
 
 
+class _FailingAsyncResource(_FakeAsyncResource):
+    async def aclose(self) -> None:
+        self.closed = True
+        raise RuntimeError("close failed")
+
+
 def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -627,6 +633,38 @@ async def test_local_runtime_closes_llm_provider_registry_not_routed_wrappers() 
     assert llm_provider_registry.closed is True
     assert tool_llm_provider.closed is False
     assert scoring_llm_provider.closed is False
+
+
+async def test_local_runtime_closes_llm_provider_registry_when_search_close_fails() -> None:
+    search_client = _FailingAsyncResource()
+    llm_provider_registry = _FakeAsyncResource()
+    runtime = local_eval.LocalEvaluationRuntime(
+        settings=cast(Any, SimpleNamespace()),
+        tool_executor=cast(Any, _UnusedToolExecutor()),
+        scoring_service=cast(Any, object()),
+        scoring_config=EvaluationScoringConfig(
+            provider="chutes",
+            model="openai/gpt-oss-120b-TEE",
+            timeout_seconds=30.0,
+        ),
+        _runner=cast(Any, object()),
+        _state=SimpleNamespace(),
+        _search_client=search_client,
+        _llm_provider_registry=llm_provider_registry,
+        _tool_llm_provider=_FakeAsyncResource(),
+        _scoring_llm_provider=_FakeAsyncResource(),
+        _sandbox_manager=cast(Any, object()),
+        _tool_host=None,
+        _tool_host_lock=asyncio.Lock(),
+        _run_id=uuid4().hex,
+        _progress_reporter=None,
+    )
+
+    with pytest.raises(RuntimeError, match="close failed"):
+        await runtime.aclose()
+
+    assert search_client.closed is True
+    assert llm_provider_registry.closed is True
 
 
 class _FakeSandboxClient(SandboxClient):

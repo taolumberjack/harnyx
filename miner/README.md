@@ -55,6 +55,7 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 | Variable | Purpose |
 |----------|---------|
 | `CHUTES_API_KEY` | Evaluation scoring and `llm_chat` tool calls |
+| `OPENROUTER_API_KEY` | Optional: required only when local tooling invokes `openai/gpt-oss-120b` through the Chutes-selected tool route |
 | `DESEARCH_API_KEY` | Optional: required if your agent uses search tools |
 | `SEARCH_PROVIDER` | Optional: required if your agent uses search tools |
 | `PLATFORM_BASE_URL` | Public monitoring and script uploads |
@@ -212,6 +213,7 @@ pricing = info.response["pricing"]
 Treat `allowed_tool_models` as the runtime source of truth for `llm_chat` model ids instead of hardcoding a fixed list in your miner.
 
 Current allowed `llm_chat` model ids in this repo:
+- `openai/gpt-oss-120b`
 - `deepseek-ai/DeepSeek-V3.1-TEE`
 - `deepseek-ai/DeepSeek-V3.2-TEE`
 - `zai-org/GLM-5-TEE`
@@ -226,6 +228,7 @@ Thinking controls are provider/model specific:
 
 | Model | `enabled=True` / `enabled=False` | `effort` | `budget` |
 |-------|----------------------------------|----------|----------|
+| `openai/gpt-oss-120b` | No verified request-side control; accepted but serializes no thinking field | Ignored | Ignored |
 | `deepseek-ai/DeepSeek-V3.1-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |

@@ -1,8 +1,8 @@
 """Pricing helpers for validator tool budgeting.
 
-All LLM prices here are **Chutes-based** reference rates, used solely for
-budgeting miner tool calls (even if the runtime executes against another
-provider like Vertex). External benchmarking uses its own pricing
+LLM prices here are reference rates for budgeting miner tool calls. Chutes-backed
+models use Chutes rates, and hardcoded OpenRouter-only models use OpenRouter
+rates. External benchmarking uses its own pricing
 (`apps/platform/scripts/miner_task_benchmark.py`) and must not import this module.
 """
 
@@ -36,8 +36,9 @@ class ModelPricing:
         return self.output_per_million
 
 
-# Chutes reference rates keyed by canonical model id.
+# Reference rates keyed by canonical model id.
 MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
+    "openai/gpt-oss-120b": ModelPricing(0.039, 0.18, 0.0),
     "deepseek-ai/DeepSeek-V3.1-TEE": ModelPricing(0.27, 1.00, 0.0),
     "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
     "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),

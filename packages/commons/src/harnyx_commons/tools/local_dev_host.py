@@ -10,18 +10,22 @@ from uuid import UUID, uuid4
 
 from harnyx_commons.application.dto.session import SessionTokenRequest
 from harnyx_commons.application.session_manager import SessionManager
-from harnyx_commons.clients import CHUTES, DESEARCH, PARALLEL
+from harnyx_commons.clients import DESEARCH, PARALLEL
+from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.domain.miner_task import DEFAULT_MINER_TASK_BUDGET_USD
 from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
-from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
+from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.provider_factory import CachedLlmProviderRegistry, build_cached_llm_provider_registry
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.executor import ToolExecutor
 from harnyx_commons.tools.http_serialization import serialize_tool_execute_response
+from harnyx_commons.tools.invocation_clients import build_tool_llm_provider
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import build_miner_sandbox_tool_invoker
@@ -37,7 +41,8 @@ class LocalToolHost:
     token: str
     _tool_executor: ToolExecutor
     _search_client: WebSearchProviderPort
-    _llm_provider: ChutesLlmProvider
+    _llm_provider: LlmProviderPort
+    _llm_provider_registry: CachedLlmProviderRegistry
 
     async def invoke(
         self,
@@ -59,8 +64,10 @@ class LocalToolHost:
         return serialize_tool_execute_response(result).model_dump(mode="json")
 
     async def aclose(self) -> None:
-        await self._search_client.aclose()
-        await self._llm_provider.aclose()
+        await _close_owned_resources(
+            ("search client", self._search_client),
+            ("llm provider registry", self._llm_provider_registry),
+        )
 
 
 def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> LocalToolHost:
@@ -96,12 +103,12 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
     )
 
     search_client = _build_local_search_client(llm_settings)
-    llm_provider = ChutesLlmProvider(
-        base_url=CHUTES.base_url,
-        api_key=llm_settings.chutes_api_key_value,
-        timeout=CHUTES.timeout_seconds,
-        max_concurrent=llm_settings.chutes_max_concurrent,
+    provider_registry = build_cached_llm_provider_registry(
+        llm_settings=llm_settings,
+        bedrock_settings=BedrockSettings(),
+        vertex_settings=VertexSettings(),
     )
+    llm_provider = build_tool_llm_provider(llm_settings, provider_registry)
     tool_invoker = build_miner_sandbox_tool_invoker(
         receipts,
         web_search_client=search_client,
@@ -124,6 +131,7 @@ def create_local_tool_host(*, uid: int = 1, session_ttl_minutes: int = 30) -> Lo
         _tool_executor=tool_executor,
         _search_client=search_client,
         _llm_provider=llm_provider,
+        _llm_provider_registry=provider_registry,
     )
 
 
@@ -141,6 +149,21 @@ def _build_local_search_client(settings: LlmSettings) -> WebSearchProviderPort:
         timeout=DESEARCH.timeout_seconds,
         max_concurrent=settings.desearch_max_concurrent,
     )
+
+
+async def _close_owned_resources(*resources: tuple[str, Any]) -> None:
+    errors: list[Exception] = []
+    for label, resource in resources:
+        try:
+            await resource.aclose()
+        except Exception as exc:
+            exc.add_note(f"local tool host {label} close failed")
+            errors.append(exc)
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise errors[0]
+    raise ExceptionGroup("local tool host cleanup failed", errors)
 
 
 __all__ = ["LocalToolHost", "create_local_tool_host"]

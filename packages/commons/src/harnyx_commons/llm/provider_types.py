@@ -11,6 +11,7 @@ BEDROCK_PROVIDER = "bedrock"
 CHUTES_PROVIDER = "chutes"
 VERTEX_PROVIDER = "vertex"
 CUSTOM_OPENAI_COMPATIBLE_PROVIDER_TAG = "custom-openai-compatible"
+OPENROUTER_PROVIDER = "openrouter"
 
 LlmProviderName = Literal["bedrock", "chutes", "vertex"]
 LlmRouteTarget = str
@@ -82,6 +83,7 @@ __all__ = [
     "CUSTOM_OPENAI_COMPATIBLE_PROVIDER_TAG",
     "LlmProviderName",
     "LlmRouteTarget",
+    "OPENROUTER_PROVIDER",
     "VERTEX_PROVIDER",
     "custom_openai_compatible_target",
     "normalize_reasoning_effort",

@@ -246,3 +246,75 @@ def test_build_cached_llm_provider_registry_caches_custom_openai_compatible_endp
     first_delegate = cast(_FakeOpenAiCompatibleProvider, first_adapter.delegate)
     assert captured_adapters == [("custom-openai-compatible:gemma4-cloud-run-turbo", first_delegate)]
     assert first_delegate.endpoint.id == "gemma4-cloud-run-turbo"
+
+
+def test_build_cached_llm_provider_registry_builds_hardcoded_openrouter_target(
+    monkeypatch,
+) -> None:
+    captured_providers: list[dict[str, object]] = []
+    captured_adapters: list[tuple[str, object]] = []
+
+    class _FakeOpenRouterProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured_providers.append(kwargs)
+
+    class _FakeAdapter:
+        def __init__(self, *, provider_name: str, delegate: object) -> None:
+            self.provider_name = provider_name
+            self.delegate = delegate
+            captured_adapters.append((provider_name, delegate))
+
+    monkeypatch.setattr(provider_factory, "OpenRouterLlmProvider", _FakeOpenRouterProvider)
+    monkeypatch.setattr(provider_factory, "LlmProviderAdapter", _FakeAdapter)
+
+    settings = LlmSettings(
+        OPENROUTER_API_KEY="test-openrouter-key",
+        OPENROUTER_MODEL_PROVIDER_OPTIONS_JSON='{"openai/gpt-oss-120b":{"require_parameters":true}}',
+    )
+    registry = provider_factory.build_cached_llm_provider_registry(
+        llm_settings=settings,
+        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
+        vertex_settings=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_timeout_seconds=45.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+    )
+
+    first = registry.resolve("openrouter")
+    second = registry.resolve("openrouter")
+
+    assert first is second
+    assert len(captured_providers) == 1
+    assert captured_providers[0]["openrouter_api_key"] == settings.openrouter_api_key
+    assert captured_providers[0]["model_provider_options"] == settings.openrouter_model_provider_options
+    first_adapter = cast(_FakeAdapter, first)
+    assert captured_adapters == [("openrouter", first_adapter.delegate)]
+
+
+def test_build_cached_llm_provider_registry_does_not_treat_openrouter_as_configured_custom_endpoint(
+    monkeypatch,
+) -> None:
+    captured_openrouter: list[object] = []
+
+    class _FakeOpenRouterProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured_openrouter.append(kwargs)
+
+    monkeypatch.setattr(provider_factory, "OpenRouterLlmProvider", _FakeOpenRouterProvider)
+
+    registry = provider_factory.build_cached_llm_provider_registry(
+        llm_settings=LlmSettings(),
+        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
+        vertex_settings=VertexSettings.model_construct(
+            gcp_project_id="project",
+            gcp_location="us-central1",
+            vertex_timeout_seconds=45.0,
+            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
+        ),
+    )
+
+    registry.resolve("openrouter")
+
+    assert len(captured_openrouter) == 1

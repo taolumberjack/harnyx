@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any, cast
+from uuid import uuid4
+
 import pytest
 
 from harnyx_commons.tools import local_dev_host
@@ -9,6 +12,7 @@ pytestmark = pytest.mark.anyio("asyncio")
 
 class _StubSettings:
     search_provider = "desearch"
+    tool_llm_provider = "chutes"
     desearch_api_key_value = "desearch-key"
     parallel_api_key_value = "parallel-key"
     parallel_base_url = "https://parallel.local.test"
@@ -34,12 +38,28 @@ class _StubLlmProvider:
         return None
 
 
+class _StubProviderRegistry:
+    closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _FailingSearchClient:
+    async def aclose(self) -> None:
+        raise RuntimeError("search close failed")
+
+
 async def test_create_local_tool_host_tooling_info_matches_miner_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    registry = _StubProviderRegistry()
+    llm_provider = _StubLlmProvider()
+
     monkeypatch.setattr(local_dev_host, "LlmSettings", lambda: _StubSettings())
     monkeypatch.setattr(local_dev_host, "DeSearchClient", _StubSearchClient)
-    monkeypatch.setattr(local_dev_host, "ChutesLlmProvider", _StubLlmProvider)
+    monkeypatch.setattr(local_dev_host, "build_cached_llm_provider_registry", lambda **_: registry)
+    monkeypatch.setattr(local_dev_host, "build_tool_llm_provider", lambda *_: llm_provider)
 
     host = local_dev_host.create_local_tool_host()
     try:
@@ -53,6 +73,24 @@ async def test_create_local_tool_host_tooling_info_matches_miner_contract(
     assert "search_repo" not in payload["response"]["pricing"]
     assert "get_repo_file" not in payload["response"]["pricing"]
     assert "search_items" not in payload["response"]["pricing"]
+    assert registry.closed is True
+
+
+async def test_local_tool_host_closes_provider_registry_when_search_close_fails() -> None:
+    registry = _StubProviderRegistry()
+    host = local_dev_host.LocalToolHost(
+        session_id=uuid4(),
+        token=uuid4().hex,
+        _tool_executor=cast(Any, object()),
+        _search_client=cast(Any, _FailingSearchClient()),
+        _llm_provider=cast(Any, _StubLlmProvider()),
+        _llm_provider_registry=cast(Any, registry),
+    )
+
+    with pytest.raises(RuntimeError, match="search close failed"):
+        await host.aclose()
+
+    assert registry.closed is True
 
 
 def test_build_local_search_client_uses_configured_parallel_base_url(

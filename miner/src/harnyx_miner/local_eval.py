@@ -596,14 +596,21 @@ class LocalEvaluationRuntime:
         return self._tool_host
 
     async def aclose(self) -> None:
+        errors: list[Exception] = []
         if self._tool_host is not None:
-            await self._tool_host.aclose()
-            self._tool_host = None
-        for resource in _unique_async_resources(
+            try:
+                await self._tool_host.aclose()
+            except Exception as exc:
+                exc.add_note("local eval tool host close failed")
+                errors.append(exc)
+            finally:
+                self._tool_host = None
+        await _close_async_resources(
             self._search_client,
             self._llm_provider_registry,
-        ):
-            await resource.aclose()
+            errors=errors,
+            owner="local eval",
+        )
 
 
 def _write_local_failure_bundle(
@@ -1716,6 +1723,24 @@ def _unique_async_resources(*resources: object) -> tuple[Any, ...]:
         seen.add(resource_id)
         unique.append(resource)
     return tuple(unique)
+
+
+async def _close_async_resources(
+    *resources: object,
+    errors: list[Exception],
+    owner: str,
+) -> None:
+    for resource in _unique_async_resources(*resources):
+        try:
+            await resource.aclose()
+        except Exception as exc:
+            exc.add_note(f"{owner} async resource close failed")
+            errors.append(exc)
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise errors[0]
+    raise ExceptionGroup(f"{owner} cleanup failed", errors)
 
 
 def _utcnow() -> datetime:

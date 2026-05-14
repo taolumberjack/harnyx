@@ -24,6 +24,7 @@ GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
 QWEN36_MODEL = "Qwen/Qwen3.6-27B-TEE"
 QWEN36_ROUTE_TARGET = "custom-openai-compatible:qwen36-cloud-run"
+OPENROUTER_MODEL = "openai/gpt-oss-120b"
 
 
 class _FakeLlmProvider:
@@ -128,6 +129,21 @@ def _qwen36_tool_request() -> LlmRequest:
     )
 
 
+def _openrouter_tool_request() -> LlmRequest:
+    return LlmRequest(
+        provider="chutes",
+        model=OPENROUTER_MODEL,
+        messages=(
+            LlmMessage(
+                role="user",
+                content=(LlmMessageContentPart.input_text("hello"),),
+            ),
+        ),
+        temperature=0.0,
+        max_output_tokens=8,
+    )
+
+
 def test_tool_invocation_clients_do_not_resolve_tool_provider_until_invoked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -203,6 +219,25 @@ async def test_tool_invocation_clients_route_qwen36_tool_model_to_custom_endpoin
     await clients.tool_llm_provider.invoke(_qwen36_tool_request())
 
     assert registry.requests_by_provider[QWEN36_ROUTE_TARGET][0].provider == QWEN36_ROUTE_TARGET
+
+
+@pytest.mark.anyio("asyncio")
+async def test_tool_invocation_clients_route_chutes_selected_openrouter_model_to_openrouter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeLlmRegistry()
+    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: registry)
+
+    clients = build_tool_invocation_clients(
+        llm_settings=_llm_settings(),
+        bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
+        vertex_settings=VertexSettings.model_construct(gcp_project_id="project", gcp_location="us-central1"),
+    )
+
+    assert clients.tool_llm_provider is not None
+    await clients.tool_llm_provider.invoke(_openrouter_tool_request())
+
+    assert registry.requests_by_provider["openrouter"][0].provider == "openrouter"
 
 
 @pytest.mark.parametrize(
