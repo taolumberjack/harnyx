@@ -20,7 +20,7 @@ from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 
 LlmRouteSurface = Literal["generator", "digest", "reference", "content_review", "tool", "scoring"]
 LlmModelProviderOverrides = dict[LlmRouteSurface, dict[str, LlmRouteTarget]]
-OPENROUTER_ONLY_TOOL_MODELS: tuple[str, ...] = ("openai/gpt-oss-120b",)
+OPENROUTER_ONLY_TOOL_MODELS: tuple[str, ...] = ("openai/gpt-oss-20b", "openai/gpt-oss-120b")
 
 _ALLOWED_ROUTE_SURFACES: tuple[LlmRouteSurface, ...] = (
     "generator",

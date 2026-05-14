@@ -62,7 +62,8 @@ class _FakeClient:
         self.closed = True
 
 
-async def test_openrouter_provider_requires_key_only_when_openrouter_model_is_invoked() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+async def test_openrouter_provider_requires_key_only_when_openrouter_model_is_invoked(model: str) -> None:
     factory_calls: list[str] = []
     provider = OpenRouterLlmProvider(
         openrouter_api_key=SecretStr(""),
@@ -71,7 +72,7 @@ async def test_openrouter_provider_requires_key_only_when_openrouter_model_is_in
     )
 
     with pytest.raises(ValueError, match="OPENROUTER_API_KEY must be configured"):
-        await provider.invoke(_request(model="openai/gpt-oss-120b"))
+        await provider.invoke(_request(model=model))
 
     assert factory_calls == []
 
@@ -90,7 +91,8 @@ async def test_openrouter_provider_rejects_unsupported_model_before_key_lookup()
     assert factory_calls == []
 
 
-async def test_openrouter_provider_merges_per_model_provider_options() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+async def test_openrouter_provider_merges_per_model_provider_options(model: str) -> None:
     fake_provider = _FakeOpenAiProvider()
     fake_client = _FakeClient()
     seen_api_keys: list[str] = []
@@ -98,7 +100,7 @@ async def test_openrouter_provider_merges_per_model_provider_options() -> None:
     provider = OpenRouterLlmProvider(
         openrouter_api_key=SecretStr(" test-openrouter-key "),
         model_provider_options={
-            "openai/gpt-oss-120b": OpenRouterModelProviderOptions(
+            model: OpenRouterModelProviderOptions(
                 order=("Cerebras", "Groq"),
                 require_parameters=True,
             )
@@ -113,7 +115,7 @@ async def test_openrouter_provider_merges_per_model_provider_options() -> None:
 
     response = await provider.invoke(
         _request(
-            model="openai/gpt-oss-120b",
+            model=model,
             extra={"provider": {"existing": "value"}, "metadata": {"trace": "test"}},
         )
     )
@@ -127,12 +129,13 @@ async def test_openrouter_provider_merges_per_model_provider_options() -> None:
     }
     assert response.metadata is not None
     assert response.metadata["effective_provider"] == "openrouter"
-    assert response.metadata["effective_model"] == "openai/gpt-oss-120b"
+    assert response.metadata["effective_model"] == model
     assert fake_provider.closed is True
     assert fake_client.closed is True
 
 
-async def test_openrouter_provider_omits_provider_options_when_model_has_no_config() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+async def test_openrouter_provider_omits_provider_options_when_model_has_no_config(model: str) -> None:
     fake_provider = _FakeOpenAiProvider()
     fake_client = _FakeClient()
     provider = OpenRouterLlmProvider(
@@ -146,7 +149,7 @@ async def test_openrouter_provider_omits_provider_options_when_model_has_no_conf
         ),
     )
 
-    await provider.invoke(_request(model="openai/gpt-oss-120b"))
+    await provider.invoke(_request(model=model))
 
     assert fake_provider.requests[0].extra is None
 
@@ -164,7 +167,8 @@ def test_build_openrouter_chat_provider_rejects_blank_key() -> None:
         build_openrouter_chat_provider(" ")
 
 
-async def test_openrouter_provider_serializes_openrouter_request_contract() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+async def test_openrouter_provider_serializes_openrouter_request_contract(model: str) -> None:
     captured: dict[str, Any] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -200,7 +204,7 @@ async def test_openrouter_provider_serializes_openrouter_request_contract() -> N
     provider = OpenRouterLlmProvider(
         openrouter_api_key=SecretStr("test-openrouter-key"),
         model_provider_options={
-            "openai/gpt-oss-120b": OpenRouterModelProviderOptions(
+            model: OpenRouterModelProviderOptions(
                 order=("Cerebras",),
                 require_parameters=True,
             )
@@ -208,12 +212,12 @@ async def test_openrouter_provider_serializes_openrouter_request_contract() -> N
         openrouter_chat_provider_factory=lambda _: (openai_provider, client),
     )
 
-    response = await provider.invoke(_request(model="openai/gpt-oss-120b"))
+    response = await provider.invoke(_request(model=model))
     await provider.aclose()
 
     assert captured["url"] == f"{OPENROUTER_BASE_URL}/chat/completions"
     assert captured["authorization"] == "Bearer test-openrouter-key"
-    assert captured["json"]["model"] == "openai/gpt-oss-120b"
+    assert captured["json"]["model"] == model
     assert captured["json"]["provider"] == {"order": ["Cerebras"], "require_parameters": True}
     assert response.raw_text == "ok"
     assert response.usage.total_tokens == 2

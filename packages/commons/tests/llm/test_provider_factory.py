@@ -269,7 +269,10 @@ def test_build_cached_llm_provider_registry_builds_hardcoded_openrouter_target(
 
     settings = LlmSettings(
         OPENROUTER_API_KEY="test-openrouter-key",
-        OPENROUTER_MODEL_PROVIDER_OPTIONS_JSON='{"openai/gpt-oss-120b":{"require_parameters":true}}',
+        OPENROUTER_MODEL_PROVIDER_OPTIONS_JSON=(
+            '{"openai/gpt-oss-20b":{"require_parameters":true},'
+            '"openai/gpt-oss-120b":{"require_parameters":true}}'
+        ),
     )
     registry = provider_factory.build_cached_llm_provider_registry(
         llm_settings=settings,

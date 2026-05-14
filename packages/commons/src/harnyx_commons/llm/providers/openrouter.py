@@ -17,7 +17,7 @@ from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 
 OPENROUTER_ENDPOINT_ID = "openrouter"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_ONLY_MODELS = ("openai/gpt-oss-120b",)
+OPENROUTER_ONLY_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b")
 
 
 OpenRouterChatProviderFactory = Callable[[str], tuple[OpenAiCompatibleLlmProvider, httpx.AsyncClient]]

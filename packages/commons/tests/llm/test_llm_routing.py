@@ -140,48 +140,52 @@ def test_custom_route_target_is_canonicalized() -> None:
     assert parsed["tool"]["google/gemma-4-31B-turbo-TEE"] == "custom-openai-compatible:gemma4-cloud-run-turbo"
 
 
-def test_parse_llm_model_provider_overrides_rejects_internal_openrouter_target() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+def test_parse_llm_model_provider_overrides_rejects_internal_openrouter_target(model: str) -> None:
     with pytest.raises(ValueError, match="not allowed"):
-        parse_llm_model_provider_overrides('{"tool":{"openai/gpt-oss-120b":"openrouter"}}')
+        parse_llm_model_provider_overrides(f'{{"tool":{{"{model}":"openrouter"}}}}')
 
 
-def test_resolve_llm_route_routes_chutes_selected_openrouter_only_model_to_openrouter() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+def test_resolve_llm_route_routes_chutes_selected_openrouter_only_model_to_openrouter(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",
         default_provider="chutes",
-        model="openai/gpt-oss-120b",
+        model=model,
         overrides={},
         allowed_providers={"chutes", "vertex"},
         allow_custom_openai_compatible=True,
     )
 
-    assert route == ResolvedLlmRoute(surface="tool", provider="openrouter", model="openai/gpt-oss-120b")
+    assert route == ResolvedLlmRoute(surface="tool", provider="openrouter", model=model)
 
 
-def test_resolve_llm_route_routes_chutes_override_openrouter_only_model_to_openrouter() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+def test_resolve_llm_route_routes_chutes_override_openrouter_only_model_to_openrouter(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",
         default_provider="vertex",
-        model="openai/gpt-oss-120b",
-        overrides={"tool": {"openai/gpt-oss-120b": "chutes"}},
+        model=model,
+        overrides={"tool": {model: "chutes"}},
         allowed_providers={"chutes", "vertex"},
         allow_custom_openai_compatible=True,
     )
 
-    assert route == ResolvedLlmRoute(surface="tool", provider="openrouter", model="openai/gpt-oss-120b")
+    assert route == ResolvedLlmRoute(surface="tool", provider="openrouter", model=model)
 
 
-def test_resolve_llm_route_does_not_special_case_non_chutes_selection() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+def test_resolve_llm_route_does_not_special_case_non_chutes_selection(model: str) -> None:
     route = resolve_llm_route(
         surface="tool",
         default_provider="vertex",
-        model="openai/gpt-oss-120b",
+        model=model,
         overrides={},
         allowed_providers={"chutes", "vertex"},
         allow_custom_openai_compatible=True,
     )
 
-    assert route == ResolvedLlmRoute(surface="tool", provider="vertex", model="openai/gpt-oss-120b")
+    assert route == ResolvedLlmRoute(surface="tool", provider="vertex", model=model)
 
 
 @dataclass(slots=True)
@@ -240,7 +244,8 @@ async def test_routed_provider_rewrites_request_provider_before_delegating() -> 
 
 
 @pytest.mark.anyio("asyncio")
-async def test_routed_provider_preserves_delegate_effective_route_metadata() -> None:
+@pytest.mark.parametrize("model", ("openai/gpt-oss-20b", "openai/gpt-oss-120b"))
+async def test_routed_provider_preserves_delegate_effective_route_metadata(model: str) -> None:
     delegate = _RecordingProvider(seen_requests=[])
 
     provider = RoutedLlmProvider(
@@ -255,7 +260,7 @@ async def test_routed_provider_preserves_delegate_effective_route_metadata() -> 
     response = await provider.invoke(
         LlmRequest(
             provider="chutes",
-            model="openai/gpt-oss-120b",
+            model=model,
             messages=(),
             temperature=None,
             max_output_tokens=128,
@@ -265,6 +270,6 @@ async def test_routed_provider_preserves_delegate_effective_route_metadata() -> 
     assert delegate.seen_requests[0].provider == "openrouter"
     assert response.metadata is not None
     assert response.metadata["effective_provider"] == "openrouter"
-    assert response.metadata["effective_model"] == "openai/gpt-oss-120b"
+    assert response.metadata["effective_model"] == model
     assert response.metadata["selected_provider"] == "openrouter"
-    assert response.metadata["selected_model"] == "openai/gpt-oss-120b"
+    assert response.metadata["selected_model"] == model

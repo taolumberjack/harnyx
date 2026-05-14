@@ -34,14 +34,14 @@ Edit `.env` and set at least:
 | `PLATFORM_BASE_URL` | Platform API endpoint (finney/mainnet: `https://api.harnyx.ai`, testnet: `https://api.staging.harnyx.ai`) |
 | `VALIDATOR_PUBLIC_BASE_URL` | How the platform can reach your validator |
 | `CHUTES_API_KEY` | API key for LLM calls |
-| `OPENROUTER_API_KEY` | Optional API key for OpenRouter-only `llm_chat` models such as `openai/gpt-oss-120b` |
+| `OPENROUTER_API_KEY` | Optional API key for OpenRouter-only `llm_chat` models such as `openai/gpt-oss-20b` and `openai/gpt-oss-120b` |
 | `DESEARCH_API_KEY` | API key for search tools |
 
 The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, the validator also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image. `VALIDATOR_TASK_PARALLELISM` controls per-artifact task workers and defaults to `10`; internal deployments that should retain the prior concurrency set it to `5`.
 
 Validator scoring keeps `SCORING_LLM_PROVIDER` configurable, but the scoring model contract is fixed in code to `moonshotai/Kimi-K2.5-TEE` with `reasoning_effort="high"`. The pairwise scoring prompt, request shape, and score mapping live in `public/packages/commons/src/harnyx_commons/miner_task_scoring.py`; validator runtime code only wires providers, sandbox execution, and submission flow.
 
-When `TOOL_LLM_PROVIDER=chutes`, validator tool routing internally sends `openai/gpt-oss-120b` to OpenRouter because Chutes does not serve that model. `OPENROUTER_API_KEY` is checked only when that model is invoked; validators that do not serve it can leave the key blank. Do not set `TOOL_LLM_PROVIDER=openrouter`; `openrouter` is an internal route target, not an operator-selectable provider.
+When `TOOL_LLM_PROVIDER=chutes`, validator tool routing internally sends OpenRouter-only `gpt-oss` models to OpenRouter because Chutes does not serve those models. `OPENROUTER_API_KEY` is checked only when one of those models is invoked; validators that do not serve them can leave the key blank. Do not set `TOOL_LLM_PROVIDER=openrouter`; `openrouter` is an internal route target, not an operator-selectable provider.
 
 ### Optional Sentry
 

@@ -13,10 +13,17 @@ from harnyx_commons.tools.invocation_clients import build_tool_llm_provider
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
 
-async def test_chutes_tool_route_invokes_openrouter_gpt_oss_120b_live() -> None:
+@pytest.mark.parametrize(
+    ("model", "provider_options_json"),
+    (
+        ("openai/gpt-oss-20b", '{"openai/gpt-oss-20b":{"require_parameters":true}}'),
+        ("openai/gpt-oss-120b", '{"openai/gpt-oss-120b":{"require_parameters":true}}'),
+    ),
+)
+async def test_chutes_tool_route_invokes_openrouter_gpt_oss_live(model: str, provider_options_json: str) -> None:
     settings = LlmSettings(
         TOOL_LLM_PROVIDER="chutes",
-        OPENROUTER_MODEL_PROVIDER_OPTIONS_JSON='{"openai/gpt-oss-120b":{"require_parameters":true}}',
+        OPENROUTER_MODEL_PROVIDER_OPTIONS_JSON=provider_options_json,
     )
     assert settings.openrouter_api_key_value, "OPENROUTER_API_KEY must be configured"
 
@@ -33,7 +40,7 @@ async def test_chutes_tool_route_invokes_openrouter_gpt_oss_120b_live() -> None:
     provider = build_tool_llm_provider(settings, registry)
     request = LlmRequest(
         provider="chutes",
-        model="openai/gpt-oss-120b",
+        model=model,
         messages=(
             LlmMessage(
                 role="user",
@@ -53,4 +60,4 @@ async def test_chutes_tool_route_invokes_openrouter_gpt_oss_120b_live() -> None:
     assert response.raw_text
     assert response.metadata is not None
     assert response.metadata["effective_provider"] == "openrouter"
-    assert response.metadata["effective_model"] == "openai/gpt-oss-120b"
+    assert response.metadata["effective_model"] == model
