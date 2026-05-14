@@ -25,7 +25,8 @@ from harnyx_commons.domain.miner_task import (
     MinerTaskErrorCode,
     is_delivery_disqualifying_validator_pair_error,
 )
-from harnyx_commons.domain.session import SessionStatus
+from harnyx_commons.domain.session import LlmUsageTotals, SessionStatus, SessionUsage
+from harnyx_commons.domain.tool_call import ToolCall
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.errors import SessionBudgetExhaustedError
 from harnyx_commons.llm.provider import LlmRetryExhaustedError
@@ -45,6 +46,7 @@ from harnyx_commons.miner_task_failure_policy import (
     provider_batch_failure_evidence,
     provider_batch_failure_message,
     successful_llm_samples,
+    unknown_inflight_llm_count,
     validator_model_llm_baseline,
 )
 from harnyx_validator.application.dto.evaluation import (
@@ -74,6 +76,7 @@ CompletedArtifactBaseline = Callable[[], ValidatorModelLlmBaseline]
 logger = logging.getLogger("harnyx_validator.scheduler")
 measurement_logger = logging.getLogger("harnyx_validator.measurement")
 LOCAL_RETRY_ATTEMPTS = 2
+IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS = 300.0
 
 
 def _elapsed_ms(*, issued_at: datetime, completed_at: datetime) -> float:
@@ -464,6 +467,7 @@ class EvaluationRunner:
             finally:
                 self._clear_task_session(issued.session.session_id)
                 self._sessions.revoke(issued.session.session_id)
+                self._receipts.clear_session(issued.session.session_id)
         return submissions
 
     async def _evaluate_task_with_retry(
@@ -489,7 +493,7 @@ class EvaluationRunner:
         try:
             for attempt_number in range(1, LOCAL_RETRY_ATTEMPTS + 1):
                 attempt_count = attempt_number
-                self._sessions.begin_attempt(issued.session.session_id)
+                issued = self._begin_session_attempt(issued.session.session_id)
                 decision = await self._evaluate_task_attempt(
                     batch_id=batch_id,
                     artifact=artifact,
@@ -510,7 +514,7 @@ class EvaluationRunner:
                         else completed_artifact_baseline()
                     )
                     try:
-                        timeout_resolution = self._resolve_timeout_attempt(
+                        timeout_resolution = await self._resolve_timeout_attempt(
                             batch_id=batch_id,
                             artifact=artifact,
                             task=task,
@@ -573,6 +577,7 @@ class EvaluationRunner:
             )
             self._clear_task_session(issued.session.session_id)
             self._sessions.revoke(issued.session.session_id)
+            self._receipts.clear_session(issued.session.session_id)
 
         raise RuntimeError("task retry loop exited without returning")
 
@@ -752,6 +757,8 @@ class EvaluationRunner:
         error_code: MinerTaskErrorCode,
         error_message: str,
         total_tool_usage: ToolUsageSummary | None = None,
+        usage: TokenUsageSummary | None = None,
+        execution_log: tuple[ToolCall, ...] | None = None,
         elapsed_ms: float | None = None,
     ) -> MinerTaskRunSubmission:
         envelope = self._sessions.mark_status(session_id, SessionStatus.ERROR)
@@ -764,6 +771,8 @@ class EvaluationRunner:
             error_code=error_code,
             error_message=error_message,
             total_tool_usage=total_tool_usage,
+            usage=usage,
+            execution_log=execution_log,
             elapsed_ms=elapsed_ms,
         )
 
@@ -800,12 +809,14 @@ class EvaluationRunner:
         error_code: MinerTaskErrorCode,
         error_message: str,
         total_tool_usage: ToolUsageSummary | None = None,
+        usage: TokenUsageSummary | None = None,
+        execution_log: tuple[ToolCall, ...] | None = None,
         elapsed_ms: float | None = None,
     ) -> MinerTaskRunSubmission:
         session_id = envelope.session.session_id
         completed_at = self._clock()
-        usage, summarized_tool_usage = self._summarize_session(envelope)
-        execution_log = tuple(self._receipts.for_session(session_id))
+        summarized_usage, summarized_tool_usage = self._summarize_session(envelope)
+        receipt_log = tuple(self._receipts.for_session(session_id)) if execution_log is None else execution_log
         details = EvaluationDetails(
             error=EvaluationError(code=error_code, message=error_message),
             total_tool_usage=total_tool_usage or summarized_tool_usage,
@@ -826,8 +837,8 @@ class EvaluationRunner:
             validator_uid=self._validator_uid_value(),
             run=run,
             score=0.0,
-            execution_log=execution_log,
-            usage=usage,
+            execution_log=receipt_log,
+            usage=summarized_usage if usage is None else usage,
             session=envelope.session,
         )
         self._record_submission(submission)
@@ -865,7 +876,7 @@ class EvaluationRunner:
             error_message=error_message,
         )
 
-    def _resolve_timeout_attempt(
+    async def _resolve_timeout_attempt(
         self,
         *,
         batch_id: UUID,
@@ -877,9 +888,28 @@ class EvaluationRunner:
         prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
     ) -> TaskAttemptDecision:
         envelope = self._sessions.inspect(session_id)
-        observation = self._extract_timeout_observation_evidence(
+        active_attempt = envelope.session.active_attempt
+        await asyncio.to_thread(
+            self._receipts.wait_and_materialize_unknown_receipts,
+            session_id,
+            session_active_attempt=active_attempt,
+            tool="llm_chat",
+            timeout_seconds=IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS,
+            clock=self._clock,
+        )
+        envelope = self._sessions.inspect(session_id)
+        current_attempt_receipts = self._current_attempt_receipts(
             session_id=session_id,
+            active_attempt=active_attempt,
+        )
+        _, attempt_tool_usage = self._summarize_receipts(
             envelope=envelope,
+            receipts=current_attempt_receipts,
+        )
+        observation = self._extract_timeout_observation_evidence(
+            envelope=envelope,
+            receipts=current_attempt_receipts,
+            session_summary=attempt_tool_usage,
         )
         timeout_attribution = classify_timeout_attribution(
             observation=observation,
@@ -887,9 +917,13 @@ class EvaluationRunner:
             prior_timeout_observations=prior_timeout_observations,
         )
         if timeout_attribution is None:
-            self._receipts.clear_session(session_id)
             return _timeout_unresolved_decision(observation)
 
+        terminal_receipts = _timeout_observation_execution_log((*prior_timeout_observations, observation))
+        terminal_usage, terminal_tool_usage = self._summarize_receipts(
+            envelope=envelope,
+            receipts=terminal_receipts,
+        )
         submission = self._record_failed_submission(
             batch_id=batch_id,
             session_id=session_id,
@@ -902,7 +936,9 @@ class EvaluationRunner:
                 else MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE
             ),
             error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
-            total_tool_usage=observation.session_summary,
+            total_tool_usage=terminal_tool_usage,
+            usage=terminal_usage,
+            execution_log=terminal_receipts,
             elapsed_ms=observation.session_elapsed_ms,
         )
         if timeout_attribution is TimeoutAttributionKind.MINER_OWNED:
@@ -1103,11 +1139,10 @@ class EvaluationRunner:
     def _extract_timeout_observation_evidence(
         self,
         *,
-        session_id: UUID,
         envelope: SessionEnvelope,
+        receipts: tuple[ToolCall, ...],
+        session_summary: ToolUsageSummary,
     ) -> TimeoutObservationEvidence:
-        _, session_summary = self._summarize_session(envelope)
-        receipts = tuple(self._receipts.for_session(session_id))
         return TimeoutObservationEvidence(
             successful_llm_samples=successful_llm_samples(receipts),
             session_summary=session_summary,
@@ -1115,6 +1150,8 @@ class EvaluationRunner:
                 issued_at=envelope.session.issued_at,
                 completed_at=self._clock(),
             ),
+            execution_log=receipts,
+            unknown_inflight_llm_count=unknown_inflight_llm_count(receipts),
         )
 
     def _record_submission(self, submission: MinerTaskRunSubmission) -> None:
@@ -1164,6 +1201,143 @@ class EvaluationRunner:
                 session_id=issued.session.session_id,
             )
         return issued
+
+    def _begin_session_attempt(self, session_id: UUID) -> SessionIssued:
+        token = secrets.token_urlsafe(self._config.token_secret_bytes)
+        return self._sessions.begin_attempt(session_id, token=token)
+
+    def _current_attempt_receipts(
+        self,
+        *,
+        session_id: UUID,
+        active_attempt: int,
+    ) -> tuple[ToolCall, ...]:
+        return tuple(
+            receipt
+            for receipt in self._receipts.for_session(session_id)
+            if receipt.details.extra is not None
+            and receipt.details.extra.get("session_active_attempt") == str(active_attempt)
+        )
+
+    def _summarize_receipts(
+        self,
+        *,
+        envelope: SessionEnvelope,
+        receipts: tuple[ToolCall, ...],
+    ) -> tuple[TokenUsageSummary, ToolUsageSummary]:
+        session = envelope.session.with_usage(_usage_from_receipts(receipts))
+        return self._usage.summarize(session, receipts)
+
+
+def _usage_from_receipts(receipts: tuple[ToolCall, ...]) -> SessionUsage:
+    llm_usage_totals: dict[str, dict[str, LlmUsageTotals]] = {}
+    cost_by_provider: dict[str, float] = {}
+    total_cost_usd = 0.0
+    llm_tokens_last_call = 0
+
+    for receipt in receipts:
+        if receipt.details.cost_usd is not None:
+            total_cost_usd += receipt.details.cost_usd
+        if not receipt.is_successful() or receipt.tool != "llm_chat":
+            continue
+        model = _receipt_llm_model(receipt)
+        usage = _receipt_llm_usage(receipt)
+        if model is None or usage is None:
+            continue
+        provider = "chutes"
+        provider_totals = llm_usage_totals.setdefault(provider, {})
+        existing = provider_totals.get(model, LlmUsageTotals())
+        provider_totals[model] = existing.accumulate(
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+        )
+        llm_tokens_last_call = usage.total_tokens
+        if receipt.details.cost_usd is not None:
+            cost_by_provider[provider] = cost_by_provider.get(provider, 0.0) + receipt.details.cost_usd
+
+    return SessionUsage(
+        total_cost_usd=total_cost_usd,
+        cost_by_provider=cost_by_provider,
+        llm_tokens_last_call=llm_tokens_last_call,
+        llm_usage_totals=llm_usage_totals,
+    )
+
+
+def _timeout_observation_execution_log(
+    observations: tuple[TimeoutObservationEvidence, ...],
+) -> tuple[ToolCall, ...]:
+    receipts: list[ToolCall] = []
+    seen: set[tuple[UUID, str]] = set()
+    for observation in observations:
+        for receipt in observation.execution_log:
+            key = (receipt.session_id, receipt.receipt_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            receipts.append(receipt)
+    return tuple(receipts)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReceiptLlmUsage:
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    reasoning_tokens: int
+
+
+def _receipt_llm_usage(receipt: ToolCall) -> _ReceiptLlmUsage | None:
+    response_payload = receipt.details.response_payload
+    if not isinstance(response_payload, dict):
+        return None
+    usage = response_payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    prompt_tokens = _non_negative_int(usage.get("prompt_tokens"))
+    completion_tokens = _non_negative_int(usage.get("completion_tokens"))
+    total_tokens = _non_negative_int(usage.get("total_tokens"))
+    reasoning_tokens = _non_negative_int(usage.get("reasoning_tokens"))
+    resolved_total = (
+        total_tokens
+        if total_tokens is not None
+        else (prompt_tokens or 0) + (completion_tokens or 0) + (reasoning_tokens or 0)
+    )
+    return _ReceiptLlmUsage(
+        prompt_tokens=prompt_tokens or 0,
+        completion_tokens=completion_tokens or 0,
+        total_tokens=resolved_total,
+        reasoning_tokens=reasoning_tokens or 0,
+    )
+
+
+def _receipt_llm_model(receipt: ToolCall) -> str | None:
+    request_payload = receipt.details.request_payload
+    if not isinstance(request_payload, dict):
+        return None
+    direct_model = request_payload.get("model")
+    if isinstance(direct_model, str):
+        return direct_model
+    kwargs = request_payload.get("kwargs")
+    if isinstance(kwargs, dict):
+        kwargs_model = kwargs.get("model")
+        if isinstance(kwargs_model, str):
+            return kwargs_model
+    args = request_payload.get("args")
+    if isinstance(args, list) and args:
+        first_arg = args[0]
+        if isinstance(first_arg, dict):
+            arg_model = first_arg.get("model")
+            if isinstance(arg_model, str):
+                return arg_model
+    return None
+
+
+def _non_negative_int(value: object) -> int | None:
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
 
 
 def _is_provider_caused_terminal_failure(exc: Exception) -> bool:
@@ -1322,6 +1496,7 @@ __all__ = [
     "ArtifactEvaluationOutcome",
     "ArtifactFailure",
     "EvaluationRunner",
+    "IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS",
     "LOCAL_RETRY_ATTEMPTS",
     "TERMINAL_TIMEOUT_ERROR_MESSAGE",
     "TaskAttemptDecision",

@@ -62,9 +62,11 @@ class SessionManager:
         """Update the session status and persist it."""
         return self._mutate_session(session_id, lambda session: _transition_status(session, status))
 
-    def begin_attempt(self, session_id: UUID) -> SessionEnvelope:
+    def begin_attempt(self, session_id: UUID, *, token: str) -> SessionIssued:
         """Advance the active retry attempt and clear stale failure markers."""
-        return self._mutate_session(session_id, lambda session: session.begin_attempt())
+        token_hash = self._tokens.register(session_id, token)
+        updated = self._sessions.mutate(session_id, lambda session: session.begin_attempt())
+        return SessionIssued(session=updated, token=token, token_hash=token_hash)
 
     def mark_failure_code(self, session_id: UUID, failure_code: SessionFailureCode) -> SessionEnvelope:
         """Attach a transient execution failure marker to the session."""

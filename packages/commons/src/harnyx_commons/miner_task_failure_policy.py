@@ -13,7 +13,7 @@ from harnyx_commons.domain.miner_task import (
     EvaluationError,
     is_delivery_disqualifying_validator_pair_error,
 )
-from harnyx_commons.domain.tool_call import ToolCall
+from harnyx_commons.domain.tool_call import IN_FLIGHT_LLM_UNKNOWN_EVIDENCE, ToolCall
 from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.json_types import JsonValue
 from harnyx_commons.llm.tool_models import ToolModelName, parse_tool_model
@@ -88,6 +88,8 @@ class TimeoutObservationEvidence:
     successful_llm_samples: tuple[SuccessfulLlmSample, ...]
     session_summary: ToolUsageSummary
     session_elapsed_ms: float
+    execution_log: tuple[ToolCall, ...] = ()
+    unknown_inflight_llm_count: int = 0
 
 
 class DeliveryRunInput(Protocol):
@@ -248,6 +250,12 @@ def classify_timeout_attribution(
     exhausted = len(prior_timeout_observations) + 1 >= TIMEOUT_REVIEW_MAX_OBSERVATIONS
     if any(_is_slow_llm_sample(sample, validator_model_llm_baseline) for sample in comparable_samples):
         return TimeoutAttributionKind.NOT_MINER_OWNED if exhausted else None
+    unknown_inflight_count = sum(
+        timeout_observation.unknown_inflight_llm_count
+        for timeout_observation in (*prior_timeout_observations, observation)
+    )
+    if unknown_inflight_count:
+        return TimeoutAttributionKind.MINER_OWNED if exhausted else None
     if any(_is_fast_llm_sample(sample, validator_model_llm_baseline) for sample in comparable_samples):
         return TimeoutAttributionKind.MINER_OWNED
     return TimeoutAttributionKind.MINER_OWNED if exhausted else None
@@ -255,6 +263,10 @@ def classify_timeout_attribution(
 
 def validator_model_llm_baseline(receipts: Sequence[ToolCall]) -> ValidatorModelLlmBaseline:
     return ValidatorModelLlmBaseline.from_samples(successful_llm_samples(receipts))
+
+
+def unknown_inflight_llm_count(receipts: Sequence[ToolCall]) -> int:
+    return sum(1 for receipt in receipts if _is_unknown_inflight_llm_receipt(receipt))
 
 
 def _is_slow_llm_sample(
@@ -296,6 +308,18 @@ def _receipt_llm_model(receipt: ToolCall) -> ToolModelName | None:
     if raw_model is None:
         return None
     return parse_tool_model(raw_model)
+
+
+def _is_unknown_inflight_llm_receipt(receipt: ToolCall) -> bool:
+    if receipt.tool != "llm_chat":
+        return False
+    if receipt.is_successful():
+        return False
+    extra = receipt.details.extra
+    return (
+        extra is not None
+        and extra.get("timeout_attribution_evidence") == IN_FLIGHT_LLM_UNKNOWN_EVIDENCE
+    )
 
 
 def _raw_model_from_request_payload(payload: JsonValue | None) -> str | None:
@@ -349,5 +373,6 @@ __all__ = [
     "provider_batch_failure_evidence",
     "provider_batch_failure_message",
     "successful_llm_samples",
+    "unknown_inflight_llm_count",
     "validator_model_llm_baseline",
 ]

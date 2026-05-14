@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -9,7 +10,11 @@ import pytest
 
 import harnyx_commons.tools.executor as tool_executor_module
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
-from harnyx_commons.domain.tool_call import ToolCallOutcome, ToolExecutionFacts
+from harnyx_commons.domain.tool_call import (
+    IN_FLIGHT_LLM_UNKNOWN_EVIDENCE,
+    ToolCallOutcome,
+    ToolExecutionFacts,
+)
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.pricing import price_llm
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmMessageContentPart, LlmResponse, LlmUsage
@@ -41,6 +46,44 @@ class RecordingToolInvoker(ToolInvoker):
     ) -> dict[str, object]:
         self.calls.append((tool_name, args, kwargs))
         return {"data": [], "search_queries": kwargs.get("search_queries", [])}
+
+
+class BlockingLlmInvoker(ToolInvoker):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self._release = asyncio.Event()
+
+    async def invoke(
+        self,
+        tool_name: str,
+        *,
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> dict[str, object]:
+        assert tool_name == "llm_chat"
+        self.started.set()
+        await self._release.wait()
+        response = LlmResponse(
+            id="offline-chutes",
+            choices=(
+                LlmChoice(
+                    index=0,
+                    message=LlmChoiceMessage(
+                        role="assistant",
+                        content=(LlmMessageContentPart(type="text", text="ok"),),
+                    ),
+                ),
+            ),
+            usage=LlmUsage(
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+            ),
+        )
+        return response.to_payload()
+
+    def release(self) -> None:
+        self._release.set()
 
 
 def make_session(*, budget_usd: float = 0.1, hard_limit_usd: float | None = None) -> Session:
@@ -147,9 +190,99 @@ async def test_execute_tool_records_receipt_and_updates_budget() -> None:
     receipt = receipt_log.lookup(result.receipt.receipt_id)
     assert receipt is not None
     assert receipt.outcome is ToolCallOutcome.OK
+    assert receipt.details.extra is not None
+    assert receipt.details.extra["session_active_attempt"] == "0"
 
     assert token_registry.verify(session.session_id, token)
     assert result.response_payload["data"] == []
+
+
+async def test_execute_tool_does_not_settle_late_completion_after_unknown_materialization() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    invoker = BlockingLlmInvoker()
+    executor, receipt_log, session_registry = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=invoker,
+    )
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="llm_chat",
+        args=(),
+        kwargs={
+            "model": "zai-org/GLM-5-TEE",
+            "messages": [{"role": "user", "content": "ping"}],
+        },
+    )
+
+    task = asyncio.create_task(executor.execute(request))
+    await invoker.started.wait()
+    unknown_receipts = receipt_log.wait_and_materialize_unknown_receipts(
+        session.session_id,
+        session_active_attempt=session.active_attempt,
+        tool="llm_chat",
+        timeout_seconds=0.0,
+        clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
+    )
+    invoker.release()
+
+    with pytest.raises(RuntimeError, match="after timeout evidence materialized"):
+        await task
+
+    assert len(unknown_receipts) == 1
+    assert unknown_receipts[0].outcome is ToolCallOutcome.TIMEOUT
+    assert unknown_receipts[0].details.extra is not None
+    assert (
+        unknown_receipts[0].details.extra["timeout_attribution_evidence"]
+        == IN_FLIGHT_LLM_UNKNOWN_EVIDENCE
+    )
+    receipts = tuple(receipt_log.for_session(session.session_id))
+    assert receipts == unknown_receipts
+    stored_session = session_registry.get(session.session_id)
+    assert stored_session is not None
+    assert stored_session.usage.total_cost_usd == pytest.approx(0.0)
+    assert stored_session.usage.llm_usage_totals == {}
+
+
+async def test_execute_tool_abandons_pending_receipt_when_cancelled() -> None:
+    session = make_session(budget_usd=1.0)
+    token = generate_token()
+    invoker = BlockingLlmInvoker()
+    executor, receipt_log, _ = build_executor_with_invoker(
+        session,
+        token=token,
+        invoker=invoker,
+    )
+    request = ToolInvocationRequest(
+        session_id=session.session_id,
+        token=token,
+        tool="llm_chat",
+        args=(),
+        kwargs={
+            "model": "zai-org/GLM-5-TEE",
+            "messages": [{"role": "user", "content": "ping"}],
+        },
+    )
+
+    task = asyncio.create_task(executor.execute(request))
+    await invoker.started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert (
+        receipt_log.wait_and_materialize_unknown_receipts(
+            session.session_id,
+            session_active_attempt=session.active_attempt,
+            tool="llm_chat",
+            timeout_seconds=0.0,
+            clock=lambda: datetime(2025, 10, 17, 12, 10, tzinfo=UTC),
+        )
+        == ()
+    )
 
 async def test_execute_tool_supports_tooling_info_without_consuming_budget() -> None:
     session = make_session()

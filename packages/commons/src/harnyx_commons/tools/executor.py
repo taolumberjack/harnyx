@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -231,6 +232,52 @@ class ToolExecutor:
     ) -> _ExecutionResult:
         started_at = self._clock()
         self._validate_token(session.session_id, request.token)
+        receipt_id = str(uuid4())
+        issued_at = self._clock()
+        self._receipts.start_pending_receipt(
+            receipt_id=receipt_id,
+            session_id=session.session_id,
+            session_active_attempt=session.active_attempt,
+            uid=session.uid,
+            tool=request.tool,
+            issued_at=issued_at,
+            details=self._build_pending_details(
+                request,
+                request_payload=request_payload,
+                issued_at=issued_at,
+                started_at=started_at,
+                session_active_attempt=session.active_attempt,
+            ),
+        )
+        try:
+            result = await self._execute_pending_receipt_async(
+                session,
+                request,
+                receipt_id=receipt_id,
+                issued_at=issued_at,
+                started_at=started_at,
+                debug_call_id=debug_call_id,
+                request_payload=request_payload,
+            )
+        except asyncio.CancelledError:
+            self._receipts.abandon_pending_receipt(receipt_id)
+            raise
+        except Exception:
+            self._receipts.abandon_pending_receipt(receipt_id)
+            raise
+        return result
+
+    async def _execute_pending_receipt_async(
+        self,
+        session: Session,
+        request: ToolInvocationRequest,
+        *,
+        receipt_id: str,
+        issued_at: datetime,
+        started_at: datetime,
+        debug_call_id: str,
+        request_payload: JsonValue | None,
+    ) -> _ExecutionResult:
         invocation_output = await self._invoke_tool_output_async(request)
         finished_at = self._clock()
         results, result_policy = self._build_results(request, invocation_output.public_payload)
@@ -239,20 +286,14 @@ class ToolExecutor:
             invocation_output.public_payload,
             results,
         )
-        updated_session, should_raise_budget_exhausted = self._settle_usage(
-            session_id=session.session_id,
-            request=request,
-            llm_tokens=llm_tokens,
-            usage_details=usage_details,
-            call_cost=call_cost,
-        )
-        budget_snapshot = _build_budget_snapshot(updated_session)
         receipt = self._build_receipt(
             request,
-            updated_session,
+            session,
             invocation_output.public_payload,
             results,
             result_policy,
+            receipt_id=receipt_id,
+            issued_at=issued_at,
             request_payload=request_payload,
             cost_usd=call_cost,
             execution=_merge_execution_facts(
@@ -260,8 +301,22 @@ class ToolExecutor:
                 started_at=started_at,
                 finished_at=finished_at,
             ),
+            session_active_attempt=session.active_attempt,
         )
-        self._receipts.record(receipt)
+        completion = self._receipts.complete_pending_receipt(
+            receipt,
+            settle_usage=lambda: self._settle_usage(
+                session_id=session.session_id,
+                request=request,
+                llm_tokens=llm_tokens,
+                usage_details=usage_details,
+                call_cost=call_cost,
+            ),
+        )
+        if completion is None:
+            raise RuntimeError("tool completion arrived after timeout evidence materialized")
+        updated_session, should_raise_budget_exhausted = completion
+        budget_snapshot = _build_budget_snapshot(updated_session)
         result = _ExecutionResult(
             receipt=receipt,
             response_payload=invocation_output.public_payload,
@@ -394,17 +449,22 @@ class ToolExecutor:
         results: tuple[ToolResult, ...],
         result_policy: ToolResultPolicy,
         *,
+        receipt_id: str,
+        issued_at: datetime,
         request_payload: JsonValue | None,
         cost_usd: float | None = None,
         execution: ToolExecutionFacts | None = None,
+        session_active_attempt: int,
     ) -> ToolCall:
-        issued_at = self._clock()
         normalized_response: JsonValue | None = _normalize_payload(response_payload)
-        extra: dict[str, str] = {"issued_at": issued_at.isoformat()}
+        extra: dict[str, str] = {
+            "issued_at": issued_at.isoformat(),
+            "session_active_attempt": str(session_active_attempt),
+        }
         if cost_usd is not None:
             extra["cost_usd"] = f"{cost_usd:.6f}"
         return ToolCall(
-            receipt_id=str(uuid4()),
+            receipt_id=receipt_id,
             session_id=session.session_id,
             uid=session.uid,
             tool=request.tool,
@@ -421,6 +481,26 @@ class ToolExecutor:
                 extra=extra,
                 execution=execution,
             ),
+        )
+
+    def _build_pending_details(
+        self,
+        request: ToolInvocationRequest,
+        *,
+        request_payload: JsonValue | None,
+        issued_at: datetime,
+        started_at: datetime,
+        session_active_attempt: int,
+    ) -> ToolCallDetails:
+        return ToolCallDetails(
+            request_hash=_hash_payload(request_payload),
+            request_payload=request_payload,
+            result_policy=_resolve_result_policy(request.tool),
+            extra={
+                "issued_at": issued_at.isoformat(),
+                "session_active_attempt": str(session_active_attempt),
+            },
+            execution=ToolExecutionFacts(started_at=started_at),
         )
 
 

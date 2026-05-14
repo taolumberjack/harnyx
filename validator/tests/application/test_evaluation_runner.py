@@ -22,6 +22,7 @@ from harnyx_commons.domain.miner_task import (
 )
 from harnyx_commons.domain.session import LlmUsageTotals, Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import (
+    IN_FLIGHT_LLM_UNKNOWN_EVIDENCE,
     SearchToolResult,
     ToolCall,
     ToolCallDetails,
@@ -112,7 +113,9 @@ def _record_receipt(
     response_payload: dict[str, object] | None = None,
     execution: ToolExecutionFacts | None = None,
     request_payload: dict[str, object] | None = None,
+    active_attempt: int | None = 1,
 ) -> None:
+    extra = None if active_attempt is None else {"session_active_attempt": str(active_attempt)}
     receipt_log.record(
         ToolCall(
             receipt_id=receipt_id,
@@ -128,6 +131,7 @@ def _record_receipt(
                 cost_usd=cost_usd,
                 response_payload=response_payload,
                 execution=execution,
+                extra=extra,
             ),
         )
     )
@@ -138,6 +142,33 @@ def _timeout_observation() -> TimeoutObservationEvidence:
         successful_llm_samples=(),
         session_summary=ToolUsageSummary.zero(),
         session_elapsed_ms=1000.0,
+    )
+
+
+def _unknown_inflight_timeout_receipt(*, session_id, uid: int, receipt_id: str) -> ToolCall:
+    return ToolCall(
+        receipt_id=receipt_id,
+        session_id=session_id,
+        uid=uid,
+        tool="llm_chat",
+        issued_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        outcome=ToolCallOutcome.TIMEOUT,
+        details=ToolCallDetails(
+            request_hash=f"{receipt_id}-req",
+            request_payload={
+                "args": [],
+                "kwargs": {"model": "google/gemma-4-31B-turbo-TEE"},
+            },
+            extra={
+                "session_active_attempt": "1",
+                "timeout_attribution_evidence": IN_FLIGHT_LLM_UNKNOWN_EVIDENCE,
+            },
+            execution=ToolExecutionFacts(
+                started_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+                finished_at=datetime(2025, 10, 17, 12, 5, tzinfo=UTC),
+                elapsed_ms=300000.0,
+            ),
+        ),
     )
 
 
@@ -1085,6 +1116,156 @@ async def test_evaluation_runner_miner_timeout_without_successful_baseline_stays
     assert tuple(receipt_log.for_session(orchestrator.session_ids[0])) == ()
 
 
+async def test_evaluation_runner_records_unknown_inflight_timeout_tool_call_at_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(evaluation_runner_module, "IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS", 0.0)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    receipt_log = FakeReceiptLog()
+    evaluation_store = _RecordingEvaluationStore()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="timeout unknown in-flight"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    issued = runner._issue_session(batch_id=uuid4(), uid=artifact.uid, task=task)
+    attempt = runner._begin_session_attempt(issued.session.session_id)
+    receipt_log.start_pending_receipt(
+        receipt_id="pending-llm",
+        session_id=attempt.session.session_id,
+        session_active_attempt=attempt.session.active_attempt,
+        uid=artifact.uid,
+        tool="llm_chat",
+        issued_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+        details=ToolCallDetails(
+            request_hash="request-hash",
+            request_payload={
+                "args": [],
+                "kwargs": {"model": "google/gemma-4-31B-turbo-TEE"},
+            },
+            extra={"session_active_attempt": str(attempt.session.active_attempt)},
+            execution=ToolExecutionFacts(started_at=datetime(2025, 10, 17, 12, 0, tzinfo=UTC)),
+        ),
+    )
+
+    decision = await runner._resolve_timeout_attempt(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        session_id=attempt.session.session_id,
+        exc=_sandbox_invocation_error(
+            "sandbox entrypoint request timed out",
+            status_code=504,
+            detail_exception="TimeoutException",
+        ),
+        validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+        prior_timeout_observations=(_timeout_observation(), _timeout_observation()),
+    )
+
+    assert decision.kind is evaluation_runner_module.AttemptControlKind.SUBMISSION
+    submission = decision.submission
+    assert submission is not None
+    assert submission.run.details.error == EvaluationError(
+        code="timeout_miner_owned",
+        message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
+    )
+    assert len(submission.execution_log) == 1
+    receipt = submission.execution_log[0]
+    assert receipt.outcome is ToolCallOutcome.TIMEOUT
+    assert receipt.details.extra is not None
+    assert receipt.details.extra["timeout_attribution_evidence"] == IN_FLIGHT_LLM_UNKNOWN_EVIDENCE
+    assert receipt.details.extra["session_active_attempt"] == str(attempt.session.active_attempt)
+    assert submission.usage.call_count == 0
+    assert evaluation_store.records == [submission]
+
+
+async def test_evaluation_runner_carries_prior_unknown_inflight_timeout_tool_call_to_terminal_submission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(evaluation_runner_module, "IN_FLIGHT_LLM_TIMEOUT_REVIEW_WAIT_SECONDS", 0.0)
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    session_registry = FakeSessionRegistry()
+    session_manager = SessionManager(session_registry, InMemoryTokenRegistry())
+    receipt_log = FakeReceiptLog()
+    evaluation_store = _RecordingEvaluationStore()
+    runner = EvaluationRunner(
+        subtensor_client=subtensor,
+        session_manager=session_manager,
+        evaluation_records=evaluation_store,
+        receipt_log=receipt_log,
+        config=SchedulerConfig(token_secret_bytes=8, session_ttl=timedelta(minutes=5)),
+        clock=lambda: datetime(2025, 10, 17, 12, 0, tzinfo=UTC),
+    )
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="timeout unknown carried forward"),
+        reference_answer=ReferenceAnswer(text="reference"),
+    )
+    artifact = ScriptArtifactSpec(
+        uid=7,
+        artifact_id=uuid4(),
+        content_hash="artifact-hash",
+        size_bytes=128,
+    )
+    prior_receipt = _unknown_inflight_timeout_receipt(
+        session_id=uuid4(),
+        uid=artifact.uid,
+        receipt_id="prior-pending-llm",
+    )
+    prior_observation = TimeoutObservationEvidence(
+        successful_llm_samples=(),
+        session_summary=ToolUsageSummary.zero(),
+        session_elapsed_ms=300000.0,
+        execution_log=(prior_receipt,),
+        unknown_inflight_llm_count=1,
+    )
+    issued = runner._issue_session(batch_id=uuid4(), uid=artifact.uid, task=task)
+    attempt = runner._begin_session_attempt(issued.session.session_id)
+
+    decision = await runner._resolve_timeout_attempt(
+        batch_id=uuid4(),
+        artifact=artifact,
+        task=task,
+        session_id=attempt.session.session_id,
+        exc=_sandbox_invocation_error(
+            "sandbox entrypoint request timed out",
+            status_code=504,
+            detail_exception="TimeoutException",
+        ),
+        validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+        prior_timeout_observations=(prior_observation, _timeout_observation()),
+    )
+
+    assert decision.kind is evaluation_runner_module.AttemptControlKind.SUBMISSION
+    submission = decision.submission
+    assert submission is not None
+    assert submission.run.details.error == EvaluationError(
+        code="timeout_miner_owned",
+        message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
+    )
+    assert submission.execution_log == (prior_receipt,)
+    assert submission.usage.call_count == 0
+    assert evaluation_store.records == [submission]
+
+
 async def test_evaluation_runner_fails_batch_after_scoring_timeout_retry_exhaustion() -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
@@ -1326,7 +1507,7 @@ async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_befor
             )
         )
 
-    def resolve_timeout_attempt(**kwargs):
+    async def resolve_timeout_attempt(**kwargs):
         seen_baselines.append(kwargs["validator_model_llm_baseline"])
         return evaluation_runner_module._timeout_unresolved_decision(_timeout_observation())
 
