@@ -11,6 +11,7 @@ from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.adapter import LlmProviderAdapter
 from harnyx_commons.llm.provider import LlmProviderName, LlmProviderPort
 from harnyx_commons.llm.provider_types import (
+    OPENROUTER_PROVIDER,
     parse_builtin_provider_name,
     parse_custom_openai_compatible_target,
     parse_provider_route_target,
@@ -18,6 +19,7 @@ from harnyx_commons.llm.provider_types import (
 from harnyx_commons.llm.providers.bedrock import BedrockLlmProvider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
 from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmProvider
+from harnyx_commons.llm.providers.openrouter import OpenRouterLlmProvider
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.routing import LlmRouteSurface, RoutedLlmProvider
 
@@ -36,7 +38,7 @@ class CachedLlmProviderRegistry:
         self._cache: dict[str, LlmProviderPort] = {}
 
     def resolve(self, name: str) -> LlmProviderPort:
-        route_target = parse_provider_route_target(name, component="shared")
+        route_target = _parse_registry_route_target(name)
         provider = self._cache.get(route_target)
         if provider is None:
             provider = _build_provider(
@@ -115,6 +117,15 @@ def _build_provider(
     bedrock_settings: BedrockSettings,
     vertex_settings: VertexSettings,
 ) -> LlmProviderPort:
+    if route_target == OPENROUTER_PROVIDER:
+        return LlmProviderAdapter(
+            provider_name=route_target,
+            delegate=OpenRouterLlmProvider(
+                openrouter_api_key=llm_settings.openrouter_api_key,
+                model_provider_options=llm_settings.openrouter_model_provider_options,
+            ),
+        )
+
     custom_endpoint_id = parse_custom_openai_compatible_target(route_target)
     if custom_endpoint_id is not None:
         endpoints = llm_settings.openai_compatible_endpoints
@@ -164,6 +175,13 @@ def _build_provider(
         )
 
     raise ValueError(f"unsupported llm provider: {provider_name}")
+
+
+def _parse_registry_route_target(raw: str | None) -> str:
+    value = (raw or "").strip()
+    if value == OPENROUTER_PROVIDER:
+        return OPENROUTER_PROVIDER
+    return parse_provider_route_target(raw, component="shared")
 
 
 def _max_concurrent_for_provider(

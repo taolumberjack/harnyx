@@ -137,10 +137,13 @@ def test_begin_attempt_advances_counter_and_clears_failure_marker() -> None:
     request = make_request()
     manager.issue(request)
     manager.mark_failure_code(request.session_id, SessionFailureCode.TOOL_PROVIDER_FAILED)
+    next_token = uuid4().hex
 
-    envelope = manager.begin_attempt(request.session_id)
+    envelope = manager.begin_attempt(request.session_id, token=next_token)
 
     assert envelope.session.active_attempt == 1
+    assert tokens.verify(request.session_id, next_token)
+    assert not tokens.verify(request.session_id, request.token)
     assert envelope.session.failure_code is None
     assert envelope.session.failure_attempt is None
 
@@ -151,7 +154,7 @@ def test_consume_failure_code_returns_current_attempt_marker_and_clears_it() -> 
     manager = SessionManager(sessions, tokens)
     request = make_request()
     manager.issue(request)
-    manager.begin_attempt(request.session_id)
+    manager.begin_attempt(request.session_id, token=uuid4().hex)
     manager.mark_failure_code(request.session_id, SessionFailureCode.TOOL_PROVIDER_FAILED)
 
     assert manager.consume_failure_code(request.session_id) is SessionFailureCode.TOOL_PROVIDER_FAILED
@@ -168,7 +171,7 @@ def test_consume_failure_code_discards_stale_attempt_marker() -> None:
     manager = SessionManager(sessions, tokens)
     request = make_request()
     manager.issue(request)
-    manager.begin_attempt(request.session_id)
+    manager.begin_attempt(request.session_id, token=uuid4().hex)
     stored = sessions.get(request.session_id)
     assert stored is not None
     sessions.update(
@@ -241,3 +244,23 @@ def test_consume_failure_code_preserves_latest_concurrent_session_state() -> Non
     assert updated.usage.total_cost_usd == pytest.approx(0.0001)
     assert updated.failure_code is None
     assert updated.failure_attempt is None
+
+
+def test_begin_attempt_replaces_token_before_advancing_active_attempt() -> None:
+    sessions = InterleavingSessionRegistry()
+    tokens = InMemoryTokenRegistry()
+    manager = SessionManager(sessions, tokens)
+    initial_token = uuid4().hex
+    next_token = uuid4().hex
+    request = make_request(token=initial_token)
+    manager.issue(request)
+
+    stored = sessions.get(request.session_id)
+    assert stored is not None
+    sessions.inject_before_next_mutate(stored)
+
+    issued = manager.begin_attempt(request.session_id, token=next_token)
+
+    assert issued.session.active_attempt == 1
+    assert tokens.verify(request.session_id, next_token)
+    assert not tokens.verify(request.session_id, initial_token)

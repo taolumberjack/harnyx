@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from harnyx_commons.llm.provider_types import parse_custom_openai_compatible_target
+from harnyx_commons.llm.provider_types import OPENROUTER_PROVIDER, parse_custom_openai_compatible_target
 from harnyx_miner_sdk.llm import (
     LlmChoice,
     LlmChoiceMessage,
@@ -150,6 +150,8 @@ def supports_grounded_additional_tools(*, provider: str, model: str) -> bool:
 def supports_tool_result_messages(*, provider: str, model: str) -> bool:
     normalized_provider = provider.strip().lower()
     if parse_custom_openai_compatible_target(normalized_provider) is not None:
+        return True
+    if normalized_provider == OPENROUTER_PROVIDER:
         return True
     if normalized_provider == "chutes":
         return True

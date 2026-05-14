@@ -249,6 +249,60 @@ def test_timeout_attribution_waits_until_observations_are_exhausted_without_base
     )
 
 
+def test_timeout_attribution_keeps_unknown_inflight_unresolved_before_exhaustion() -> None:
+    observation = TimeoutObservationEvidence(
+        successful_llm_samples=(),
+        session_summary=ToolUsageSummary(),
+        session_elapsed_ms=60000.0,
+        unknown_inflight_llm_count=1,
+    )
+
+    assert (
+        classify_timeout_attribution(
+            observation=observation,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+            prior_timeout_observations=(),
+        )
+        is None
+    )
+
+
+def test_timeout_attribution_defaults_unknown_inflight_to_miner_owned_at_exhaustion() -> None:
+    observation = TimeoutObservationEvidence(
+        successful_llm_samples=(),
+        session_summary=ToolUsageSummary(),
+        session_elapsed_ms=60000.0,
+        unknown_inflight_llm_count=1,
+    )
+
+    assert (
+        classify_timeout_attribution(
+            observation=observation,
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+            prior_timeout_observations=(observation, observation),
+        )
+        is TimeoutAttributionKind.MINER_OWNED
+    )
+
+
+def test_timeout_attribution_slow_completed_sample_beats_unknown_at_exhaustion() -> None:
+    observation = TimeoutObservationEvidence(
+        successful_llm_samples=(_llm_sample(model=TEST_MODEL, llm_tps=40.0),),
+        session_summary=ToolUsageSummary(),
+        session_elapsed_ms=60000.0,
+        unknown_inflight_llm_count=1,
+    )
+
+    assert (
+        classify_timeout_attribution(
+            observation=observation,
+            validator_model_llm_baseline=_baseline(TEST_MODEL, 100.0),
+            prior_timeout_observations=(observation, observation),
+        )
+        is TimeoutAttributionKind.NOT_MINER_OWNED
+    )
+
+
 def test_successful_llm_samples_include_model_identity() -> None:
     session_id = uuid4()
     receipt = ToolCall(

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from datetime import datetime
 from uuid import UUID
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
 from harnyx_commons.application.ports.session_registry import SessionRegistryPort
 from harnyx_commons.domain.session import Session
-from harnyx_commons.domain.tool_call import ToolCall
+from harnyx_commons.domain.tool_call import ToolCall, ToolCallDetails
+from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
+from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.ports.agent_registry import AgentRegistryPort
 from harnyx_validator.domain.agent import AgentRegistry, AgentStatus
 
@@ -61,27 +64,70 @@ class FakeReceiptLog(ReceiptLogPort):
     """In-memory receipt log for tests."""
 
     def __init__(self) -> None:
-        self._receipts: dict[str, ToolCall] = {}
-        self._session_index: dict[UUID, set[str]] = {}
+        self._delegate = InMemoryReceiptLog()
 
     def record(self, receipt: ToolCall) -> None:
-        self._receipts[receipt.receipt_id] = receipt
-        self._session_index.setdefault(receipt.session_id, set()).add(receipt.receipt_id)
+        self._delegate.record(receipt)
+
+    def start_pending_receipt(
+        self,
+        *,
+        receipt_id: str,
+        session_id: UUID,
+        session_active_attempt: int,
+        uid: int,
+        tool: ToolName,
+        issued_at: datetime,
+        details: ToolCallDetails,
+    ) -> None:
+        self._delegate.start_pending_receipt(
+            receipt_id=receipt_id,
+            session_id=session_id,
+            session_active_attempt=session_active_attempt,
+            uid=uid,
+            tool=tool,
+            issued_at=issued_at,
+            details=details,
+        )
+
+    def complete_pending_receipt(
+        self,
+        receipt: ToolCall,
+        settle_usage: Callable[[], tuple[Session, bool]],
+    ) -> tuple[Session, bool] | None:
+        return self._delegate.complete_pending_receipt(receipt, settle_usage)
+
+    def abandon_pending_receipt(self, receipt_id: str) -> None:
+        self._delegate.abandon_pending_receipt(receipt_id)
+
+    def wait_and_materialize_unknown_receipts(
+        self,
+        session_id: UUID,
+        *,
+        session_active_attempt: int,
+        tool: ToolName,
+        timeout_seconds: float,
+        clock: Callable[[], datetime],
+    ) -> tuple[ToolCall, ...]:
+        return self._delegate.wait_and_materialize_unknown_receipts(
+            session_id,
+            session_active_attempt=session_active_attempt,
+            tool=tool,
+            timeout_seconds=timeout_seconds,
+            clock=clock,
+        )
 
     def lookup(self, receipt_id: str) -> ToolCall | None:
-        return self._receipts.get(receipt_id)
+        return self._delegate.lookup(receipt_id)
 
     def values(self) -> Iterable[ToolCall]:
-        return self._receipts.values()
+        return self._delegate.values()
 
     def for_session(self, session_id: UUID) -> Iterable[ToolCall]:
-        receipt_ids = self._session_index.get(session_id, set())
-        return tuple(self._receipts[receipt_id] for receipt_id in receipt_ids)
+        return self._delegate.for_session(session_id)
 
     def clear_session(self, session_id: UUID) -> None:
-        receipt_ids = self._session_index.pop(session_id, set())
-        for receipt_id in receipt_ids:
-            self._receipts.pop(receipt_id, None)
+        self._delegate.clear_session(session_id)
 
 
 

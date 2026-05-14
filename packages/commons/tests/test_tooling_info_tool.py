@@ -48,8 +48,14 @@ async def test_tooling_info_sandbox_builder_returns_pricing_metadata() -> None:
     assert "openai/gpt-oss-20b-TEE" not in model_prices
     assert "openai/gpt-oss-120b-TEE" not in payload["allowed_tool_models"]
     assert "openai/gpt-oss-120b-TEE" not in model_prices
-    assert "openai/gpt-oss-20b" not in payload["allowed_tool_models"]
-    assert "openai/gpt-oss-120b" not in payload["allowed_tool_models"]
+    assert "openai/gpt-oss-20b" in payload["allowed_tool_models"]
+    assert model_prices["openai/gpt-oss-20b"]["input_per_million"] == pytest.approx(0.03)
+    assert model_prices["openai/gpt-oss-20b"]["output_per_million"] == pytest.approx(0.14)
+    assert model_prices["openai/gpt-oss-20b"]["reasoning_per_million"] == pytest.approx(0.14)
+    assert "openai/gpt-oss-120b" in payload["allowed_tool_models"]
+    assert model_prices["openai/gpt-oss-120b"]["input_per_million"] == pytest.approx(0.039)
+    assert model_prices["openai/gpt-oss-120b"]["output_per_million"] == pytest.approx(0.18)
+    assert model_prices["openai/gpt-oss-120b"]["reasoning_per_million"] == pytest.approx(0.18)
     assert "zai-org/GLM-5-TEE" in payload["allowed_tool_models"]
     assert model_prices["zai-org/GLM-5-TEE"]["input_per_million"] == pytest.approx(
         MODEL_PRICING["zai-org/GLM-5-TEE"].input_per_million
@@ -116,6 +122,8 @@ def test_zero_reasoning_price_falls_back_to_output_price() -> None:
     assert price_llm(parse_tool_model("zai-org/GLM-5-TEE"), usage) == pytest.approx(6.05)
     assert price_llm(parse_tool_model("Qwen/Qwen3.6-27B-TEE"), usage) == pytest.approx(4.50)
     assert price_llm(parse_tool_model("google/gemma-4-31B-turbo-TEE"), usage) == pytest.approx(0.89)
+    assert price_llm(parse_tool_model("openai/gpt-oss-20b"), usage) == pytest.approx(0.31)
+    assert price_llm(parse_tool_model("openai/gpt-oss-120b"), usage) == pytest.approx(0.399)
 
 
 @pytest.mark.parametrize("model", ("openai/gpt-oss-20b-TEE", "openai/gpt-oss-120b-TEE"))

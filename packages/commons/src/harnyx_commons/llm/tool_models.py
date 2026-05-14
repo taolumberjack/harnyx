@@ -13,6 +13,8 @@ from harnyx_commons.llm.provider_types import (
 )
 
 ToolModelName = Literal[
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
     "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "zai-org/GLM-5-TEE",
@@ -28,6 +30,8 @@ ToolModelThinkingField = Literal[
 ToolModelThinkingProvider = Literal["chutes", "vertex", "custom-openai-compatible"]
 
 ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
     "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "zai-org/GLM-5-TEE",

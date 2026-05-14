@@ -92,6 +92,18 @@ class DummyReceiptLog(ReceiptLogPort):
     def record(self, receipt: object) -> None:
         self._records[str(len(self._records))] = receipt
 
+    def start_pending_receipt(self, **kwargs) -> None:
+        return None
+
+    def complete_pending_receipt(self, receipt, settle_usage):
+        return settle_usage()
+
+    def abandon_pending_receipt(self, receipt_id: str) -> None:
+        return None
+
+    def wait_and_materialize_unknown_receipts(self, session_id, **kwargs):
+        return ()
+
     def lookup(self, receipt_id: str) -> object | None:
         return self._records.get(receipt_id)
 
@@ -175,7 +187,14 @@ def _llm_baseline(tps: float, *, model: str = "google/gemma-4-31B-turbo-TEE") ->
     return ValidatorModelLlmBaseline(slowest_tps_by_model={parse_tool_model(model): tps})
 
 
-def _llm_receipt(*, session_id: UUID, uid: int, total_tokens: int, elapsed_ms: float) -> ToolCall:
+def _llm_receipt(
+    *,
+    session_id: UUID,
+    uid: int,
+    total_tokens: int,
+    elapsed_ms: float,
+    active_attempt: int = 1,
+) -> ToolCall:
     return ToolCall(
         receipt_id=uuid4().hex,
         session_id=session_id,
@@ -192,6 +211,7 @@ def _llm_receipt(*, session_id: UUID, uid: int, total_tokens: int, elapsed_ms: f
             response_hash="res",
             response_payload={"usage": {"total_tokens": total_tokens}},
             execution=ToolExecutionFacts(elapsed_ms=elapsed_ms),
+            extra={"session_active_attempt": str(active_attempt)},
         ),
     )
 

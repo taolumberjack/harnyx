@@ -18,6 +18,8 @@ def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> N
     )
 
     assert resolve_tool_model("deepseek-ai/deepseek-v3.2-tee") == "deepseek-ai/DeepSeek-V3.2-TEE"
+    assert resolve_tool_model("openai/gpt-oss-20b") == "openai/gpt-oss-20b"
+    assert resolve_tool_model("openai/gpt-oss-120b") == "openai/gpt-oss-120b"
     assert resolve_tool_model("qwen/qwen3.6-27b-tee") == "Qwen/Qwen3.6-27B-TEE"
     assert deepseek is not None
     assert deepseek.chat_template_kwargs(enabled=True) == {"thinking": True}
@@ -29,3 +31,5 @@ def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> N
     assert gemma_chutes is None
     assert gemma_custom is not None
     assert gemma_custom.chat_template_kwargs(enabled=True) == {"enable_thinking": True}
+    assert tool_model_thinking_capability("openai/gpt-oss-20b", provider_name="openrouter") is None
+    assert tool_model_thinking_capability("openai/gpt-oss-120b", provider_name="openrouter") is None
